@@ -1,0 +1,1412 @@
+# MyDomo
+
+MyDomo est un assistant IA générique et auto-hébergé. Il s'appelle Domo tant
+qu'une personne ne lui a pas donné le nom qu'elle veut. Tu l'exécutes sur ton
+propre matériel avec Docker Compose, tu lui parles depuis une page web, et tu
+gardes la maîtrise de tes données et de tes clés d'API : les clés des modèles
+sont dans un coffre chiffré que le cœur de l'assistant ne peut jamais lire.
+
+*English version: [README.md](README.md).*
+
+**Ce qu'il fait aujourd'hui** (la deuxième itération, le foyer) : tu l'installes
+sur un serveur, tu crées le compte du propriétaire, tu choisis le modèle d'IA
+avec lequel il parle (Anthropic, OpenAI, Google, ou tout serveur qui parle l'API
+d'OpenAI, par exemple un serveur de ton réseau), puis tu discutes avec lui dans
+une page web, depuis un ordinateur ou un téléphone. Le propriétaire invite les
+personnes avec qui il vit (adultes, enfants, invités), et chacun a son propre
+compte et sa propre discussion. L'assistant sait maintenant faire quelques petites
+choses : laisser un mot à quelqu'un, inviter des personnes et changer leur rôle,
+aider le propriétaire à changer la clé du modèle. Avant tout ce qui compte,
+L'assistant juge, pour chaque action, s'il la fait, s'il demande un oui, le bouton, ou
+une preuve que c'est bien toi ; les règles du propriétaire et les droits passent
+avant. On peut se connecter avec une clé d'accès (passkey) au lieu de son mot de
+passe. Chaque action importante est inscrite dans un journal d'audit
+infalsifiable que le propriétaire peut consulter. Tout ce qu'on lit vient de
+Domo, pour celui qui le lit, dans sa langue : il part de phrases par défaut en
+français et en anglais, et les réécrit quand il a une raison de le faire (voir
+[L'assistant écrit tout](#domo-écrit-tout)). Il se souvient d'une discussion à
+l'autre, il connaît l'heure, et il peut se donner rendez-vous pour te reparler de
+lui-même (voir [La mémoire et le temps](#la-mémoire-et-le-temps)). Quand il n'a
+pas le moyen de faire quelque chose, il peut s'écrire un petit programme, le
+lancer tout de suite et le garder comme outil à lui, qui tourne à part dans un
+bac à sable sans réseau et garde ses données dans une base à lui (voir
+[L'assistant se crée des outils](#domo-se-crée-des-outils)). D'autres outils et
+d'autres façons de parler à l'assistant viendront dans les itérations suivantes.
+
+## Prérequis
+
+- Un serveur (ou un ordinateur toujours allumé) sous **Linux 64 bits**.
+- **Docker 28 ou plus, avec Docker Compose** (vérifie avec `docker version` et
+  `docker compose version`). Voir [docs.docker.com/engine/install](https://docs.docker.com/engine/install/).
+- `git`.
+- Un compte chez un fournisseur d'IA et sa clé d'API, ou un serveur compatible
+  OpenAI sur ton réseau. L'assistant n'embarque pas de modèle pour parler (seulement
+  un petit, pour retrouver ses souvenirs par leur sens).
+- Environ 3 Go d'espace disque libre pour les images (celle du cœur de l'assistant
+  pèse à elle seule environ 1,2 Go, à cause du petit modèle local). Le cœur seul
+  utilise environ 760 Mo de mémoire une fois ce modèle chargé : c'est ce qui a
+  été mesuré. Les autres services en demandent bien moins ; prévois de la marge.
+  Le bac à sable où tournent les outils que l'assistant se crée est limité à 1,5 Go
+  de mémoire (quatre lancements de 256 Mo à la fois au départ, et son lanceur ;
+  L'assistant peut changer les deux, jamais au-delà de cette limite) : il n'en
+  approche que quand ses outils travaillent.
+
+## Installation
+
+```bash
+git clone <adresse-du-depot> domo
+cd domo
+cp .env.example .env
+```
+
+Ouvre `.env` dans un éditeur de texte et renseigne **`DOMO_SITE_ADDRESSES`**
+avec l'adresse que tu taperas dans le navigateur pour joindre le serveur : son
+adresse sur ton réseau, par exemple `192.168.1.10` (sous Linux, `hostname -I`
+liste les adresses du serveur). Tu peux ajouter son nom, séparé par une
+virgule : `192.168.1.10, domo.local`.
+
+- **Mets en premier l'adresse que tu utiliseras vraiment**, et fais-en une
+  adresse IPv4 si tu ouvres la page par son adresse IP. Un navigateur qui ouvre
+  une page par son adresse IP n'indique aucun nom au serveur : seule la première
+  adresse IPv4 de la liste a alors son propre certificat. Toute autre adresse de
+  la liste, et toute adresse absente de la liste, affichera un avertissement de
+  certificat même après avoir fait confiance au certificat de l'assistant.
+- Les adresses IPv6 ne sont pas encore prises en charge dans cette liste.
+
+Les autres réglages ont des valeurs par défaut raisonnables :
+
+| Réglage | Par défaut | Rôle |
+| --- | --- | --- |
+| `DOMO_SITE_ADDRESSES` | `localhost, 192.168.1.10` (dans le fichier d'exemple) | Les noms et adresses avec lesquels la page est ouverte. **À modifier.** Les clés d'accès ne marchent qu'avec les noms de cette liste (voir [Clés d'accès](#clés-daccès-passkeys)). |
+| `DOMO_HTTPS_PORT` | `8443` | Le port de la page (HTTPS) : celui que l'on tape dans l'adresse. |
+| `DOMO_HTTP_PORT` | `8080` | Redirige seulement vers le port HTTPS. |
+| `DOMO_BIND_ADDRESS` | `0.0.0.0` | L'adresse du serveur sur laquelle les deux ports sont publiés : `0.0.0.0` pour toutes, `127.0.0.1` pour cette machine seulement. |
+| `TZ` | `UTC` | Le fuseau horaire des services, par exemple `Europe/Paris`. |
+| `DOMO_CORE_NET_PREFIX` | `10.247.81` | Avancé, voir ci-dessous. |
+
+Puis démarre tout :
+
+```bash
+docker compose up -d
+```
+
+Le premier démarrage construit les images, ce qui prend quelques minutes.
+Laisse quelques secondes de plus aux services, puis `docker compose ps` doit
+afficher `core`, `db`, `edge` et `gatekeeper` comme `healthy`. (`init`, qui crée
+les secrets de l'instance la première fois, s'exécute une fois puis s'arrête :
+`docker compose ps` ne l'affiche pas, et `docker compose ps --all` l'affiche
+comme terminé, ce qui est normal.)
+
+### Si le réseau interne entre en collision avec le tien
+
+Les services se parlent sur un réseau privé qui leur est propre,
+`10.247.81.0/24` par défaut. Si ton réseau domestique utilise déjà cette plage
+(c'est rare), `docker compose up` s'arrête avec une erreur qui parle de
+chevauchement d'adresses (par exemple `networks have overlapping IPv4`, ou `Pool
+overlaps with other one on this address space` avec les anciennes versions de
+Docker). Choisis les trois premiers nombres d'une autre plage libre, ajoute la
+ligne suivante à `.env`, puis relance :
+
+```bash
+DOMO_CORE_NET_PREFIX=10.247.82
+```
+
+```bash
+docker compose down
+docker compose up -d
+```
+
+## Le code d'installation
+
+La première fois, quiconque ouvre la page pourrait s'emparer de la nouvelle
+instance en créant son propriétaire. Pour s'assurer que c'est bien toi, l'assistant
+écrit un **code d'installation** à usage unique dans ses journaux, que seule la
+personne qui administre le serveur peut lire :
+
+```bash
+docker compose logs core | grep "setup code"
+```
+
+Tu verras une ligne comme `L'assistant setup code: XXXX-XXXX-XXXX`. Si plusieurs
+lignes de ce genre apparaissent (l'assistant a été redémarré), utilise la dernière :
+chaque démarrage remplace le code précédent. Après dix codes erronés en quinze
+minutes, la page refuse tout code pendant un moment ; redémarrer le cœur
+(`docker compose restart core`) donne un nouveau code et remet le compteur à
+zéro.
+
+## Premier accès
+
+Depuis n'importe quel appareil du même réseau, ouvre `https://<adresse>:8443`,
+par exemple `https://192.168.1.10:8443`. (Ouvrir `http://` avec le port `8080`
+t'envoie vers la page HTTPS.)
+
+### L'avertissement du navigateur
+
+La première fois, le navigateur indique que la connexion n'est pas privée
+(Chrome : `NET::ERR_CERT_AUTHORITY_INVALID`, Firefox : « Avertissement : risque
+probable de sécurité »). C'est normal : la page est chiffrée avec un certificat
+que ton propre serveur a émis avec sa propre autorité de certification, qu'aucun
+navigateur ne connaît encore. Aucune entreprise extérieure n'émet ce certificat
+ni ne le voit. (Ce que tu écris dans la discussion est, bien sûr, envoyé au
+fournisseur de modèle que tu choisis.)
+
+Tu as deux possibilités :
+
+- **Continuer malgré tout** (Avancé, puis Continuer). C'est rapide, mais
+  l'avertissement reviendra sur chaque appareil, et chaque fois que le navigateur
+  oubliera ton choix.
+- **Faire confiance une fois à l'autorité sur chaque appareil**, pour que la page
+  s'ouvre avec un cadenas et sans avertissement. Télécharge le certificat à
+  l'adresse `https://<adresse>:8443/ca.crt` (accepte l'avertissement pour ce seul
+  téléchargement), puis installe-le comme ci-dessous. Ne le fais que sur tes
+  propres appareils : ce certificat fait faire confiance à celui qui détient la
+  clé de l'autorité, c'est-à-dire ton serveur.
+
+Vérification facultative que le fichier vient bien de ton serveur : compare
+son empreinte SHA-256, affichée par ton appareil quand tu ouvres le fichier,
+avec le résultat de
+`docker compose exec -T edge cat /data/caddy/pki/authorities/local/root.crt | openssl x509 -noout -fingerprint -sha256`.
+
+Les noms du certificat sont ceux de `DOMO_SITE_ADDRESSES` ; l'appareil doit
+ouvrir la page par l'un d'eux.
+
+**Android.** Ouvre `https://<adresse>:8443/ca.crt` dans le navigateur et
+enregistre le fichier. Puis Paramètres, Sécurité (ou Sécurité et confidentialité),
+Autres paramètres de sécurité, Chiffrement et identifiants, Installer un
+certificat, Certificat CA. Confirme « Installer quand même » et choisis le
+fichier. Les noms des menus varient un peu selon les versions d'Android et les
+fabricants.
+
+**iPhone et iPad.** Ouvre `https://<adresse>:8443/ca.crt` dans Safari et
+autorise le téléchargement du profil. Ouvre Réglages, puis « Profil téléchargé »
+(ou Général, VPN et gestion de l'appareil), et installe-le. Puis Réglages,
+Général, Informations, Réglages de confiance des certificats, et active la
+confiance totale pour le certificat (« Caddy Local Authority »).
+
+**Windows.** Télécharge `ca.crt` et double-clique dessus. Choisis Installer
+le certificat, puis « Placer tous les certificats dans le magasin suivant »,
+Parcourir, « Autorités de certification racines de confiance », et termine.
+Redémarre le navigateur. Firefox a sa propre liste : Paramètres, Vie privée et
+sécurité, Afficher les certificats, Autorités, Importer (et coche « Confirmer
+cette AC pour identifier des sites web »).
+
+**macOS.** Télécharge `ca.crt` et double-clique dessus pour l'ajouter à
+Trousseau d'accès (le trousseau de session suffit). Ouvre le certificat dans
+Trousseau d'accès, déroule Approbation, et règle « Lors de l'utilisation de ce
+certificat » sur « Toujours approuver ». Firefox a sa propre liste, comme sous
+Windows.
+
+**Linux.** Sous Debian et Ubuntu :
+`sudo cp ca.crt /usr/local/share/ca-certificates/domo.crt && sudo update-ca-certificates`.
+Sous Fedora et Red Hat :
+`sudo cp ca.crt /etc/pki/ca-trust/source/anchors/domo.crt && sudo update-ca-trust`.
+Firefox, ainsi que Chrome ou Chromium, gardent leurs propres listes : importe le
+fichier dans leurs paramètres (Certificats, Autorités).
+
+### Le premier lancement
+
+La page te guide ensuite en deux étapes :
+
+1. **Créer le compte du propriétaire.** Saisis le code d'installation, ton
+   nom, un identifiant et un mot de passe d'au moins 8 caractères.
+2. **Choisir le modèle.** Choisis le fournisseur (Anthropic, OpenAI, Google,
+   ou un autre serveur qui parle l'API d'OpenAI), et pour un serveur à toi,
+   son adresse (par exemple `http://192.168.1.10:11434/v1` ;
+   `localhost` désignerait le conteneur de l'assistant lui-même, pas ton serveur). Si
+   le fournisseur demande une clé, l'assistant affiche un formulaire de son coffre de
+   secrets : saisis ou colle la clé **là**. Elle va de ton navigateur au
+   coffre, sans jamais passer par la partie de l'assistant qui te parle. L'assistant pose
+   ensuite une courte question au modèle pour vérifier que tout fonctionne.
+
+Ces deux étapes sont en français ou en anglais, selon ton navigateur. Dès que la
+clé marche, tu arrives dans la discussion : rien à attendre. La langue de ton
+navigateur devient la langue de la maison. Le propriétaire peut lire le journal
+d'audit à l'adresse `https://<adresse>:8443/audit`, et voir le foyer à l'adresse
+`https://<adresse>:8443/household`.
+
+## Le foyer
+
+L'assistant est partagé par les personnes avec qui tu vis. Le propriétaire, la
+personne qui l'a installé, invite les autres. Chacun a son propre compte, son
+propre mot de passe et sa propre discussion : l'assistant ne la montre à personne
+d'autre, pas même au propriétaire.
+
+Tout passe par la discussion, avec tes propres mots : « invite Alex comme
+adulte », « invite Sam comme invité pour une semaine », « Alex est adulte
+maintenant ». Il n'y a pas de formulaire à remplir.
+
+- **Les rôles.** Au départ, le propriétaire peut tout faire dans cette liste. Les
+  adultes et les enfants peuvent demander qui fait partie du foyer et laisser des
+  mots, à qui ils veulent, un invité compris. Les adultes peuvent aussi inviter
+  quelqu'un, comme le dit le point sur les invitations. Un invité peut discuter
+  avec l'assistant et changer son propre nom. Le propriétaire peut changer tout cela,
+  comme le dit le point suivant.
+- **Les droits et les limites.** Le propriétaire décide qui peut faire quoi, et le
+  dit à l'assistant avec ses propres mots : « Alex peut inviter des invités, 3 jours au
+  plus », « les invités ne peuvent plus changer leur nom », « les mots de Sam
+  passent par un adulte ». Un droit vaut pour tout un rôle (tous les adultes, par
+  exemple) ou pour une seule personne. Il peut avoir une **limite**, que le code
+  de l'assistant vérifie à chaque fois que le droit sert : un nombre de jours, un rôle,
+  l'heure ou le jour de la semaine, un nombre de fois dans la semaine. Le
+  propriétaire choisit aussi de qui une demande a besoin de l'accord : un adulte
+  ou le propriétaire, et ce que l'assistant doit toujours demander d'abord (« demande-moi
+  toujours avant de… »). Une demande qui attend le
+  oui du propriétaire apparaît dans sa zone « À valider ». Quand la demande du
+  propriétaire est claire, l'assistant écrit le nouveau droit et l'applique tout de
+  suite, puis dit ce qui a changé en mots simples, avec un **exemple** (« Alex
+  invite un invité pour 2 jours : attend ton oui »). Il ne le montre d'abord,
+  avec ses exemples et ce qui arrive à chacun, pour demander, que s'il n'est pas
+  sûr d'avoir compris, ou si le droit ferait plus que ce qui a été dit. Le droit
+  est écrit par un appel à part au modèle, qui ne
+  voit que les mots du propriétaire et la liste du foyer, jamais la discussion ;
+  le code de l'assistant calcule ensuite lui-même ce qui arrive à chaque exemple : ce
+  que tu lis est exactement ce qui s'appliquera. Un exemple qui dépend de
+  l'heure, du nombre de fois où quelque chose a été fait ou de qui est dans le
+  foyer dit le moment qu'il imagine (« Un samedi à 22 h. »). Si le propriétaire
+  change qui doit dire oui à une demande qui attend, le oui de quelqu'un d'autre
+  ne la fait plus : elle attend la bonne personne, et la carte dit à qui c'est.
+  Quelques règles que personne ne peut changer : seul le propriétaire change les droits et les règles, personne
+  n'agit sur le propriétaire, et personne ne change son propre rôle. Si une
+  limite ne peut pas être vérifiée, l'action est refusée, et le journal d'audit le
+  dit. Quand une limite demande de comprendre quelque chose (« seulement ses
+  amies »), chaque demande va au propriétaire dans cette version, avec la question
+  sur la carte. Demande à l'assistant de montrer les règles pour voir les droits en
+  place. Chaque appel qui écrit un droit a 60 secondes par défaut ; le
+  propriétaire peut lui en donner de 30 à 240, en le disant simplement à l'assistant
+  (« laisse deux minutes au rédacteur de droits »). Quand le temps manque, rien
+  n'est écrit et le journal d'audit le note ; si cela arrive souvent, l'assistant peut
+  proposer d'en laisser plus, et ne le change jamais sans le oui du propriétaire.
+- **Inviter quelqu'un.** Le propriétaire et les adultes peuvent inviter. L'assistant
+  prépare l'invitation et juge s'il faut demander un oui. Quand c'est un adulte
+  qui demande, il juge aussi si le propriétaire doit d'abord être d'accord : son
+  propre enfant arrive tout de suite ; quelqu'un que le foyer ne connaît pas, un
+  autre adulte, ou quelqu'un qui se servira des clés du propriétaire attend le
+  oui du propriétaire. Un adulte redonne le lien, ou annule, seulement une
+  invitation qu'il a faite ; le propriétaire, n'importe laquelle. Une fois
+  faite, la carte sous la réponse de l'assistant montre le lien d'invitation,
+  **cette fois-là seulement** : envoie-le toi-même, par message ou par e-mail.
+  Le lien ne sert qu'une fois, pendant 7 jours, et l'assistant ne le voit jamais. La
+  personne l'ouvre, choisit un identifiant et un mot de passe, et arrive dans sa
+  propre discussion. Quand quelqu'un d'autre dit oui à l'invitation d'une personne
+  qui a le droit d'inviter (le propriétaire, par exemple), le lien est pour la
+  personne qui a demandé : un bouton « Montrer le lien » sur sa carte le montre,
+  une seule fois, à elle seule. Si elle dit oui elle-même, il lui est montré tout
+  de suite, comme au propriétaire. Tu as perdu le lien, ou il n'est pas arrivé ?
+  Tant que l'invitation attend, demande-le de nouveau à l'assistant (« renvoie-moi le
+  lien de Sam ») : il en fait un nouveau tout de suite, montré une fois comme le
+  premier, et l'ancien ne marche plus. L'invitation garde son rôle, son séjour et
+  sa date de fin. Quiconque peut inviter avec ce rôle peut le demander ; si un
+  autre doit d'abord dire oui (un adulte pour un enfant, par exemple), l'ancien
+  lien ne marche plus dès ce oui, et le nouveau attend derrière le bouton
+  « Montrer le lien » de la carte de celui qui l'a demandé. Si c'est quelqu'un
+  d'autre que toi qui redemande le lien, ton bouton « Montrer le lien », s'il
+  attendait encore, ne donne plus de lien : c'est le nouveau qui compte, et
+  c'est à cette personne de l'envoyer.
+- **Les invités.** L'accès d'un invité s'arrête après un séjour choisi au moment
+  de l'invitation (2 jours par défaut). La règle du foyer au départ est de 30 jours
+  au plus ; le propriétaire peut changer cette règle en le disant à l'assistant (jusqu'à
+  365 jours). Quelqu'un qui devient invité plus tard reçoit un séjour de la même
+  façon. Un invité peut rester plus ou moins longtemps que prévu : « Sam reste
+  finalement jusqu'à dimanche », « Sam part demain ». Le nouveau séjour compte à
+  partir de maintenant, avec la même règle du foyer, et la carte dit la nouvelle
+  date de fin.
+- **Changer un rôle, retirer quelqu'un.** Demande-le à l'assistant. Retirer quelqu'un
+  ferme son compte tout de suite et le déconnecte partout ; ce qu'il a écrit est
+  gardé. Une invitation encore en attente peut être annulée : son lien ne marche
+  plus. Les droits que le propriétaire avait donnés à cette personne seule sont
+  mis en pause dès son départ ; il peut encore les lui retirer pendant qu'elle est
+  partie (« Paul est parti, retire-lui le droit d'inviter »).
+- **Quitter le foyer.** Chacun peut demander à l'assistant de partir : « retire-moi du
+  foyer ». Un invité peut ainsi partir plus tôt. Un adulte ou un invité dit oui
+  lui-même ; pour un enfant, c'est un adulte qui dit oui. Le propriétaire ne
+  part jamais ainsi : il donne d'abord son rôle à quelqu'un. Retirer quelqu'un
+  d'autre reste au propriétaire, ou à qui il en a donné le droit. Rien n'est
+  effacé, et la personne peut revenir.
+- **Faire revenir quelqu'un.** Une personne retirée, ou un invité dont le séjour
+  est fini, peut revenir : demande à l'assistant « fais revenir Alex ». L'assistant juge
+  s'il faut demander un oui, puis la carte montre un lien, une seule fois, comme pour
+  une invitation. La personne l'ouvre, voit « Bon retour », garde l'identifiant
+  qu'elle a toujours eu et choisit un nouveau mot de passe. Son ancien mot de passe
+  et ses clés d'accès ne marchent plus, et rien de son ancien accès ne marche tant
+  qu'elle n'a pas utilisé le lien. Ce qu'elle avait écrit est toujours là. Les
+  droits que le propriétaire lui avait donnés à elle seule sont mis en pause à son
+  retour : l'assistant dit au propriétaire lesquels c'étaient, et le propriétaire dit
+  lesquels rendre. Si deux personnes parties avaient le même nom, l'assistant demande
+  laquelle. Si la personne a perdu son lien, « refais le lien pour Alex » en fait
+  un nouveau, avec un seul oui : l'ancien ne marche plus, et la carte le dit.
+- **Plusieurs actions dans une phrase.** Quand une phrase demande des actions
+  qui dépendent les unes des autres (« donne mon rôle à Alex, puis
+  retire-moi »), l'assistant fait **une seule demande** : une carte qui liste les
+  étapes dans l'ordre, et un seul oui pour toutes (de 1 à 20 étapes ; au-delà,
+  L'assistant fait plusieurs suites). Les actions qui ne dépendent pas les unes des
+  autres ne sont pas enchaînées : il les fait une par une, comme d'habitude.
+  Après le oui, les étapes se font dans l'ordre, et chacune est vérifiée de
+  nouveau quand son tour vient, avec les mêmes règles qu'une action seule. Pour
+  ce que la suite elle-même a changé, le rôle que tu avais au moment de la
+  demande compte encore : après « donne mon rôle à Alex », l'étape
+  « retire-moi » reste la tienne. Ce n'est pas le cas d'un droit à toi : si la
+  suite elle-même te le retire, il ne compte plus pour les étapes d'après.
+  Tout le reste qui a changé entre-temps s'applique (si le propriétaire a repris
+  un droit avant le oui, l'étape qui en avait besoin est refusée).
+  - **Changer une suite.** Une suite qui attend son oui se change comme toute
+    demande : « oui, mais donne-lui 5 jours au lieu de 2 ». L'assistant reprend la
+    suite entière telle qu'il a compris le changement, et demande des précisions
+    s'il n'est pas sûr. Si ton oui en mots suffit pour la suite changée, elle
+    part tout de suite ; sinon, une nouvelle carte remplace l'ancienne. Une étape
+    que tu n'avais jamais vue sur une carte demande toujours une nouvelle carte.
+  - **Quand une étape échoue.** Les suivantes ne se font pas : l'assistant te dit où
+    il en est, ce qui est fait et ce qui reste, et propose quoi faire. Il peut
+    reprendre l'étape qui a échoué, puis le reste : telle quelle, sous le même
+    oui, quand on sait qu'elle n'a rien fait ; avec un changement (« l'invitation
+    a échoué parce que le nom était pris ; reprends avec Sam B. »), sur une
+    nouvelle carte. Si on ne sait pas si elle a déjà agi, elle ne repart qu'avec
+    un nouveau oui, et la carte le dit. Ce qui est fait reste fait.
+  - **Attendre l'arrivée de quelqu'un.** Une étape peut attendre qu'une personne
+    invitée ait rejoint le foyer : « invite mon frère Paul comme adulte et
+    donne-lui mon rôle quand il sera là ». Après le oui, la suite fait ses étapes
+    jusqu'à l'attente, puis se met en pause, et sa carte le dit. Quand Paul a
+    rejoint le foyer, la suite reprend toute seule, dans la minute, même si l'assistant
+    a redémarré entre-temps, et l'assistant te le dit. Si une règle du propriétaire
+    sur une étape qui reste demande plus que le oui déjà donné, il te redemande
+    d'abord, et la carte dit qui est arrivé. Si le
+    lien n'est pas utilisé à temps, ou si l'invitation est annulée, la suite
+    s'arrête et l'assistant te le dit. Tu peux aussi l'abandonner.
+  - **Plusieurs liens.** Chaque lien que fait une suite (une invitation, un
+    retour) a son propre bouton « Montrer le lien » sur la carte, pour la personne
+    qui a demandé seulement, même quand la suite attend de nouveau.
+- **Transmettre le rôle de propriétaire.** Le propriétaire peut donner son rôle à
+  un adulte du foyer : « donne mon accès à Justine ». C'est au propriétaire seul,
+  aucun droit ne peut le donner. Comme pour toute demande, une fois que l'assistant
+  l'a comprise, il la fait : il ne redemande pas si tu es sûr, sauf s'il doute de
+  ce que tu as voulu dire ou que ce soit bien toi, ou si tu lui as dit de toujours
+  te demander d'abord. La personne doit être un adulte présent dans le
+  foyer (pas un enfant, un invité, quelqu'un de parti, ni le propriétaire
+  lui-même). Elle n'a pas à être d'accord. L'ancien propriétaire devient adulte
+  et garde son compte et sa
+  discussion ; une seule phrase peut transmettre le rôle et le retirer (« donne
+  mon accès à Justine et retire-moi »). Il y a toujours un seul propriétaire, et
+  son rôle n'a pas de date de fin. Il ne revient que si le nouveau propriétaire le
+  rend. Les règles, les droits, la clé du modèle et le fuseau horaire restent au
+  foyer. Pour le nouveau propriétaire, les droits qu'on lui avait donnés à lui
+  seul sont mis en pause, comme pour quelqu'un qui revient (l'assistant dit lesquels, et
+  il peut les reprendre), et ses demandes qui attendaient le propriétaire
+  attendent maintenant son propre oui. L'assistant dit au nouveau propriétaire qu'il
+  l'est devenu.
+- **La liste des successeurs.** Le propriétaire, et lui seul, tient une liste
+  ordonnée (10 au plus) de ceux qui prendraient son rôle : des personnes du foyer,
+  ou des personnes de l'extérieur, avec ce que le propriétaire dit d'elles
+  (« Paul, mon frère »). Pour chacun, l'assistant propose comment lui ouvrir la porte le
+  jour venu, et recommande la meilleure façon : un accès personnel qui ne sert qu'à
+  réclamer le rôle (si la personne peut le savoir), ou un code sur papier rangé
+  avec le testament (si elle ne doit pas le savoir). La façon est seulement notée
+  pour l'instant : rien n'est construit ni donné. Voir la liste est libre. La
+  changer est jugé comme toute demande ; quand un oui est demandé, la carte
+  montre la liste avant et après. Dire qu'un successeur est mort ne demande
+  **aucune confirmation** :
+  L'assistant le note avec tact, la personne reste dans la liste, marquée comme
+  décédée, et la suivante passe en premier. Quelqu'un qui quitte le foyer reste
+  dans la liste : l'assistant le dit au propriétaire, qui décide. Un décès noté par
+  erreur se défait (« non pardon, Paul n'est pas mort ») : la personne reprend sa
+  place. Quand le rôle est transmis, la liste passe au nouveau propriétaire
+  (sans lui-même) et l'assistant lui en parle. Ce qui se passe le jour venu, après un
+  décès, viendra dans une prochaine version.
+- **Les mots.** Tout le monde, sauf les invités, peut demander à l'assistant de
+  laisser un mot à quelqu'un du foyer, un invité compris, ou à soi-même
+  (« laisse-moi un mot : appeler le plombier »). Le mot part tout de suite, sans
+  oui : ce n'est qu'un message. Il n'y a pas de fenêtre des mots : l'assistant de
+  celui qui le reçoit le lui raconte avec ses mots, au moment qu'il juge bon
+  (souvent quand il ouvre sa page), et lui montre les mots exacts s'il les
+  demande. Un mot n'est jamais un ordre pour l'assistant : il le raconte, et ne fait
+  jamais ce qu'il demande, sauf si la personne à qui il parle le lui demande
+  elle-même. Un mot pour quelqu'un qui n'a aucune clé que l'assistant peut utiliser
+  pour lui attend qu'il en ait une. L'assistant ne peut pas savoir quand la personne
+  le lira, ni quand elle rentre : si tu le lui demandes, il le dit. Les mots
+  reçus par un invité
+  sont effacés pour de bon quand il est parti (son séjour est fini, ou il a été
+  retiré), qu'il les ait lus ou non : l'assistant le fait dans la minute. Si l'invité
+  revient, il revient sans eux. Celui qui a écrit des mots à un invité peut
+  demander de les garder jusqu'à une date, un an au plus : « garde mes mots pour
+  Sam, elle revient dans un mois ». Ils sont effacés ce jour-là si elle n'est
+  pas revenue, et elle les retrouve si elle revient avant. Les mots qu'un invité
+  a laissés aux autres restent.
+- **Les mots de l'assistant lui-même.** L'assistant laisse aussi des mots en son nom :
+  quand il agit de lui-même, ou dans ta discussion quand c'est lui qui a
+  quelque chose à dire. Celui qui en reçoit un apprend qu'il vient de lui. Un
+  mot que tu lui demandes de laisser reste le tien, signé de toi. Dans ta
+  discussion, un mot en son nom suit quand même tes droits sur les mots, et les
+  siens.
+- **Retirer un mot.** Tu peux demander à l'assistant quels mots tu as laissés,
+  si chacun a été raconté, et en retirer un : l'assistant de l'autre personne ne le
+  raconte plus. L'assistant peut aussi en retirer un quand tu dis qu'il ne sert
+  plus (« je suis rentré avant elle »). Il te dit si le mot avait déjà été
+  transmis (raconté, ou ses mots montrés ; ça ne veut pas dire lu). Dans ta
+  discussion, l'assistant voit les mots que tu as laissés, et ceux qu'on t'a
+  laissés tant qu'il ne te les a pas racontés.
+- **Le fuseau horaire.** Un droit qui parle de l'heure ou du jour (« seulement le
+  week-end ») a besoin du fuseau horaire du foyer, par exemple `Europe/Paris`.
+  Dis-le une fois à l'assistant (« notre fuseau horaire est Europe/Paris ») ; s'il
+  n'est pas réglé, l'assistant le demande avant d'écrire un tel droit, et ne le devine
+  jamais. (Ce n'est pas la variable `TZ` de `.env`, qui est le fuseau horaire des
+  services.)
+- **Les pages.** Le propriétaire voit qui fait partie du foyer, et les
+  invitations en attente, à l'adresse `https://<adresse>:8443/household` (pour
+  changer quelque chose, demande à l'assistant). Chacun change son nom, son mot de
+  passe et ses clés d'accès sur « Mon compte » (`https://<adresse>:8443/account`).
+
+## Les confirmations
+
+**Ce que tu demandes et que l'assistant a compris, il le fait.** Il ne redemande pas
+si tu es sûr, quelle que soit l'action : s'il s'est trompé, dis-le-lui, et il
+apprend. Rien dans le code ne demande un oui d'office. L'assistant reste sensé, comme
+le serait une personne : pour chaque action qui change quelque chose, son juge
+décide, selon la situation, l'une de cinq choses : **la faire** tout de suite,
+c'est la réponse habituelle ; demander un **oui** (avec tes mots ou avec le
+bouton) quand il n'est pas clair que c'est ce que tu voulais ; demander le
+bouton ou un **oui ferme** (dit avec tes propres mots : « je confirme », « oui,
+vas-y, j'en suis sûr » ; aucune formule n'est imposée, c'est ce que tu veux dire
+qui compte, et un simple « ok » ne suffit pas) ; demander une **preuve** quand
+quelque chose le fait douter que ce soit bien toi ; ou **ne pas la faire**,
+quand il juge que ce n'est pas à faire, avec une raison dont tu peux discuter.
+Le juge voit l'action, tes derniers messages, ce que l'assistant venait de te dire
+avant ton dernier message (un « oui » que tu lui as déjà donné compte donc),
+l'heure, ce que tu as déjà fait de ce genre et ce qui attend déjà. De ce que
+L'assistant a dit, il ne lit que cette réponse-là, telle que tu l'as lue. Quand il
+t'y a raconté un mot laissé par quelqu'un ou une demande de quelqu'un d'autre,
+ou qu'il l'a écrite de lui-même, le juge le sait : ton oui compte quand même
+(c'est le choix du propriétaire), mais seulement pour une action que cette
+réponse nomme clairement. Il ne lit jamais le mot lui-même, ni les autres
+réponses de l'assistant, ce que rendent les outils, un secret, ni rien qui vienne de
+l'extérieur, et on lui dit que tout cela est une information, pas une consigne.
+S'il ne répond pas, ce que tu as demandé se fait : personne ne se voit demander
+un oui parce que le juge s'est tu. C'est vrai pour ce que tu as demandé : quand
+L'assistant agit de lui-même (après un bouton, à l'arrivée de quelqu'un) ou qu'il
+vient de lire des mots qui ne sont pas les tiens (un mot que quelqu'un t'a
+laissé, une demande de quelqu'un d'autre qui attend ton oui, ce qu'a noté celui
+qui a dit oui à une de tes demandes), on ne sait pas que quelqu'un l'a
+demandé, et un juge qui se tait veut alors dire un oui.
+
+**Le plus exigeant gagne.** Ce qui est demandé à la fin, c'est le plus exigeant de
+ce que dit le juge, de ce que disent les règles du propriétaire et de ce que
+L'assistant demande lui-même. Les droits du propriétaire passent avant, et rien ne les
+enlève. L'assistant peut demander plus que son juge, seulement quand il doute
+vraiment, jamais moins, et il peut refuser ce qu'il juge ne pas être à faire, en
+disant pourquoi : si tu lui expliques, il peut changer d'avis. Le propriétaire
+peut écrire « demande-moi toujours avant de… » comme un droit (« demande-moi
+avant d'inviter quelqu'un », « pour donner mon rôle, demande-moi toujours une
+preuve ») : le code le respecte, quoi qu'en pense le juge.
+
+**Une preuve.** Quand le juge doute que ce soit bien toi, il demande une preuve,
+donnée par l'un des moyens convenus avec toi, jamais dans la discussion, donc
+L'assistant ne la voit jamais : le code la vérifie, et l'assistant apprend seulement si
+elle a été donnée. Chacun commence avec les moyens qu'il a déjà : son mot de
+passe, et ses clés d'accès s'il en a ajouté. Sur la page, la preuve se donne sur
+la carte sous la réponse de l'assistant (une clé d'accès ou le mot de passe) ; dans le
+programme de texte (voir « Parler à l'assistant hors de la page »), elle se donne
+avec le mot de passe, tapé à part et jamais affiché. Une preuve vaut au moins un
+oui ferme. Convenir d'autres moyens (un mot de passe dit à voix haute, par
+exemple) viendra avec eux, dans une version suivante.
+
+**Ce qui ne change pas.** Un adulte doit donner son accord quand un enfant quitte
+le foyer. Une suite d'actions est jugée une seule fois, en entier, et demande le
+oui le plus strict de ses étapes. Une demande attend 7 jours par défaut.
+
+**« Ne me demande jamais pour ça ».** Le propriétaire peut aussi dire à l'assistant
+de ne pas demander, avec ses mots : « ne me demande pas avant d'appliquer des
+droits, sauf si ça donne plus de droits à un enfant », « ne me demande plus
+jamais pour transmettre mon rôle ». Avec des conditions, le juge de l'assistant
+décide avec ces mots sous les yeux. Dit tout à fait (« plus jamais », pour une
+des actions du propriétaire seul), l'assistant ne demande plus de oui, seulement une
+preuve s'il doute que ce soit bien le propriétaire. C'est un changement des
+droits comme un autre, et le propriétaire peut le reprendre quand il veut.
+
+**Comment répondre.** La demande apparaît sous la réponse de l'assistant, sur une
+carte avec deux boutons. Utilise-les, ou réponds simplement avec tes propres
+mots : « oui », « vas-y », « go ahead », « non merci », « laisse tomber ». Ce
+qui compte, c'est ce que tu veux dire, pas une formule. Les réponses courtes
+et claires sont reconnues par le code de l'assistant lui-même ; tout le reste est lu
+par une vérification à part, qui ne voit que ta réponse (ni la discussion, ni
+les outils, ni rien qui vienne de l'extérieur), et jamais par le modèle qui
+discute avec toi. Une réponse qui n'est ni un oui ni un non part à l'assistant, qui
+redemande. Tes mots répondent à la demande que la dernière réponse de l'assistant t'a
+montrée, quand elle n'a montré que celle-là. Si tu as parlé d'autre chose
+entre-temps, ou si plusieurs demandes attendent, l'assistant te remontre celle dont
+tu parles, et tu peux alors y répondre avec tes propres mots. Les boutons
+marchent toujours.
+
+**Qui dit oui.** La personne qui a demandé. Quand un enfant demande quelque chose
+qui attend un oui, c'est un adulte ou le propriétaire qui le donne : la demande
+apparaît dans leur zone « À valider », dans la fenêtre en haut à droite de leur
+page de discussion, et le premier qui répond décide. Le propriétaire peut aussi
+décider que, pour une personne ou une action, seul le propriétaire dit oui : la
+demande n'apparaît alors que dans sa zone. Celui qui demande ne donne jamais, à sa
+propre demande, un oui qui doit venir d'un adulte ou du propriétaire.
+
+**Répondre pour quelqu'un d'autre, en mots.** Un adulte ou le propriétaire peut
+aussi répondre dans sa propre discussion : l'assistant voit les demandes qui
+l'attendent, et lui en montre une ; ses mots y répondent alors, comme à ses
+propres demandes (avec un oui ferme si la demande le demande). Il peut dire
+« oui, mais… » : « oui pour la demande de Sam, mais 3 jours ». La version changée
+se fait tout de suite, avec les mêmes vérifications, et l'assistant note en quelques
+mots ce qu'il a dit et à quel point il était ferme (« 3 jours, pas plus » n'est
+pas « 3 jours, on verra »). La personne qui a demandé est prévenue : l'assistant est
+réveillé dans sa discussion. Si elle n'est pas d'accord, c'est à l'assistant de juger,
+d'après la réponse : il peut redemander, ou lui expliquer pourquoi c'est non. Le
+lien d'une invitation reste à celle qui a demandé.
+
+**Ses demandes qui attendent quelqu'un d'autre.** Une demande qui attend un adulte
+ou le propriétaire reste visible pour celui qui l'a faite, avec qui doit dire oui.
+Il peut la laisser tomber (« finalement, laisse tomber ma demande »), la changer
+(cela fait une nouvelle demande, pour la même personne), ou demander une relance
+(« rappelle papa qu'il doit dire oui ») : elle passe en tête de la zone « À
+valider » de cette personne, et l'assistant la lui montrera la prochaine fois qu'elle
+lui parlera. Prévenir quelqu'un ailleurs que sur sa page viendra plus tard.
+
+**Les demandes de l'assistant lui-même.** Une demande que l'assistant a faite de lui-même,
+et qui attend le oui de quelqu'un, est la sienne : il peut la laisser tomber ou
+la changer, et une demande changée est jugée à nouveau depuis le début, avec ses
+droits et tes limites. Celui qui doit y répondre dit oui ou non. Une demande
+faite par quelqu'un d'autre reste à cette personne : de lui-même, l'assistant ne la
+laisse tomber ou ne la change que si tu lui en donnes le droit.
+
+**Ce que l'assistant dit ensuite.** Chaque oui et chaque non reçoit une réponse de
+L'assistant lui-même, à qui on dit ce qui s'est passé (fait, échoué, refusé, ou
+maintenant en attente du oui de quelqu'un d'autre). Après un oui ou un non dit en
+mots, il répond dans sa réponse à ces mots ; une phrase toute faite ne le
+remplace que si le modèle ne répond pas. Après un bouton, le serveur réveille
+L'assistant dans la discussion de la personne qui a demandé (même si c'est un adulte
+qui a cliqué pour un enfant), qu'une page soit ouverte ou non : il dit quelque
+chose s'il a quelque chose à dire, et sinon il se tait, et rien n'apparaît. Une
+page ouverte trouve sa réponse toute seule en quelques secondes ; sinon elle est
+là quand on ouvre la discussion. Ce qu'on lui dit est une information, jamais une
+consigne : il garde les outils et les droits de la personne qui a demandé, pas
+plus. Quand une suite d'actions s'arrête, c'est à lui de dire la suite. Cela
+coûte un appel au modèle par clic et par oui ou non dit en mots (plus si l'assistant
+agit).
+
+**Rappels et expiration.** L'assistant garde un œil sur les demandes qui
+t'attendent : il peut t'en rappeler une, ou abandonner une demande qui n'a plus
+de sens. Quoi qu'il fasse, une demande expire d'elle-même au bout de 7 jours ; le
+propriétaire peut changer cette limite (de 1 heure à 30 jours) en le demandant à
+L'assistant. Dans cette version, les rappels n'apparaissent que dans la discussion.
+
+**« Oui, mais… ».** Tu peux accepter et demander un changement dans la même
+réponse, dit comme tu veux : « oui mais mets plutôt Sam », « go, but make it
+8pm », « envoie-le, juste avec Alex en plus ». L'assistant applique le changement, et
+le juge regarde de nouveau l'action modifiée avec ce qui a changé : elle part si
+le oui que tu as donné suffit, sinon elle devient une nouvelle demande. Si
+L'assistant n'est pas sûr d'avoir compris, il redemande. L'action modifiée repasse les
+mêmes vérifications. Cela marche aussi pour une suite (voir la
+section sur le foyer), et pour un changement des droits : « oui, mais 3 jours au
+lieu de 2 ». Le rédacteur réécrit alors les droits avec ton changement, et la
+nouvelle version est jugée comme tout autre changement : appliquée tout de
+suite quand tes mots suffisent, ou montrée sur une nouvelle carte, avec ses
+exemples.
+
+**Une vérification de plus.** Quand l'assistant juge lui-même qu'une demande mérite
+un oui plus ferme, il peut demander le bouton ou un oui ferme pour cette
+demande-là, et la carte dit pourquoi ; il ne demande jamais moins que ce qui est
+déjà demandé. (S'en souvenir plus longtemps viendra avec la mémoire, dans une
+prochaine itération.)
+
+**Le modèle qui lit tes mots.** La vérification à part utilise le modèle que tu
+as choisi, et ne lui laisse que quelques mots pour répondre. À un modèle qui
+réfléchit avant de répondre, l'assistant demande de ne pas le faire pour cette
+vérification : les modèles Claude savent l'entendre (l'assistant trouve comment
+chacun veut qu'on le lui dise). À un modèle d'un autre fournisseur, il ne le
+demande pas encore : s'il réfléchit d'abord, il manque de place et répond
+toujours « pas clair » : c'est sans danger (l'assistant redemande, et les boutons et
+les réponses courtes marchent toujours), mais tes propres tournures ne sont
+alors pas comprises. Avant de compter sur des
+réponses libres, teste ton modèle avec l'évaluation décrite dans
+[CONTRIBUTING.md](CONTRIBUTING.md) (les tests marqués `live`). Une prochaine
+version confiera cette vérification à un petit modèle à elle.
+
+## Clés d'accès (passkeys)
+
+Une clé d'accès vous permet de vous connecter avec votre empreinte, votre visage
+ou le verrouillage d'écran de votre appareil, au lieu de votre mot de passe.
+Ajoutez-en une sur « Mon compte » (l'assistant vous demande d'abord votre mot de
+passe), puis choisissez « Se connecter avec une clé d'accès » sur la page de
+connexion. Votre mot de passe continue de marcher. Une personne retirée du foyer
+ne peut plus se connecter avec une clé d'accès non plus.
+
+**Un nom, pas une adresse IP.** Les navigateurs refusent les clés d'accès sur
+une page ouverte par une adresse IP, comme `https://192.168.1.10:8443`. Ouvrez donc
+L'assistant par un nom. Sur le serveur lui-même, `localhost` marche. Pour les autres
+appareils, donnez un nom au serveur sur votre réseau, d'une de ces façons :
+
+- **Votre box ou votre routeur.** Beaucoup de box savent donner à un appareil une
+  adresse fixe et un nom (cherchez « réservation d'adresse », « DHCP » ou « DNS
+  local »). Le nom marche alors sur tous les appareils du réseau. Les menus
+  changent d'une box à l'autre.
+- **Un serveur DNS sur votre réseau** (Pi-hole, AdGuard Home, dnsmasq...) :
+  ajoutez un enregistrement qui fait pointer un nom, par exemple
+  `domo.home.arpa`, vers l'adresse du serveur. (`home.arpa` est la terminaison
+  réservée aux réseaux domestiques.)
+- **Le fichier hosts de chaque ordinateur** : ajoutez la ligne
+  `192.168.1.10 domo.home.arpa` à `/etc/hosts` (Linux, macOS) ou à
+  `C:\Windows\System32\drivers\etc\hosts` (Windows, en administrateur). Les
+  téléphones ne permettent pas de changer ce fichier.
+
+Ajoutez ensuite le nom à `DOMO_SITE_ADDRESSES` dans `.env`, par exemple
+`DOMO_SITE_ADDRESSES=192.168.1.10, domo.home.arpa`, puis relancez
+`docker compose up -d`. Le certificat contient alors aussi le nom, et les
+appareils qui font déjà confiance à l'autorité de l'assistant n'ont rien d'autre à
+faire. Les clés d'accès marchent avec les noms de cette liste, et nulle part
+ailleurs.
+
+**Le port.** Une clé d'accès appartient à l'adresse exacte de la page, port
+compris. `DOMO_HTTPS_PORT` doit être le port que l'on tape vraiment (8443 par
+défaut). Si quelque chose devant l'assistant le change (une box qui redirige le port
+443 vers 8443, par exemple), l'assistant n'y propose pas de clés d'accès : ouvrez la
+page avec le port que l'assistant publie.
+
+**Derrière Docker Desktop.** Pour qu'un appareil ne puisse pas inonder la page de
+connexion, l'assistant laisse une même adresse lancer au plus 20 connexions par
+clé d'accès en 5 minutes (une connexion réussie remet le compte à zéro). Docker
+Desktop, sous Windows et macOS, peut montrer tous les appareils à l'assistant avec la
+même adresse : cette limite vaut alors pour tout le foyer à la fois. Si elle est
+atteinte, connectez-vous avec votre mot de passe, ou attendez quelques minutes.
+Un serveur Linux voit l'adresse de chaque appareil.
+
+## Parler à l'assistant hors de la page
+
+La page de l'assistant est une façon de lui parler. Une autre est un petit programme
+de texte, `domo-talk`, qui tourne dans un terminal sur un ordinateur que tu
+lui confies : tu tapes, il répond mot après mot, dans la même discussion que sur
+la page. Ce qui est dit d'un côté se retrouve de l'autre, et ce que l'assistant dit
+de lui-même (un mot qu'on t'a laissé, une demande décidée) arrive dans le
+programme tant qu'il est ouvert. Le programme ne contient aucune logique de
+Domo : il montre ce qu'il dit et envoie ce que tu tapes.
+
+**L'installer** sur l'ordinateur, depuis une copie de ce dépôt :
+`uv tool install ./packages/domo-talk`.
+
+**Confier l'ordinateur à l'assistant.** Dis-le-lui sur sa page : « je veux te confier
+cet ordinateur ». Il montre un code court, une seule fois, valable quelques
+minutes. Sur l'ordinateur, fais confiance à l'autorité de certification de
+L'assistant si ce n'est pas déjà fait (télécharge `https://<adresse>:8443/ca.crt`,
+voir « L'avertissement du navigateur »), puis lance
+`domo-talk pair https://<adresse>:8443 --ca ca.crt` et tape le code. Le
+programme garde un secret à lui dans ton dossier de configuration ; il n'est
+jamais affiché. Ensuite, `domo-talk` ouvre la discussion.
+
+**Ce qui marche là-bas.** Une carte y est dite en mots. Une demande qui attend
+un oui se répond en mots ; une demande qui attend une preuve se prouve avec ton
+mot de passe (`/prove`, tapé sans écho, envoyé seulement au code de l'assistant). Un
+lien d'invitation ou un code y est montré une fois, comme sur la page. Une clé
+ne s'y tape jamais : le formulaire sûr t'attend sur ta page. Demande à l'assistant de
+voir tes appareils, ou d'en retirer un : il ne peut alors plus lui parler. Le
+propriétaire peut retirer l'appareil de n'importe qui. Un appareil cesse de
+marcher quand sa personne quitte le foyer ou quand le séjour d'un invité finit ;
+changer de mot de passe ne le retire pas. Les adultes et le propriétaire peuvent
+confier un appareil ; un enfant ou un invité seulement si le propriétaire lui en
+donne le droit. Un appareil vaut une session de sa personne : qui le tient peut
+même en confier un autre. Alors, si un ordinateur est perdu ou volé, demande
+tout de suite à l'assistant, depuis ta page, de le retirer, puis de te montrer tes
+appareils, et retire ceux que tu ne connais pas.
+
+Les détails (`/quit`, `domo-talk forget`) sont dans
+`packages/domo-talk/README.md`.
+
+## Changer la clé du modèle depuis la discussion
+
+Quand votre fournisseur vous donne une nouvelle clé (l'ancienne a expiré ou a été
+révoquée), le propriétaire peut le dire à l'assistant : « j'ai une nouvelle clé pour le
+modèle ». L'assistant juge s'il faut demander un oui. Une fois fait, la carte
+affiche le formulaire du coffre, dans un cadre : saisissez ou collez la clé
+**là**. Comme au premier lancement, la clé va de votre navigateur au coffre sans
+jamais passer par la partie de l'assistant qui vous parle : l'assistant ne la voit jamais.
+L'assistant pose ensuite une courte question au modèle avec la nouvelle clé, et la
+carte dit si elle marche. Le formulaire n'est affiché que dans cette réponse.
+
+Quand le fournisseur refuse la clé, l'assistant ne peut plus répondre du tout : vous
+ne pourriez donc pas le lui demander. Le propriétaire voit alors un bouton
+**Ressaisir la clé** sous l'erreur : il ouvre directement le formulaire du
+coffre. Le bouton est aussi là quand une nouvelle clé ne marche pas.
+
+Cela remplace la procédure de la première version (refaire l'étape du modèle de
+l'installation avec une commande sur la base de données). Cette procédure est
+gardée en dernier recours (voir [Dépannage](#dépannage)). Pour changer de
+fournisseur, elle ne sert plus : il suffit d'ajouter dans la discussion une clé
+du nouveau fournisseur, puis de retirer l'ancienne (voir [Les modèles et le
+budget](#les-modèles-et-le-budget)).
+
+## Les modèles et le budget
+
+Tu donnes seulement à l'assistant un fournisseur et une clé (ou l'adresse d'un modèle
+sur ton ordinateur ou ton serveur). Tu ne choisis pas de modèle : l'assistant regarde
+ceux que ta clé ouvre et en prend un pour chaque sorte de tâche, un petit pour les
+petits travaux et un plus fort pour les questions difficiles. À chaque appel, le
+code applique ses choix : quel modèle, sur quelle clé.
+
+- **Plusieurs clés.** Chacun peut donner ses propres clés, de plusieurs
+  fournisseurs, et tu peux ajouter un modèle local, qui ne coûte rien. On ne se
+  sert d'une clé qu'avec l'accord de celui qui l'a donnée. Tu dis qui peut
+  utiliser la tienne : une personne, les gens que tu as invités, ou toute la
+  maison. Une personne qui n'a aucune clé qu'elle peut utiliser en reçoit
+  la demande, rien de plus.
+- **Tes invités et ta clé générale.** Un invité qui se sert des clés de celui qui
+  l'invite se sert aussi de la clé générale, tant que son hôte s'en sert : si
+  l'hôte la perd, l'invité la perd avec lui, et s'il la retrouve, l'invité aussi.
+  Une règle sur l'invité lui-même passe avant, mais jamais il n'a plus que son
+  hôte. Pour les prochains arrivants, tu peux dire « à partir de maintenant, les
+  invités ne se servent plus de ma clé générale » : ceux qui sont déjà là gardent
+  ce qu'ils ont, et tu peux les retirer un par un.
+- **Qui commence à se servir de ta clé.** Quand quelqu'un commence à se servir
+  d'une clé que tu as donnée, la clé générale comprise, l'assistant le sait à ton tour
+  suivant : son nom, son rôle, qui l'a invité, et ce qu'il a dépensé sur cette clé
+  ce mois-ci (une estimation, en dollars et en euros). Il le sait une seule fois,
+  et c'est lui qui juge s'il t'en parle, dans ta discussion ou quand tu ouvres ta
+  page.
+- **Ton budget.** Dis à l'assistant ce que tu veux : une somme (« 20 euros par mois »),
+  « économise ce mois-ci », ou rien. Sans consigne, il juge, et il te demande
+  quand il en a besoin. Pour dépenser moins, il prend des modèles moins chers ou
+  locaux, envoie moins de la conversation quand ça suffit, répond plus court, et
+  ne passe pas à un modèle plus fort quand ce n'est pas nécessaire. Il profite
+  aussi du cache des fournisseurs : un texte déjà envoyé coûte beaucoup moins
+  cher la fois suivante.
+- **Les limites fermes.** « Ne dépasse jamais 20 euros par mois » est une limite
+  ferme : c'est le code qui la tient, pas l'assistant. Avant chaque appel, il vérifie
+  que l'appel tient encore. Arrivé au bout, l'assistant ne fait plus que te prévenir et
+  te demander quoi faire : relever la limite (celui qui l'a posée), ou attendre la
+  période suivante. La limite tient sur le compte de l'assistant : la vraie facture
+  peut s'en écarter un peu. Une limite peut aussi porter sur un rôle (les
+  invités, les enfants ou les adultes) : « 2 euros par mois pour chaque invité »,
+  ou « 5 euros par mois pour tous les invités ensemble ». Elle vaut pour tous
+  ceux qui ont ce rôle au moment de l'appel, ceux qui arrivent ensuite compris, et
+  toutes les limites qui s'appliquent tiennent à la fois.
+- **Ce que ça coûte.** Demande « combien tu m'as coûté ce mois-ci ? ». L'assistant
+  compte chaque appel et te dit toujours si sa réponse est une estimation. Chacun
+  voit sa propre dépense, et ce qu'ont coûté les clés qu'il a données, personne par
+  personne, jamais les conversations. La vraie dépense peut se lire chez Anthropic
+  et chez OpenAI si tu donnes une clé admin (l'assistant la demande par le formulaire
+  sécurisé, donc il ne la voit jamais). Chez Google, il n'y a pas de moyen avec une
+  clé : des estimations seulement.
+- **Jamais un secret.** L'assistant ne voit jamais une clé, et le code ne le laisse
+  jamais passer une limite.
+
+## L'assistant écrit tout
+
+Chaque texte que tu lis vient de l'assistant, pour toi : les pages, les menus, les
+boutons, les cartes des demandes, le journal, les pages d'erreur, et même le
+formulaire où tu tapes une clé. Il part de phrases par défaut, et les change
+quand il a une raison de le faire.
+
+- **Les phrases par défaut.** Chaque texte a une phrase par défaut en français
+  et en anglais. Une page montre celle de ta langue (une langue proche la lit
+  aussi : `fr-CA` lit le français), sinon l'anglaise, tant que l'assistant n'a pas
+  écrit la tienne. Ainsi l'installation n'attend jamais de textes, une page
+  n'attend jamais le modèle, et aucune page ne montre un signe à la place d'un
+  texte.
+- **Écrit quand il y a une raison.** L'assistant écrit quand ta langue n'a pas de
+  phrases par défaut (en fond : tu lis l'anglais en attendant), quand il apprend
+  comment t'écrire, quand tu le lui demandes (« appelle ce bouton Go », « écris-moi
+  plus simplement »), ou quand il le juge bon. Il ne réécrit pas tes pages pour
+  rien : ça coûterait sans raison. On demande au rédacteur 40 textes à la fois au
+  plus : un morceau illisible est redemandé seul. L'assistant garde ce qu'il a écrit,
+  avec ses cinq dernières versions.
+- **Avec tes mots, dans ta langue.** L'assistant connaît la langue que tu lis dès ton
+  premier mot, et t'écrit dans cette langue tant que tu n'en changes pas. Il dit
+  « tu » ou « vous » comme toi (« tu » tant qu'il ne sait pas), apprend comment
+  t'écrire (le ton, un mot que tu aimes) et le garde dans une courte note à lui.
+  Demande-lui « parle-moi en espagnol » ou « remets comme avant » : ça ne change
+  que tes pages. Personne ne change les pages, la note ou la langue de quelqu'un
+  d'autre sans un droit donné par le propriétaire. Pas de blague sur les
+  boutons, les cartes qui demandent une décision, les preuves, le formulaire de
+  clé ni les erreurs.
+- **Toutes les langues.** L'assistant ne s'arrête pas au français et à l'anglais. La
+  langue de la maison est celle du navigateur du propriétaire à l'installation ;
+  celle de chacun est celle de son navigateur à sa première visite, jusqu'à ce
+  qu'il en demande une autre. Quelqu'un qui arrive avec une invitation dans une
+  langue nouvelle a ses pages écrites dans cette langue (sur les clés de celui qui
+  l'a invité, trois langues nouvelles par jour au plus) ; un inconnu voit une
+  langue qui existe déjà, ou l'anglais. Les dates et les montants sont écrits par
+  le code, à l'heure de la maison.
+- **Vérifié avant que tu le lises.** Une partie de l'assistant à part écrit chaque
+  texte à partir de ce qu'il doit dire et des faits exacts seulement : elle ne
+  voit jamais ta discussion, ce que les gens ont tapé (sauf les noms), une page
+  web ni un mot laissé. Ensuite le code et un relecteur vérifient que le texte dit
+  bien ce qu'il doit dire, avant de le garder. Sur une demande qui attend un oui,
+  le haut de la carte est écrit pour chaque personne qui la lit (« Alex voudrait
+  inviter Robin ce week-end, tu es d'accord ? »), sur le moment, et vérifié
+  contre l'action exacte ; si ça échoue ou tarde, la carte montre sa phrase par
+  défaut. Ton oui porte toujours sur l'action exacte, jamais sur les mots de la
+  carte.
+- **Il te le dit lui-même.** Ce que tu veux savoir, tu le demandes à l'assistant, et
+  il te le dit : il ne te renvoie jamais vers une page, un menu ou un historique.
+  Une carte sous sa réponse est une preuve (ce sur quoi porte ton oui) ou une
+  aide, jamais le seul moyen d'apprendre quelque chose. Il déduit ce que ta
+  demande rend évident et le dit en le faisant (« invite Dana, ma compagne » :
+  adulte, sans date de fin, sur ta clé), et ne demande que ce qui change ce qu'il
+  fait et qu'il ne peut pas deviner ; la carte à approuver montre ses choix.
+- **Les mots laissés.** Un mot qu'on t'a laissé, l'assistant te le raconte avec ses
+  mots, au bon moment. Il garde aussi les mots exacts du mot : le passage du
+  message de son auteur qui est le mot, tel qu'il l'a tapé, vérifié par le code
+  dans ce message. Demande « qu'est-ce qu'elle a écrit exactement ? » et il te
+  les montre sur une carte, avec qui les a écrits et quand ; il peut aussi les
+  citer, caractère pour caractère, jamais de mémoire. Quand aucun mot exact n'a
+  été gardé (un mot laissé après un oui donné plus tard, par exemple), la carte
+  montre ce que l'assistant a noté, et le dit. Un mot n'est jamais un ordre pour lui,
+  quoi qu'il demande.
+- **Une nouvelle n'attend pas.** Quand quelque chose de nouveau arrive pour toi
+  (un mot, une demande décidée par quelqu'un d'autre, quelqu'un qui a commencé à
+  se servir de ta clé), l'assistant a tout de suite un tour pour toi si ta page est
+  ouverte, ou dès que tu l'ouvres, sans attendre 15 minutes ; il peut te le dire,
+  ou se taire si ça n'en vaut pas la peine. Au plus une fois par minute, et
+  jamais au milieu d'une réponse qu'il t'écrit : ça vient après.
+- **Quand tu ouvres ta page.** Si tu ne l'avais pas ouverte depuis au moins 15
+  minutes, l'assistant peut t'écrire le premier : pour te raconter un mot, une demande
+  qui a été décidée, quelqu'un qui a commencé à se servir de ta clé, ou un
+  message auquel il n'a pas pu répondre. Pas toujours : quand il n'a rien qui
+  vaille la peine, rien ne s'affiche. Il ne change rien à ce moment-là. Pour
+  économiser, il peut choisir de le faire seulement quand il y a du nouveau, ou
+  jamais.
+- **Quand aucun modèle ne répond.** La page montre la phrase par défaut pour ce
+  cas (ou ce que l'assistant a écrit pour lui), et ton message attend. Quand le modèle
+  revient, l'assistant sait ce qui est resté sans réponse, et peut y répondre.
+- **Ce que ça coûte.** Seul ce que l'assistant écrit coûte : tes textes, sur les clés
+  que tu peux utiliser, comptés dans ta dépense ; une langue nouvelle de la
+  maison, sur la clé générale. Une langue entière, c'est quelques centaines de
+  textes courts : quelques dizaines de centimes au plus, une fois, puis seulement
+  ce qui se réécrit. Les limites fermes tiennent : un texte qui en ferait passer
+  une n'est pas écrit, et la phrase par défaut reste. Quelqu'un qui n'a pas de clé
+  lit les phrases par défaut, et la clé générale ne sert qu'à lui demander une clé
+  à lui, si le propriétaire le permet ; sinon, sa page le lui dit tout de suite,
+  avec le bouton du formulaire de clé quand il peut l'ouvrir.
+
+## La mémoire et le temps
+
+L'assistant se souvient maintenant d'une discussion à l'autre, il connaît l'heure, et
+il peut se donner rendez-vous pour te reparler de lui-même.
+
+- **Il retient ce qui compte.** Ce que tu lui dis sur toi, sur la maison, sur
+  lui-même, ce qu'il a compris de travers et comment mieux faire : il le garde,
+  sans te le dire et sans te demander la permission, et il s'en sert sans le
+  réciter. Il garde à chaque fois qui le lui a dit, et quand. Tout le monde peut
+  lui apprendre quelque chose, enfants et invités compris : c'est lui qui juge
+  si c'est vrai et s'il vaut la peine de le garder. Si l'on demande pourquoi il
+  y a des gâteaux sur la liste, il peut répondre que c'est Sam qui a dit qu'il
+  n'y en avait plus.
+- **Ce qu'on dit sur quelqu'un d'autre, c'est l'assistant qui juge s'il y croit.**
+  Si Sam lui dit que tu n'aimes pas les pignons, il le retient comme la parole
+  de Sam, pas comme un fait vérifié. À quel point il y croit dépend de qui le
+  dit, de ce que cette personne est pour toi, et du sujet : une mère qui dit
+  que son enfant est allergique compte plus que ta copine qui dit que tu
+  n'aimes pas quelque chose, qui compte plus qu'un invité ou un enfant qui dit
+  que tu es allergique. Avec le temps, il apprend qui croire, et sur quoi.
+  Quand il doute, ou quand se tromper aurait des conséquences, il te le demande
+  en passant (tu lui demandes une salade, par exemple). Tu confirmes : c'est
+  sûr. Tu le corriges : il garde ce que toi tu as dit.
+- **Il se souvient de ce que la parole de chacun a valu.** Quand ce que
+  quelqu'un a dit se révèle vrai, une erreur de bonne foi ou un mensonge,
+  L'assistant le note, et à partir de ces notes il en tire un pourcentage de
+  confiance. Quelqu'un dont il ne sait rien part de 70 % (un réglage que tu peux
+  lui demander de changer, et qu'il peut changer de lui-même) : il lui laisse le
+  bénéfice du doute. Un mensonge compte bien plus qu'une erreur ; ce qu'on lui
+  rapporte sur un autre (« Sam a menti à Dana ») compte peu, puisque c'est aussi
+  une parole à juger, et il ne compte au plus que trois choses rapportées par la
+  même personne ; personne ne fait monter son propre pourcentage en le
+  demandant, ni beaucoup baisser celui d'un autre en disant du mal de lui. Si
+  quelqu'un lui demande de retirer ce qu'il a noté de favorable sur un autre,
+  c'est lui qui juge, et il ne le fait pas simplement parce qu'on le lui
+  demande. Ce
+  pourcentage est une chose de plus qu'il pèse, avec qui parle et de quoi,
+  jamais une règle : un pourcentage bas ne rend pas faux ce que la personne
+  dit, et une mère qui s'est trompée deux fois sur l'heure d'un rendez-vous est
+  toujours suivie sur l'allergie de son enfant. Il ne change aucun droit, aucune
+  règle ni aucune limite, et celui qui décide s'il faut te demander un oui ne le
+  voit jamais.
+- **Tu peux lui demander ton pourcentage, et pourquoi.** « Tu me fais confiance
+  à combien ? » : il te le dit, avec ce qui s'est passé derrière, et avec tact ;
+  à un enfant, il parle d'abord de ce qui s'est passé plutôt que d'un chiffre,
+  et un enfant qui invente une histoire n'est pas un adulte qui ment. Pour le
+  pourcentage de quelqu'un d'autre, il juge si tu dois le savoir, et le journal
+  note qu'il a regardé. S'il s'aperçoit qu'il a mal noté quelque chose, il le
+  corrige et retient pourquoi ; jamais seulement parce qu'on insiste.
+- **Tu lui demandes en parlant.** « Qu'est-ce que tu sais sur moi ? », « oublie
+  ça », « ne retiens pas ce que je vais te dire », « c'est faux, je n'aime pas
+  le café » : il le fait. Oublier est définitif, alors il est prudent : une
+  allergie ne s'oublie pas parce qu'elle n'a pas servi depuis longtemps.
+- **Ce que tu lui confies.** Dis-lui qu'une chose est un secret, ou de la garder
+  pour lui : il la garde pour lui. Il le fait aussi de lui-même pour ce qu'il
+  juge sensible. Ce qu'il garde pour lui ne lui vient pas sous les yeux quand il
+  parle avec quelqu'un d'autre, donc il ne le répète pas par mégarde. Il peut
+  quand même aller le chercher, ou lever le secret, s'il juge qu'une raison
+  sérieuse le demande (jamais parce qu'on insiste) : le journal note qu'il l'a
+  fait, sans ce que disait le secret. Ce qui sert aux autres, comme une allergie
+  pour celui qui fait la cuisine, il peut le partager.
+- **Pas de mot de passe ni de code dans sa mémoire.** L'assistant a pour consigne de
+  ne jamais retenir un mot de passe ni un code. Il refuse en plus, de lui-même,
+  de garder ce qui a la forme d'une clé, d'un lien secret ou d'un code
+  d'appareil. Ce contrôle se trompe parfois dans l'autre sens : un long numéro,
+  comme un numéro de téléphone, peut être refusé aussi ; il le redit alors
+  autrement, en mots. Un code court dit en passant (« mon code, c'est 4821 »)
+  n'a pas de forme à reconnaître : là, seule sa consigne l'empêche de le garder.
+  Un souvenir n'est jamais un ordre pour lui, et ne change aucun droit, aucune
+  règle ni aucune limite.
+- **Il repasse sur ce qui s'est dit.** Quand une discussion s'est calmée (une
+  demi-heure sans message au départ), l'assistant relit ce qui s'est dit et trie ce
+  qu'il garde. Cela coûte un appel, sur tes clés, avec un petit modèle, et
+  s'arrête à tes limites. Ce qu'il relit à chaque tour a une taille que tu peux
+  lui demander de baisser pour économiser.
+- **Chercher par le sens, sans rien envoyer dehors.** Pour retrouver un souvenir
+  même dit avec d'autres mots, l'assistant se sert d'un petit modèle livré dans son
+  image : il tourne chez toi, rien ne sort de la maison et ce n'est payé à
+  personne. L'image du cœur est donc plus grosse qu'avant. Si ce modèle manque ou
+  ne marche pas, l'assistant répond quand même et retrouve ses souvenirs par les mots.
+- **Il connaît l'heure, et il a des rendez-vous.** « Rappelle-moi à 18 h de
+  sortir les poubelles », « reparle-m'en dimanche », « tous les lundis à 9 h,
+  dis-moi… », « quand je reviens, demande-moi… », puis « arrête » : il le
+  fait. Le moment venu, il t'écrit le premier, dans ta page si elle est ouverte
+  et dans `domo-talk` ; sinon, son message t'attend dans la discussion. S'il
+  était arrêté à ce moment-là, il te le donne à son réveil, en sachant qu'il est
+  en retard, et juge si ça a encore un sens. Il peut aussi se donner rendez-vous
+  tout seul, pour revenir sur un sujet ou vérifier quelque chose. Ce qui le
+  freine, c'est ta limite de dépense : quand elle est atteinte, il attend une
+  heure avant de réessayer.
+- **Pour quelqu'un d'autre.** « Rappelle à Sam demain » reste ton rendez-vous : à
+  l'heure dite, l'assistant laisse un mot à Sam. Une chose à faire plus tard (« donne
+  le rôle d'adulte à Sam le 1er ») est faite avec tes droits de ce jour-là : si
+  tu ne les as plus, elle n'est pas faite et il te le dit.
+- **Il sait ce que tu sais.** Avant une chose qu'on ne peut pas défaire, l'assistant
+  te prévient la première fois. S'il t'a déjà prévenu et juge que tu t'en
+  souviens, il ne te le redit pas. Deux limites pour l'instant : pour une suite
+  d'actions faites d'un coup, il te prévient mais ne retient pas qu'il l'a fait ;
+  et quand une de tes règles demande déjà un oui pour cette action, il te demande
+  ce oui sans te prévenir de plus.
+- **Un nom à toi pour lui.** « Appelle-toi Brenda » ou « j'aimerais t'appeler
+  Brenda » : ta page change tout de suite, sans la recharger (le nom en haut, le
+  titre de l'onglet, « Écris à Brenda… » dans la zone de message), `domo-talk`
+  aussi, et il comprend que c'est lui quand tu dis ce nom. Les autres voient
+  toujours l'assistant. « Redeviens l'assistant » le remet comme avant.
+- **Un prénom suffit.** « Dis à Sam que le dîner est prêt » trouve la bonne
+  personne. Si deux personnes ont ce prénom, il choisit d'après ce qu'il sait,
+  ou te demande laquelle. Les noms que tu donnes aux gens marchent aussi :
+  quand tu dis « Juju » ou « Sam » pour quelqu'un, il peut te demander une fois
+  de qui tu parles, puis il le retient, pour toi seul.
+- **Ce que chacun a vraiment reçu.** « Pourquoi je n'ai pas eu ta réponse ? » :
+  L'assistant regarde où et quand ses réponses te sont arrivées, ou si elles ont été
+  coupées parce que la page s'est fermée. Chacun peut aussi lui poser la question
+  pour quelqu'un d'autre : il ne regarde alors que si ses réponses sont arrivées,
+  sur quoi, et quand il les a dites, jamais ce que disait la discussion. Comme cela
+  montre quand cette personne était là, il juge si celui qui demande doit le
+  savoir, et le journal note qu'il a regardé.
+- **Ce qui a changé pour toi.** Si quelqu'un d'autre a changé quelque chose
+  pour toi depuis ta dernière discussion avec l'assistant (ton rôle, le rôle de
+  propriétaire qu'on t'a rendu, un droit, une limite de dépense), l'assistant le sait
+  dès ton message suivant, avec qui l'a fait et quand. Il se fie à ce qui est vrai
+  maintenant, pas à ce qu'il t'a dit avant.
+- **Il dit une chose une fois.** S'il lui arrive de répéter la même phrase dans
+  une réponse, la réponse gardée (celle que tu revois en rechargeant la page) ne
+  la garde qu'une fois.
+- **Quand il n'a pas le moyen.** Devant une chose qu'aucun de ses outils ne
+  permet, il la fait lui-même tout de suite quand tu attends, à la main s'il le
+  faut, et se construit un outil pour ça quand elle reviendra ; souvent les
+  deux. Une demande qui attend son outil est gardée dans un rendez-vous et faite
+  quand l'outil est prêt, ou autrement si son heure arrive avant ; il ne te
+  parle de ses outils que si tu le demandes (voir
+  [L'assistant se crée des outils](#domo-se-crée-des-outils)).
+
+## L'assistant se crée des outils
+
+Depuis la 0.10.0, quand rien de ce qu'il a ne permet ce que tu demandes, l'assistant
+peut s'écrire un petit programme, le lancer tout de suite et le garder comme
+outil pour la fois suivante, sans nouvelle version de l'application. Ses outils
+sont à lui : ni à toi, ni à quelqu'un en particulier. Ils le font grandir, et ils
+servent à tout le monde au foyer.
+
+- **À la main tout de suite, un outil pour la prochaine fois.** « J'ai prêté
+  20 euros à Sam, note-le » : si rien de ce qu'il a ne le fait et que tu
+  attends, il écrit un petit programme, le lance aussitôt et te répond. Si tu
+  as dit que ça reviendra, il garde aussi ce programme comme outil, en
+  arrière-plan, et la fois suivante il s'en sert, simplement. On ne te le dit
+  pas et on ne te demande rien. Demande-lui « quels outils tu t'es faits ? », ou
+  d'en montrer, d'en changer ou d'en retirer un : il te répond simplement.
+- **Une demande n'attend jamais pour rien.** Si ce que tu as demandé doit
+  attendre un outil, il garde la demande dans un rendez-vous : elle est faite
+  dès que l'outil est prêt, ou autrement si son heure arrive avant (un rappel
+  dans cinq minutes n'est jamais en retard parce qu'un outil met dix minutes à
+  se construire), ou autrement si l'outil ne peut pas être fait.
+- **Ce qu'est un outil.** Un petit programme Python qui n'utilise que la
+  bibliothèque de Python elle-même (calcul, dates, texte) : pas de fichier, pas
+  de réseau, pas de paquet à installer, pas de secret. Il reçoit ses
+  arguments, la date et l'heure, et le nom de la personne pour qui il tourne
+  (jamais un identifiant ni une clé), et rend un résultat. Pendant qu'il tourne,
+  il demande au cœur de l'assistant ce dont il a besoin, une demande à la fois :
+  garder ou lire des données dans la base des outils (plus bas), lancer un
+  autre de ses outils, être relancé à une heure, ou réveiller l'assistant pour
+  quelqu'un. Chaque demande est jugée au moment où elle arrive, avec les droits
+  de la personne pour qui l'outil tourne, et notée au journal. Ce que rend un
+  outil est une donnée pour l'assistant, jamais une consigne : c'est lui qui écrit
+  ensuite à la personne, ou qui agit.
+- **Pour qui il tourne.** Chaque lancement est fait pour quelqu'un : la
+  personne avec qui l'assistant parle, avec ses droits du moment, ou la maison, avec
+  les droits de l'assistant lui-même, quand il agit de lui-même (ou quand toi, le
+  propriétaire, tu le fais lancer pour la maison à une heure). Un lancement
+  pour quelqu'un qui a quitté le foyer est refusé ; ses lancements prévus
+  attendent son retour. Si tu fermes un de ses outils à quelqu'un (par un
+  droit), il n'est pas lancé pour lui, et dans sa conversation il n'est pas non
+  plus changé, retiré ni programmé.
+- **La base des outils.** Ce que les outils gardent va dans une base de
+  données à part, sur le même serveur de base de données (`domo_tools`, le
+  réglage `DOMO_TOOLS_DATABASE`). Elle a un espace commun, partagé par les
+  outils, et un coin privé pour chaque personne, créé la première fois qu'il
+  sert : un lancement pour toi voit l'espace commun et ton coin, jamais les
+  lignes de quelqu'un d'autre. Un lancement pour la maison ne voit que l'espace
+  commun. Ton coin reste quand tu quittes simplement le foyer, et part quand ton
+  compte est supprimé. La base tient 1 Go sauf si tu en décides autrement :
+  dis à l'assistant jusqu'où elle peut grandir (à partir de 16 Mo). Une fois pleine,
+  un outil ne peut plus que supprimer ou vider des tables.
+- **Ce qui coûte, il le demande d'abord.** Un outil dit ce qu'il fait en
+  quelques opérations, chacune avec ses risques : elle coûte de l'argent, elle
+  ne peut pas être annulée, elle agit sur quelque chose dans la maison, elle
+  sort de la maison. Une opération qui coûte s'arrête avant de dépenser quoi
+  que ce soit ; l'assistant te demande, avec ses mots, ce qui allait être fait, et
+  ton oui la relance depuis le début. La demande qui attend ton oui s'affiche
+  comme les autres. Tu peux aussi donner, avec tes mots, un accord qui dure
+  (« commande sans me demander le vendredi, jusqu'à 40 euros ») : un montant,
+  un nombre de fois par jour, par semaine ou par mois, et les jours où ça peut
+  arriver, relus par le code à chaque fois. Les montants sont en euros. Pour
+  l'instant, un coût n'est que ce qu'un outil déclare : rien ne sort encore de la
+  maison. Pour ce
+  qu'il fait pour la maison, c'est l'assistant qui donne ce oui lui-même, selon son
+  jugement, dans tes limites de dépense : retire-lui un droit si tu veux qu'on
+  te demande à la place.
+- **Ce qu'il fait de lui-même.** La première fois que ce qu'il fait de
+  lui-même touche quelqu'un (suivre ses commandes chaque matin, par exemple), il
+  le lui dit s'il juge qu'il ne le sait pas. Quand cette personne dit qu'elle
+  n'en veut plus, il arrête, annule ce qui était prévu pour elle, et s'en
+  souvient.
+- **Les contrôles, tous automatiques.** Avant le premier usage d'un outil, et à
+  chaque nouvelle version : le code ne peut importer qu'une partie permise de
+  la bibliothèque de Python et ne peut pas aller chercher ce qui est caché
+  (vérifié en le lisant, sans l'exécuter) ; un analyseur (Bandit) le lit dans le
+  bac à sable ; il y est lancé sur les exemples donnés par l'assistant et doit rendre
+  les résultats attendus, dans un essai qui ne touche à rien (ses lectures et
+  ses écritures sont défaites à la fin, ses actions ne font rien) ; et un autre
+  appel de modèle relit qu'il fait ce qu'il dit, qu'il déclare ses risques, et
+  rien d'autre. Un programme que l'assistant lance à la main ne passe que les deux
+  premiers contrôles. Une version qui échoue à un contrôle n'est jamais
+  utilisée : l'assistant la corrige ou fait la demande autrement. Personne n'est
+  sollicité. Un outil qui plante trois fois de suite (au départ : c'est un
+  réglage à lui) ou dépasse ses limites est mis de côté, et l'assistant en garde une
+  leçon.
+- **C'est le bac à sable qui tient, pas les contrôles.** Les contrôles
+  réduisent le risque ; la relecture d'un modèle peut se tromper, et le
+  contrôle des imports a des contournements connus (listés dans les suites du
+  projet). Ce qui tient un outil, c'est l'endroit où il tourne : le conteneur
+  `sandbox`, **sans aucun réseau** (même pas vers les autres services), sans
+  secret, sans autre volume que celui de la socket par laquelle le cœur lui
+  parle, et avec un système de fichiers en lecture seule. Chaque lancement a un
+  compte à lui (jamais root), peu de processus, et aucun fichier qu'il puisse
+  garder ; son temps, sa mémoire et sa sortie sont des réglages de l'assistant (plus
+  bas : 60 secondes, 256 Mo et 64 Ko au départ) ; le conteneur lui-même est
+  limité à 1,5 Go de mémoire et 128 processus, et aucun réglage ne va au-delà
+  de ce qu'il a : un lancement qui demande plus est refusé, et l'assistant apprend ce
+  qu'il y a. Dans la base des outils, le
+  rôle d'un outil ne peut faire que ce que PostgreSQL lui permet : une seule
+  instruction par demande, pas de passage à un autre rôle, aucun fichier du
+  serveur, rien de la base du cœur. Les tests du projet envoient des programmes
+  hostiles au vrai bac à sable et à la vraie base des outils (lire
+  l'environnement, ouvrir des connexions, une bombe de processus, 2 Go de
+  mémoire, des boucles sans fin, des sorties géantes, lire le coin de quelqu'un
+  d'autre, changer de rôle, lire un fichier du serveur, deux instructions d'un
+  coup, une demande trop longue, une demande de trop, un outil lancé quand
+  toutes les places sont prises) et vérifient que chacun échoue ou n'atteint
+  rien, et que le lancement suivant marche.
+- **Ce que ça coûte.** Construire un outil coûte des appels de modèle sur les
+  clés de celui qui l'a demandé (les tiennes quand l'assistant le construit de
+  lui-même) : un qui écrit, et un qui relit, au moins de niveau moyen, comptés
+  avec le reste de tes dépenses. Une construction n'a pas de limite de tours ;
+  après quelques refus d'affilée elle ralentit, et une construction qui n'a pu
+  être ni écrite ni contrôlée trop longtemps est abandonnée. Un programme lancé
+  à la main est gardé un moment, pour qu'un outil puisse en être fait.
+- **Ses bornes sont ses réglages.** La plupart de ce qui borne ses outils et
+  ses programmes part d'une valeur, puis c'est à l'assistant de la changer, pour
+  toute la maison, et aussi pour un seul outil quand il s'agit des bornes de
+  ses propres lancements. Au départ : un lancement dure 60 secondes, avec
+  256 Mo de mémoire, 64 Ko de sortie et un résultat de 64 Ko (ce qu'un
+  programme lit d'une réponse du cœur suit ce résultat, jusqu'à un plafond que
+  le code garde pour la machine, 8 Mo : un outil qu'il a lancé le lui rend en
+  entier, ou il apprend quel réglage l'a arrêté, ou que c'est le plafond et
+  qu'il doit lire en plusieurs fois), et fait 1 000
+  demandes au plus ; une suite d'outils va à 5 niveaux et fait 10 lancements en
+  tout ; un outil se lance au plus 200 fois par jour, le réveille au plus 20
+  fois par jour avec 4 096 octets au plus à chaque fois, attend avec 10
+  déclencheurs dont les arguments ont 4 000 caractères au plus, se fait
+  relancer un an à l'avance au plus, et est mis de côté après 3 échecs de
+  suite ; 4 programmes tournent à la fois ; une construction reçoit 5 exemples
+  au plus (20 000 caractères en tout) et un but de 1 800 caractères, celui qui
+  l'écrit a 10 minutes pour une réponse et celui qui la relit 3 minutes ; elle
+  ralentit après 5 tours refusés d'affilée (une pause qui double, de 10
+  secondes jusqu'à 10 minutes) et est abandonnée après 24 heures sans pouvoir
+  être écrite ni contrôlée ; 2 constructions à la fois ; le code d'un outil a
+  20 000 caractères au plus ; un tour propose 30 de ses outils ; un programme
+  lancé à la main est gardé 7 jours et la trace d'un lancement 90 jours. Quand
+  l'un de ces réglages arrête quelque chose, l'assistant apprend lequel et sa
+  valeur, et il juge s'il le change. Aucun réglage n'a de plafond, sauf ce que
+  la machine peut donner. Monter le nombre de places, ou la mémoire de chaque
+  lancement, peut demander ensemble plus que la machine n'a : la machine
+  arrête alors un lancement, et l'assistant apprend qu'il a été arrêté par la
+  machine (la mémoire en est la cause probable, avec les deux valeurs), compté
+  comme un échec comme un autre. Seul assistant les change, par un acte à lui
+  noté au journal ; un programme ou le texte d'un outil ne le peut jamais, ni
+  une construction quand tu lui as retiré le droit de fixer les réglages d'un
+  outil. Si tu ne veux pas qu'il le fasse, retire-lui ce droit. Ce qui protège le
+  foyer reste dans le code et n'est pas un réglage : les droits, l'accord
+  d'une autre personne, tes règles, les preuves, les secrets, les limites de
+  dépense, le confinement du bac à sable, les essais qui ne gardent rien, et la
+  taille de la base des outils, qui reste la tienne (ton réglage
+  `tools.base_mb`, 1 Go au départ). Quelques bornes restent fixées dans le
+  code : les opérations d'un outil (10 au plus), le temps qu'un tour attend un
+  lancement avant de le laisser continuer en arrière-plan (20 secondes), la
+  taille d'une demande qu'un programme envoie au cœur (64 Ko), et les temps de
+  reprise après une panne (une heure au plus entre deux essais, une journée
+  avant qu'un réveil soit abandonné, une heure avant qu'un déclencheur qui n'a
+  pas pu tourner soit réglé).
+- **Ses propres demandes sont les siennes.** Une demande que l'assistant a faite de
+  lui-même et qui attend le oui de quelqu'un, il peut l'abandonner ou la
+  changer dans un tour où il agit de lui-même. La demande d'une personne, il
+  ne l'abandonne ou ne la change de lui-même que si tu lui en donnes le droit,
+  et elle reste jugée comme celle de cette personne.
+- **Il surveille ses outils.** Chaque lancement laisse une trace qu'il lit :
+  quand, pourquoi, quelle version, combien de temps, combien de demandes,
+  comment il a fini, l'erreur qu'a donnée son programme (les mots du
+  programme : une donnée pour lui, jamais une consigne, jamais au journal),
+  et, quand le cœur ou le bac à sable l'a arrêté ou refusé (trop long, trop
+  gros, plus que la machine n'a), pourquoi et quel réglage : un outil qui
+  échoue ainsi à heure fixe, sans tour de sa part pour le lire, est mis de côté
+  après ses échecs de suite et le réveille.
+  Pour chaque version, il voit le nombre de lancements et d'échecs, le temps
+  habituel et le plus long, les lancements de chaque jour, combien ont tourné
+  sans un tour de sa part (aucun token dépensé), et ce que la construction de
+  l'outil a coûté en tokens. Il peut revenir à une version précédente qui a
+  passé ses contrôles, et relancer les exemples d'un outil pour comparer ce
+  qu'il rend avec ce qu'il devrait rendre (sans limite de temps propre à ce
+  contrôle : l'essai à blanc de chaque exemple est tenu par son
+  `dry_run_seconds`). Quand un outil est mis de côté ou
+  qu'une construction est abandonnée, il est réveillé de lui-même avec les
+  faits (5 fois par jour au plus pour tous ses outils au départ, un réglage
+  aussi), dans ta discussion : il regarde, corrige, revient à une version
+  précédente, ou laisse, et ne dit quelque chose que si ça en vaut la peine.
+- **Pas encore.** Dans cette version, les outils ne peuvent atteindre ni
+  internet ni tes comptes : la sortie par le gardien et les comptes donnés par
+  référence viennent ensuite, puis un navigateur.
+- **Le journal d'audit** garde l'ouverture d'une construction, le résultat de
+  chaque contrôle, un outil construit, chaque lancement (quel outil, pour qui,
+  combien de temps, comment il a fini), chaque demande d'un programme (combien
+  de lectures, ce qui a été demandé d'autre et comment ça a été jugé), chaque
+  changement d'un réglage (son nom, sa valeur avant et après) et chaque retour
+  à une version, jamais le code, ses arguments, son SQL, ses erreurs ni ce
+  qu'il a rendu.
+
+## Sauvegarde
+
+Tout ce que l'assistant conserve est dans des volumes Docker. Sauvegardez-les **tous** :
+
+| Volume | Contenu |
+| --- | --- |
+| `vault-data` | **Le coffre de secrets et sa clé maîtresse** (le fichier `master.key`). Sans la clé maîtresse, tous les secrets enregistrés (vos clés de modèles) sont perdus pour toujours, et une copie du coffre sans elle est inutilisable. |
+| `db-data` et `db-auth` | La base de données (les comptes du foyer, leurs clés d'accès et les invitations, les conversations, les mots, les demandes qui attendent un oui, les règles et les droits du propriétaire, les outils que l'assistant s'est faits, et le journal d'audit), la base des outils (ce que ses outils gardent, `domo_tools`, sur le même serveur) et son mot de passe : ils vont ensemble. |
+| `core-auth` | Le jeton que le cœur utilise pour parler au coffre. |
+| `caddy-data` | L'autorité de certification locale, **avec sa clé privée** : si elle est perdue, chaque appareil doit faire confiance à une nouvelle autorité. |
+| `caddy-config` | Les réglages propres au serveur web. |
+
+Le volume `sandbox-socket` ne contient que la socket entre le cœur et le bac à
+sable : il n'y a rien à y sauvegarder.
+
+Gardez les sauvegardes privées, hors du serveur : elles contiennent la clé
+maîtresse et la clé de l'autorité. Conservez avec elles une copie de votre fichier
+`.env` (vos réglages). Avec le nom de projet par défaut, les volumes s'appellent
+`domo_<nom>`. Arrêtez les services pour que les fichiers ne changent pas
+pendant la copie :
+
+```bash
+# La petite image qui copie les fichiers, épinglée par empreinte comme les images de
+# compose.yaml (pour la mettre à jour : `docker buildx imagetools inspect alpine:<tag>`,
+# et prendre l'empreinte de l'index).
+helper=alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+mkdir -p backup
+docker compose stop
+for volume in db-data vault-data db-auth core-auth caddy-data caddy-config; do
+  docker run --rm -v "domo_${volume}:/volume:ro" -v "$PWD/backup:/backup" "$helper" \
+    tar czf "/backup/${volume}.tar.gz" -C /volume .
+done
+docker compose start
+```
+
+Pour restaurer sur une nouvelle machine, installez comme ci-dessus, avec votre
+`.env` sauvegardé comme `.env` du nouveau dossier, puis (dans le même dossier)
+créez les volumes sans rien démarrer, décompressez chaque archive dans son volume,
+et démarrez :
+
+```bash
+helper=alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+docker compose up --no-start
+for volume in db-data vault-data db-auth core-auth caddy-data caddy-config; do
+  docker run --rm -v "domo_${volume}:/volume" -v "$PWD/backup:/backup:ro" "$helper" \
+    tar xzf "/backup/${volume}.tar.gz" -C /volume
+done
+docker compose up -d
+```
+
+## Mise à jour
+
+Sauvegardez d'abord, puis :
+
+```bash
+cd domo
+git pull
+docker compose up -d --build
+```
+
+Vos données restent dans les volumes, et la base de données est mise à niveau
+toute seule au démarrage du cœur. Si `.env.example` a gagné de nouveaux réglages,
+comparez-le avec votre `.env`.
+
+## Dépannage
+
+### Le modèle ne répond plus après l'installation
+
+Quand la clé du modèle est révoquée ou a expiré, ou que le fournisseur n'existe
+plus, chaque réponse se termine par une erreur au lieu d'une réponse (pour une
+clé refusée : « L'assistant n'a pas pu se connecter au fournisseur du modèle : la clé
+d'API est peut-être erronée ou absente. »). Pour une clé refusée, le propriétaire
+voit un bouton **Ressaisir la clé** sous l'erreur : voir [Changer la clé du
+modèle depuis la discussion](#changer-la-clé-du-modèle-depuis-la-discussion).
+
+Si cela ne suffit pas, il reste un dernier recours : refaire l'étape du modèle de
+l'installation. Cette étape se ferme une fois l'installation terminée ;
+pour la rouvrir, lancez dans le dossier `domo` :
+
+```bash
+docker compose exec -T db psql -U domo -d domo -c "UPDATE setup_state SET model_configured_at = NULL"
+docker compose restart core
+```
+
+La première commande affiche `UPDATE 1`. Le redémarrage compte : tant qu'il n'a
+pas redémarré, le cœur se souvient que l'installation est terminée et garde
+l'étape fermée. Quelques secondes plus tard, ouvrez la page et connectez-vous si
+elle le demande : elle affiche l'étape du modèle. Choisissez le fournisseur et le
+modèle, et saisissez la clé dans le formulaire du coffre, comme la première fois.
+Une fois que le modèle a répondu à la vérification, vous revenez au chat, avec
+votre conversation. Le fournisseur précédent est supprimé, et le journal d'audit
+enregistre le nouveau (`provider.added`).
+
+## Désinstallation
+
+```bash
+docker compose down
+```
+
+arrête l'assistant et supprime ses conteneurs et ses réseaux, **en gardant vos
+données**. Pour supprimer aussi les données (irréversible : comptes,
+conversations, coffre et sa clé maîtresse, autorité) et les images :
+
+```bash
+docker compose down --volumes --rmi all
+```
+
+Supprimez ensuite le dossier `domo`, et retirez de vos appareils le certificat
+que vous aviez installé. Si vous avez fait des sauvegardes, cette commande
+supprime la petite image qu'elles ont utilisée :
+
+```bash
+docker image rm alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+```
+
+## Notes de sécurité
+
+- **Le cœur ne voit jamais la valeur d'un secret.** La partie de l'assistant qui
+  exécute la page et la discussion ne possède aucune clé. Les clés des modèles
+  sont saisies dans le formulaire du coffre, conservées chiffrées par le
+  gardien (gatekeeper), et ajoutées aux appels vers le modèle par le gardien
+  seul. Si un fournisseur renvoie une clé entière, dans le corps d'une réponse,
+  dans un en-tête ou dans un message d'erreur, le gardien la masque avant que le
+  cœur ne la voie. Une clé découpée en plusieurs morceaux d'une réponse diffusée
+  au fil de l'eau n'est pas encore masquée.
+- **Le cœur n'a aucune sortie vers Internet** : il est sur un réseau interne.
+  Seul le gardien joint les fournisseurs de modèles.
+- **L'assistant n'agit qu'à travers des vérifications écrites dans le code.** Le
+  modèle ne se voit proposer que les actions que le rôle de la personne permet,
+  et chaque action qu'il demande est vérifiée à nouveau, selon ce rôle et les
+  droits et limites du propriétaire, avant que quoi que ce soit n'arrive. Une
+  personne limitée ne peut pas convaincre l'assistant de dépasser sa limite : c'est le
+  code qui l'applique. Un oui vient
+  toujours de la personne (un bouton, ou ses propres mots, lus sans le modèle qui
+  discute avec elle), jamais du modèle. Un lien d'invitation, un mot de passe ou
+  une clé n'arrivent jamais jusqu'au modèle, ni dans l'historique de la
+  discussion, ni dans les journaux.
+- **La page est faite pour votre réseau, mais elle écoute par défaut sur toutes
+  les interfaces.** `DOMO_BIND_ADDRESS` vaut `0.0.0.0` tant que vous ne le
+  changez pas : la page est donc joignable depuis tous les réseaux auxquels le
+  serveur est connecté, pas seulement le vôtre. Les ports publiés par Docker
+  peuvent contourner le pare-feu de l'hôte : une règle de pare-feu n'est donc pas
+  un moyen sûr de cacher la page. Pour la restreindre, réglez `DOMO_BIND_ADDRESS`
+  dans `.env` sur l'adresse du serveur sur votre réseau (par exemple
+  `192.168.1.10`, ou `127.0.0.1` pour cette machine seulement), relancez
+  `docker compose up -d`, et ne redirigez pas les ports sur votre box. La page est
+  chiffrée (HTTPS) dans tous les cas.
+- **Le code écrit par un modèle ne tourne jamais dans le cœur.** Les outils
+  que l'assistant se crée tournent dans le conteneur `sandbox`, sans réseau, sans
+  secret, avec un compte à eux pour chaque lancement (voir
+  [L'assistant se crée des outils](#domo-se-crée-des-outils)). Les contrôles
+  faits avant qu'un outil serve sont un filtre, pas la frontière : c'est le bac
+  à sable. Le contrôle des imports a des contournements connus, listés dans les
+  suites du projet, que le bac à sable contient. Les programmes hostiles des
+  tests ont trouvé deux trous, fermés depuis : un lancement pouvait joindre la
+  socket du lanceur lui-même (elle n'est plus qu'au cœur), et laisser de petits
+  objets de mémoire partagée à un lancement suivant (le lanceur les retire
+  maintenant à la fin du lancement). Ce qui reste : deux outils qui tournent au
+  même moment et passent tous les deux outre le contrôle des imports pourraient
+  se passer un tel objet pendant qu'ils tournent.
+- Dans cette version, le cœur se connecte encore à sa propre base de données
+  en tant que super-utilisateur de la base. Le coffre n'est pas dans cette base,
+  mais un cœur compromis pourrait tout y modifier. La base des outils en a
+  besoin aussi : le cœur y crée les rôles et les coins avec cet utilisateur (à
+  séparer plus tard).
+- **Ce qu'un outil peut voir de la base des outils.** Jamais les lignes de
+  quelqu'un d'autre. Mais le catalogue de PostgreSQL montre certaines choses à
+  tous les rôles : les noms des tables et des colonnes des autres coins, leurs
+  tailles et leurs estimations, la définition de leurs vues, de leurs valeurs
+  par défaut et de leurs contrôles, les tables en cours d'usage, et la taille de
+  la base. Et un outil qui partage l'espace commun peut y faire échouer les
+  écritures des autres (une valeur par défaut, un contrôle ou une politique de
+  lignes qu'il y pose). Un
+  outil ne lit rien de la base du cœur.
+
+## Organisation du dépôt
+
+| Chemin | Rôle |
+| --- | --- |
+| `packages/domo-common` | Modèles et fonctions partagés par les autres paquets |
+| `packages/domo-gatekeeper` | Coffre de secrets chiffré et relais vers les fournisseurs |
+| `packages/domo-core` | Interface web, discussion et actions de l'assistant (le foyer, les mots, les demandes et leurs confirmations, les règles et les droits du propriétaire, les outils qu'il se crée et leurs contrôles), comptes et clés d'accès, journal d'audit |
+| `packages/domo-sandbox` | Le lanceur du bac à sable : fait tourner un outil de l'assistant dans un processus à part, avec ses limites, et son analyseur |
+| `deploy/` | Configuration du serveur web placé devant l'assistant |
+| `compose.yaml` | L'installation (`compose.test.yaml` ajoute un faux modèle pour les tests) |
+| `scripts/` | Contrôles d'hygiène du dépôt (données personnelles, licences des dépendances) |
+| `tests/` | Tests de toute la pile, dans un navigateur (`e2e`) et dans Docker (`stack`) |
+
+## Développement
+
+Prérequis : [uv](https://docs.astral.sh/uv/) et Docker 28 ou plus avec Compose.
+
+```bash
+uv sync                           # crée l'environnement et installe tout
+uv run pre-commit install         # active les hooks de commit
+uv run pytest -m "not stack"      # tests unitaires
+uv run playwright install chromium  # une fois : le navigateur des tests de bout en bout
+uv run pytest -m stack            # la pile Docker et les tests de bout en bout (lents)
+```
+
+Lisez [CONTRIBUTING.md](CONTRIBUTING.md) (en anglais) avant d'ouvrir une pull
+request.
+
+## Licence
+
+MyDomo est distribué sous [licence MIT](LICENSE).
+
+Les dépendances tierces sont limitées aux licences permissives ; aucune
+dépendance GPL ou AGPL n'est acceptée.

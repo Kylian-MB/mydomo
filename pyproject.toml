@@ -1,0 +1,52 @@
+# Root of the uv workspace. It is not a package itself: it only declares the
+# workspace members, the shared development tools and the tool configuration.
+
+[tool.uv]
+# Dependency cooldown: resolve only releases published before this date, at least 14 days
+# before the lock file was last updated (see "Updating dependencies" in CONTRIBUTING.md).
+exclude-newer = "2026-10-14T00:00:00Z"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "respx",
+    "testcontainers[postgres]",
+    "pytest-playwright",
+    "ruff",
+    "pyright",
+    "pip-licenses",
+    "pre-commit",
+    "httpx>=0.28.1",
+]
+# Only what the license check needs: it runs in an environment without the dev tools
+# (see scripts/check_licenses.py).
+licenses = ["pip-licenses"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "stack: needs the Docker Compose stack",
+    "live: asks a real model (EVAL_BASE_URL, EVAL_MODEL); skipped without them",
+]
+testpaths = ["tests", "packages"]
+# Makes the top-level `scripts` package importable from the tests.
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+# Python sources only: the Python snippets inside Markdown docs are illustrative.
+include = ["*.py", "*.pyi", "**/pyproject.toml"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+include = ["packages/*/src/**", "scripts"]
+strict = ["packages/*/src/**", "scripts"]

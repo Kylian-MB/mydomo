@@ -1,0 +1,11 @@
+{#- The form of a new key of one's own, from the chat (channels.page.key_routes, GET and POST of
+    KEY_NEW_PATH): the same form as the first launch's (fragments/model_form.html: the kind of
+    provider, the address of a server of one's own, whether it takes a key, in the words the assistant
+    wrote: ``chat.key.new``), posted to
+    ``form_url`` (the page, with the request whose yes it is for, if any). What comes back takes
+    the place of this whole block: the vault form in its frame (fragments/key_form.html), what the
+    check of a server without a key found, or this form again with what is wrong. -#}
+<div class="key-new" data-key-new>
+  <p class="muted">{{ t("chat.key.new.intro") }}</p>
+{% with form_target = "closest .key-new", form_swap = "outerHTML", form_texts = "chat.key.new" %}{% include "fragments/model_form.html" %}{% endwith %}
+</div>

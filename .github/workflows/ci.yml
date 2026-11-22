@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Fail instead of silently updating uv.lock.
+  UV_LOCKED: "1"
+
+jobs:
+  lint:
+    name: Lint and type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.12.9"
+          enable-cache: true
+      - run: uv sync
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pyright
+
+  unit:
+    name: Unit tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.12.9"
+          enable-cache: true
+      - run: uv sync
+      - run: uv run pytest -m "not stack"
+
+  licenses:
+    name: Dependency licenses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.12.9"
+          enable-cache: true
+      # Runtime dependencies only: the dev tools are not distributed.
+      - run: uv run --isolated --no-default-groups --group licenses python scripts/check_licenses.py
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+      # SHA-256 of gitleaks_8.30.1_linux_x64.tar.gz, from the release's checksums file.
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks
+        run: |
+          curl -sSfL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum --check -
+          tar -xzf gitleaks.tar.gz gitleaks
+      - name: Scan the full history
+        run: ./gitleaks git --redact --verbose
+
+  stack:
+    name: Docker Compose stack tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.12.9"
+          enable-cache: true
+      - name: Require Docker 28 or later
+        run: |
+          docker version
+          docker compose version
+          test "$(docker version --format '{{.Server.Version}}' | cut -d. -f1)" -ge 28
+      - run: uv sync
+      # The browser of the end-to-end tests (tests/e2e), from Playwright's own download, with the
+      # system libraries it needs.
+      - run: uv run playwright install --with-deps chromium
+      - run: uv run pytest -m stack

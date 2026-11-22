@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}{{ t("chat.title") }}{% endblock %}
+{% block content %}
+    <section class="chat">
+      <h1 class="visually-hidden">{{ t("chat.title") }}</h1>
+{#- For an adult or the owner, the requests of others that wait for their yes ("#approvals"), in
+    a window that stays in view wherever the conversation is scrolled to (the page opens at its
+    end): at the top right, under the top bar and its logout button, on a larger screen; at the
+    top of the screen on a phone (app.css). It is a fragment the page asks for itself, once it is
+    loaded and every 15 seconds (a plain trigger: htmx runs without allowEval, where a filter is
+    silently always true). It is empty when there is nothing to show, and for anyone who cannot
+    answer a request: the window then takes no room. The notes left for the person have no zone:
+    The assistant tells them in the conversation, and shows their exact words on a card (spec 4.8). -#}
+      <div class="popups">
+        <div id="approvals" class="chat-zone" hx-get="/approvals" hx-trigger="load, every 15s" hx-swap="innerHTML"></div>
+      </div>
+{#- The conversation. A new pair of bubbles is added at the end of it (htmx), and the reply
+    fills its bubble as it streams (see fragments/message.html). The bubbles that came otherwise
+    (what the assistant said when a button woke him) are added once they are over: chat.js asks for them
+    every five seconds, or for the whole conversation while it has none. A reply that the assistant is
+    writing on the server (``running``: this page left it and came back, or a wake writes it, or
+    his turn when the page opened, conversation.starts) shows him writing, at the end, until it is over.
+    No fixed welcome: when the page opens, the assistant says something himself, if he wants to. -#}
+      <div id="messages" class="messages" role="log" aria-live="polite">
+{% for message in messages %}
+{% with live = false %}
+{% include "fragments/message.html" %}
+{% endwith %}
+{% endfor %}
+{% if running %}
+{% with message = running, live = false, writing = true %}
+{% include "fragments/message.html" %}
+{% endwith %}
+{% endif %}
+      </div>
+{#- Where a refusal (a message that cannot be sent yet, say) is shown; at once, for someone
+    without a key the assistant may use for them when the general key does not serve to ask them for one
+    (``no_key``): the message a message of theirs would get, with the button of the form of a key
+    of their own when they may open it (``key_new_url``). -#}
+      <div id="chat-notice" class="chat-notice" role="alert">{% if no_key %}{% with key = "chat.error.no_key", params = {} %}{% include "fragments/chat_notice.html" %}{% endwith %}{% endif %}</div>
+      <form id="chat-form" class="chat-form" method="post" action="/chat/messages"
+            hx-post="/chat/messages" hx-target="#messages" hx-swap="beforeend"
+            hx-disabled-elt="find button">
+        <label class="visually-hidden" for="chat-text">{{ t("chat.input.label") }}</label>
+        <textarea id="chat-text" name="text" rows="2" maxlength="{{ max_length }}" required
+                  placeholder="{{ t('chat.input.placeholder', domo=domo) }}" autocomplete="off"></textarea>
+        <button type="submit" class="primary" data-action="send">{{ t("chat.send") }}</button>
+      </form>
+    </section>
+    <script src="{{ static_url('chat.js') }}" defer></script>
+{#- What speaks to the passkey of a card that asks a proof (fragments/confirmation_card.html):
+    those cards come with the page, the stream and the approvals zone, whenever they come. -#}
+    <script src="{{ static_url('passkeys.js') }}" defer></script>
+{% endblock %}

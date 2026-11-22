@@ -1,0 +1,4 @@
+{#- The "Enter the admin key" button: it posts to ``admin_url`` (channels.page.key_routes: the form of the
+    admin key of one's own key, with the request whose yes it is for) and htmx puts the form, in
+    its frame, in the place of this block. Only the one who asked is shown it, on their card. -#}
+<div class="key-rekey"><button type="button" class="primary" data-action="admin-key" hx-post="{{ admin_url }}" hx-target="closest .key-rekey" hx-swap="outerHTML">{{ t("chat.key.action.admin") }}</button></div>

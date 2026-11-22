@@ -1,0 +1,269 @@
+# Domo, the whole installation: `docker compose up -d` (Docker 28 or later).
+#
+# Settings come from a .env file next to this one (see .env.example). Without one, the page
+# answers on https://localhost:8443.
+#
+# Services
+#   init        one-shot: creates the instance's secrets (the database password and the core's
+#               token) in their volumes, the first time; never changes them afterwards.
+#   db          PostgreSQL 17 with pgvector.
+#   gatekeeper  the vault and the relay to the model providers: the only service that reaches
+#               the Internet.
+#   core        the web page, the chat, the accounts and the audit trail.
+#   sandbox     runs the small programs the assistant writes for himself, each in a process of its own,
+#               with limits; no network at all. The core reaches it through a Unix socket.
+#   edge        Caddy: HTTPS with a local certificate authority; the only published ports.
+#
+# Networks
+#   lan       bridge     edge                         where the ports are published
+#   core_net  internal   edge, core, gatekeeper, db   no way out, not even to the host
+#   egress    bridge     gatekeeper                   the way to the Internet
+#   (none)               sandbox                      network_mode none: no network of any kind
+#
+# The sandbox's limits (it runs four programs at once by default, 256 MB each):
+#   mem_limit 1536m   four runs of 256 MB, plus the launcher and its analyser (about 150 MB),
+#                     with some room. The launcher also caps each run's own memory; this wall
+#                     is the container's, so a run that gets past its cap cannot starve the host.
+#   pids_limit 128    four runs of at most 16 processes each (the launcher's own limit per run),
+#                     plus the launcher, its threads and the helpers that end a run. A fork
+#                     bomb stops at its own cap long before this one.
+#   memswap_limit     equal to mem_limit: no swap, so the memory wall is a real wall.
+# Docker Desktop for Windows enforces both through the cgroups of its Linux VM (checked, see the
+# tests of the stack). The root filesystem is read-only and /tmp is an empty, root-only tmpfs,
+# so a run keeps no file: the socket's volume is the only other place that can be written, and
+# no run's account can write there either (the socket's directory belongs to root).
+#
+# Third-party images, pinned by digest (to update one: `docker buildx imagetools inspect
+# <image>:<tag>`, and use the index digest):
+#   caddy:2                  Apache-2.0
+#   pgvector/pgvector:pg17   PostgreSQL License (PostgreSQL and pgvector)
+
+name: domo
+
+# The hardening shared by the core and the gatekeeper: read-only root filesystem (a tmpfs for
+# /tmp), no capability, no privilege gained through setuid binaries, an unprivileged user.
+x-hardened: &hardened
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  user: "10001:10001"
+  restart: unless-stopped
+
+x-core-build: &core-build
+  context: .
+  dockerfile: packages/domo-core/Dockerfile
+
+services:
+  init:
+    build: *core-build
+    command: ["python", "-m", "domo_core.init_secrets"]
+    # Root, for one reason only: giving each file to the user of the services that read it
+    # (chown). That is the only capability it keeps; no network, read-only root filesystem.
+    user: "0:0"
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    security_opt: ["no-new-privileges:true"]
+    network_mode: none
+    healthcheck:
+      disable: true
+    restart: "no"
+    environment:
+      TZ: ${TZ:-UTC}
+    volumes:
+      - db-auth:/run/domo/db-auth
+      - core-auth:/run/domo/core-auth
+
+  db:
+    image: pgvector/pgvector:pg17@sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    # POSTGRES_USER is a superuser of the instance: the first migration creates the `vector`
+    # extension, which takes one. (The image reads the password file only when it creates the
+    # database: db-data and db-auth go together.)
+    environment:
+      POSTGRES_USER: domo
+      POSTGRES_DB: domo
+      POSTGRES_PASSWORD_FILE: /run/domo/db-auth/db_password
+      TZ: ${TZ:-UTC}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - db-auth:/run/domo/db-auth:ro
+    networks:
+      - core_net
+    security_opt: ["no-new-privileges:true"]
+    # Over TCP: while the image initialises the database, its temporary server only listens on
+    # the Unix socket.
+    healthcheck:
+      test: ["CMD", "pg_isready", "--host=127.0.0.1", "--username=domo", "--dbname=domo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+      start_interval: 2s
+    restart: unless-stopped
+
+  gatekeeper:
+    <<: *hardened
+    build:
+      context: .
+      dockerfile: packages/domo-gatekeeper/Dockerfile
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    environment:
+      TZ: ${TZ:-UTC}
+    volumes:
+      - vault-data:/data
+      - core-auth:/run/domo/core-auth:ro
+    networks:
+      - core_net
+      - egress
+
+  sandbox:
+    build:
+      context: .
+      dockerfile: packages/domo-sandbox/Dockerfile
+    # Not `*hardened`: the launcher starts as root and gives each run its own account (uid and
+    # gid 20000-29999), so it keeps SETUID and SETGID, and nothing else (it ends a run through a
+    # helper that runs as that account, which needs no CAP_KILL). The tools it runs never are
+    # root. No network at all: nothing can be reached, and nothing reaches it but the socket.
+    user: "0:0"
+    # A reaper for the processes a run leaves behind when it is killed.
+    init: true
+    read_only: true
+    # Root-only and empty: a run (an account of its own) cannot write here, and nothing
+    # runs from here.
+    tmpfs:
+      - /tmp:size=8m,mode=0700,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID]
+    security_opt: ["no-new-privileges:true"]
+    network_mode: none
+    # No /dev/shm either: it is a writable tmpfs for everyone, where a run could keep a file.
+    ipc: none
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    pids_limit: 128
+    environment:
+      DOMO_SANDBOX_SOCKET: /run/domo/sandbox/launcher.sock
+      # The core's group (the gid of the core's `user`, x-hardened): the socket is root's and this group's (mode 0660),
+      # so the core reaches it and no run (an account of its own, in no other group) can.
+      DOMO_SANDBOX_CORE_GID: "10001"
+      TZ: ${TZ:-UTC}
+    volumes:
+      - sandbox-socket:/run/domo/sandbox
+    restart: unless-stopped
+
+  core:
+    <<: *hardened
+    build: *core-build
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+      gatekeeper:
+        condition: service_healthy
+    environment:
+      # The edge's address on core_net (see below): the only one whose X-Forwarded-* headers the
+      # core believes.
+      DOMO_TRUSTED_PROXIES: ${DOMO_CORE_NET_PREFIX:-10.247.81}.2
+      # The same list and port as the edge's: passkeys only work on the host names among them,
+      # and the origin they sign carries that port (never one a request names).
+      DOMO_SITE_ADDRESSES: ${DOMO_SITE_ADDRESSES:-localhost}
+      DOMO_HTTPS_PORT: ${DOMO_HTTPS_PORT:-8443}
+      # Seconds between two rounds of the core's upkeep (a chain paused until someone joins
+      # resumes at most that long after): a minute; the end-to-end tests make it shorter.
+      DOMO_UPKEEP_SECONDS: ${DOMO_UPKEEP_SECONDS:-60}
+      # Where the sandbox's launcher listens (the volume below, shared with it alone).
+      DOMO_SANDBOX_SOCKET: /run/domo/sandbox/launcher.sock
+      TZ: ${TZ:-UTC}
+    volumes:
+      - db-auth:/run/domo/db-auth:ro
+      - core-auth:/run/domo/core-auth:ro
+      - sandbox-socket:/run/domo/sandbox:ro
+    networks:
+      - core_net
+
+  edge:
+    image: caddy:2@sha256:5e5286cb37d44086d651a5363f05f43a692ce4d649d88fb1bd844579f45fa9e8
+    # Caddy, after choosing the certificate for pages opened by IP address (see start.sh).
+    command: ["/bin/sh", "/etc/caddy/start.sh"]
+    # Caddy runs as root in its image; without any capability but binding the low ports (when
+    # DOMO_HTTPS_PORT is 443, say). Its writable state is in its two volumes.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    # The same port inside and outside: Caddy builds its HTTP-to-HTTPS redirects from its own.
+    ports:
+      - "${DOMO_BIND_ADDRESS:-0.0.0.0}:${DOMO_HTTPS_PORT:-8443}:${DOMO_HTTPS_PORT:-8443}"
+      - "${DOMO_BIND_ADDRESS:-0.0.0.0}:${DOMO_HTTP_PORT:-8080}:${DOMO_HTTP_PORT:-8080}"
+    environment:
+      DOMO_HTTPS_PORT: ${DOMO_HTTPS_PORT:-8443}
+      DOMO_HTTP_PORT: ${DOMO_HTTP_PORT:-8080}
+      DOMO_SITE_ADDRESSES: ${DOMO_SITE_ADDRESSES:-localhost}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./deploy/edge/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy/edge/start.sh:/etc/caddy/start.sh:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      lan: {}
+      core_net:
+        # Fixed, so that the core can trust it by address (see DOMO_TRUSTED_PROXIES).
+        ipv4_address: ${DOMO_CORE_NET_PREFIX:-10.247.81}.2
+    # Caddy answers on its admin endpoint (inside the container only) and its local authority
+    # exists.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O /dev/null http://127.0.0.1:2019/config/ && test -s /data/caddy/pki/authorities/local/root.crt
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
+    restart: unless-stopped
+
+networks:
+  lan:
+    driver: bridge
+  # Internal: no route out of it. Its gateway is isolated (Docker 28 or later): the bridge gets
+  # no address on it, so the containers cannot reach the host's own services either.
+  #
+  # A fixed subnet, so that the edge has a fixed address. 10.247.81.0/24 is outside the ranges
+  # Docker hands out by default (172.17-31.x.x and 192.168.x.x) and rarely used by home networks.
+  # If it collides with a network of yours, set DOMO_CORE_NET_PREFIX in .env (the first three
+  # numbers of another /24), then `docker compose down` and `up -d` again.
+  core_net:
+    driver: bridge
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+    ipam:
+      config:
+        # Dynamic addresses in the upper half: the edge's fixed .2 is never taken by another.
+        - subnet: ${DOMO_CORE_NET_PREFIX:-10.247.81}.0/24
+          ip_range: ${DOMO_CORE_NET_PREFIX:-10.247.81}.128/25
+  egress:
+    driver: bridge
+
+volumes:
+  db-data:
+  # The vault and its master key: back it up, or the secrets are lost.
+  vault-data:
+  db-auth:
+  core-auth:
+  # The launcher's socket: mounted by the core and the sandbox only. Nothing secret in it.
+  sandbox-socket:
+  # The local certificate authority: losing it means trusting a new one on every device.
+  caddy-data:
+  caddy-config:

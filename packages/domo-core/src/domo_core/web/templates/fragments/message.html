@@ -1,0 +1,70 @@
+{#- One bubble of the conversation. ``message`` is a stored message; ``live`` is true for the reply
+    that was just opened; ``writing`` is true for a reply that the assistant is writing on the server and
+    that this page does not follow as it comes (the page was opened again, or a wake writes it):
+    the bubble shows him writing, its three dots and a line for screen readers, and chat.js puts
+    the reply in its place once it is over (spec 5.7.2). ``action_cards`` (when the page has them)
+    maps a reply's id to the cards of the actions it took.
+
+    The bubbles carry the classes "message user" and "message assistant", and the words are in
+    ".message-text": the end-to-end tests read them. Text is always output through autoescaping
+    (what a model wrote is as untrusted as what a person typed), and the stylesheet keeps its line
+    breaks. The cards of the actions the assistant took are under the words, in ".message-actions" (see
+    fragments/action_card.html); an action that asked for a yes shows its request instead, as it
+    is now (fragments/confirmation_card.html).
+
+    The live reply opens its stream as soon as htmx has put it in the page: "sse-connect" is the
+    stream, "sse-close" the event that closes it (the end, with or without an error), the "delta"
+    events are added to the end of ".message-text" as text (the server escapes them), the
+    "action" events (a card each, rendered by the server) to the end of ".message-actions", and
+    an "error" event fills ".message-note" (for the owner, a key the provider refuses comes with
+    the "Enter the key again" button, which puts the vault's form there: a block, so the live
+    note is a div).
+
+    The bubble of the assistant is labelled with the name the reader calls him by (``domo``, spec 6.7),
+    "Domo" for a fragment rendered without it. The live reply also has a hidden "frame" target:
+    once a turn changed that name, the stream says the new brand, title and placeholder of the
+    page there, before its end, and chat.js puts them in place (no swap). -#}
+{% set domo_name = domo if domo is defined else "Domo" %}
+{% if message.role == "user" %}
+<div class="message user" role="article" aria-label="{{ t('chat.author.user') }}" data-message-id="{{ message.id }}">
+  <div class="message-text">{{ message.content }}</div>
+</div>
+{% elif writing is defined and writing %}
+<div class="message assistant" role="article" aria-label="{{ t('chat.author.assistant', domo=domo_name) }}" aria-busy="true" data-writing="true" data-message-id="{{ message.id }}">
+  <div class="message-text"></div>
+  <span class="visually-hidden">{{ t("chat.status.writing", domo=domo_name) }}</span>
+</div>
+{% elif live is defined and live %}
+<div class="message assistant" role="article" aria-label="{{ t('chat.author.assistant', domo=domo_name) }}" aria-busy="true" data-message-id="{{ message.id }}"
+     hx-ext="sse" sse-connect="/chat/stream/{{ message.id }}" sse-close="done">
+  <div class="message-text" sse-swap="delta" hx-swap="beforeend"></div>
+  <div class="message-actions" role="group" aria-label="{{ t('chat.actions.label', domo=domo_name) }}" sse-swap="action" hx-swap="beforeend"></div>
+  <div class="message-note" role="alert" sse-swap="error"></div>
+  <div class="message-frame" hidden sse-swap="frame" hx-swap="none"></div>
+</div>
+{% else %}
+<div class="message assistant" role="article" aria-label="{{ t('chat.author.assistant', domo=domo_name) }}" data-message-id="{{ message.id }}">
+  <div class="message-text">{{ message.content }}</div>
+{% set cards = action_cards.get(message.id, []) if action_cards is defined else [] %}
+{% if cards %}
+  <div class="message-actions" role="group" aria-label="{{ t('chat.actions.label', domo=domo_name) }}">
+{% for item in cards %}
+{% if item.kind == "confirmation" %}
+{% with card = item %}
+{% include "fragments/confirmation_card.html" %}
+{% endwith %}
+{% else %}
+{% with action = item %}
+{% include "fragments/action_card.html" %}
+{% endwith %}
+{% endif %}
+{% endfor %}
+  </div>
+{% endif %}
+{% if message.status == "partial" %}
+  <p class="message-note">{{ t("chat.status.partial") }}</p>
+{% elif message.status == "error" %}
+  <p class="message-note">{{ t("chat.status.error") }}</p>
+{% endif %}
+</div>
+{% endif %}

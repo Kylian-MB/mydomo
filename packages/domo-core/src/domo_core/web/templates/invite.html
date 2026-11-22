@@ -1,0 +1,56 @@
+{#- Joining the household with an invitation, or coming back with a return link
+    (household/routes.py). ``invitation`` is the open invitation of the link, or none: the link
+    cannot be used (unknown, used, cancelled or expired), and the page says only that, the same for
+    each case. ``token`` is the link's own token (the form posts back to it); ``stay`` is a guest's
+    stay in words. ``returning_username`` is set for a return link: the username the person keeps,
+    shown as text; only a new password is asked. The password is never put back in the form. Every
+    value is output through autoescaping: the name was written by the owner, or by the model on
+    their behalf, and the username by the person. -#}
+{% extends "base.html" %}
+{% block title %}{{ t("invite.unavailable.title") if invitation is none else (t("invite.return.title", name=invitation.display_name) if returning_username else t("invite.title")) }}{% endblock %}
+{% block content %}
+    <section class="card narrow">
+{% if invitation is none %}
+      <h1>{{ t("invite.unavailable.title") }}</h1>
+      <p>{{ t("invite.unavailable.message") }}</p>
+{% elif returning_username %}
+      <h1>{{ t("invite.return.title", name=invitation.display_name) }}</h1>
+      <p class="invite-who">{{ t("invite.return.intro", role=t("household.role." + invitation.role)) }}</p>
+{% if stay %}
+      <p class="muted">{{ t("invite.return.stay", duration=stay) }}</p>
+{% endif %}
+      <p class="invite-username">{{ t("invite.return.username", username=returning_username) }}</p>
+      <p class="muted">{{ t("invite.return.note") }}</p>
+{% if error_key %}
+      <p class="alert" role="alert">{{ t(error_key, **error_params) }}</p>
+{% endif %}
+      <form class="stack" method="post" action="/invite/{{ token }}">
+        <label for="password">{{ t("invite.return.password") }}</label>
+        <input id="password" name="password" type="password" autocomplete="new-password"
+               minlength="{{ min_password_length }}" aria-describedby="password-hint" required autofocus>
+        <p id="password-hint" class="muted">{{ t("invite.password_hint", min=min_password_length|string) }}</p>
+        <button type="submit" class="primary">{{ t("invite.return.submit") }}</button>
+      </form>
+{% else %}
+      <h1>{{ t("invite.title") }}</h1>
+      <p class="invite-who">{{ t("invite.intro", name=invitation.display_name, role=t("household.role." + invitation.role)) }}</p>
+{% if stay %}
+      <p class="muted">{{ t("invite.stay", duration=stay) }}</p>
+{% endif %}
+{% if error_key %}
+      <p class="alert" role="alert">{{ t(error_key, **error_params) }}</p>
+{% endif %}
+      <form class="stack" method="post" action="/invite/{{ token }}">
+        <label for="username">{{ t("invite.username") }}</label>
+        <input id="username" name="username" type="text" value="{{ username }}"
+               autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"
+               required autofocus>
+        <label for="password">{{ t("invite.password") }}</label>
+        <input id="password" name="password" type="password" autocomplete="new-password"
+               minlength="{{ min_password_length }}" aria-describedby="password-hint" required>
+        <p id="password-hint" class="muted">{{ t("invite.password_hint", min=min_password_length|string) }}</p>
+        <button type="submit" class="primary">{{ t("invite.submit") }}</button>
+      </form>
+{% endif %}
+    </section>
+{% endblock %}

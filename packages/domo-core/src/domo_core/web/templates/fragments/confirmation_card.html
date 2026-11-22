@@ -1,0 +1,133 @@
+{#- A request that waits for a yes, or what came of it. ``card`` is a
+    ``confirmations.routes.ConfirmationCard``.
+
+    The root carries ``data-confirmation-id`` and ``data-confirmation-status`` (the request's
+    state; absent on a card that must tell nothing of someone else's request), and
+    ``data-outcome`` when the card answers a decision (a button, R23). Inside: the action card
+    (fragments/action_card.html) with the state or the result (in the answer to a yes, with what
+    is shown only then: an invitation's link, or the vault's form for the model's key, in its
+    frame, and the poll that follows it), what the request would do (for a change of rights,
+    the rights and the examples of its draft: each summary, each situation and its outcome; for a
+    change of the list of successors that waits, the list now and as it would be; for a chain
+    of actions, each of its steps in order, with its state, ``data-step-state``,
+    ``data-checked-in-turn`` on a step checked in its turn, ``data-maybe-done`` and a sentence on
+    a step taken up again that may already have been done, and under a step that changes the
+    rights or the list of successors the same lines as on the card of such a request alone,
+    ``draft_lines`` and ``successor_lines``), what it was before the person asked for a change (if
+    they did), who asks what while it waits (``card.asked``), a note on the outcome (for a chain
+    that waits for a yes again once the person it waited for joined, who joined), and, while it
+    waits and for the person who may answer, what the assistant could not tell (when a limit sent it to
+    the owner), how to answer and the buttons ("Confirm" only when the request asks no proof: a
+    proof is given in its own frame). A button posts the decision and htmx puts the card that
+    comes back in the place of this one.
+
+    While the request waits, the head the assistant wrote for the reader (``card.head``, texts.cards) takes
+    the place of what it would do, who asks what, how to answer, what it was before a change, the
+    remark and what the assistant could not tell: one text, its line breaks kept (``.confirmation-head``,
+    app.css), autoescaped like every value. A note on the outcome of a decision stays.
+
+    The frame of a proof (``card.proof``: a ``channels.page.proof.ProofOffer``, only for the person
+    who may answer the request) holds one form per means it offers, each posting to the same
+    address (``prove_url``) with its ``means``: the passkey's (``data-passkey-form="prove"``, where
+    passkeys work and the person has one: static/passkeys.js asks for the options at
+    ``data-options-url``, lets the browser ask the person, puts its answer in ``credential`` and
+    submits the form, which htmx posts; its button stays hidden without that script,
+    ``data-passkey-only``), then the password's. Both are posts (a password never goes into an
+    address), and htmx puts the card that comes back in the place of this one. What is typed or
+    given here never reaches the conversation: the assistant never sees it. "Refuse" stays.
+
+    Every value is output through autoescaping: the description holds what someone wrote. -#}
+{%- macro draft_lines(draft) %}
+  <div class="confirmation-draft">
+    <p>{{ t("rights.card.rights") }}</p>
+    <ul class="confirmation-rights">
+{% for summary in draft.summaries %}
+      <li>{{ summary }}</li>
+{% endfor %}
+    </ul>
+    <p>{{ t("rights.card.examples") }}</p>
+    <ul class="confirmation-examples">
+{% for example in draft.examples %}
+      <li>{{ example.situation }}{% if example.moment %} <span class="confirmation-example-moment">{{ example.moment }}</span>{% endif %} <strong>{{ example.outcome }}</strong></li>
+{% endfor %}
+    </ul>
+  </div>
+{% endmacro %}
+{%- macro successor_lines(successors) %}
+  <p class="confirmation-successors-before">{{ t("confirmation.successors.before", list=successors.before) }}</p>
+  <p class="confirmation-successors-after">{{ t("confirmation.successors.after", list=successors.after) }}</p>
+{% endmacro %}
+<div class="confirmation-card" role="group" aria-label="{{ t('confirmation.label') }}" data-confirmation-id="{{ card.id }}"{% if card.status %} data-confirmation-status="{{ card.status }}"{% endif %}{% if card.outcome %} data-outcome="{{ card.outcome }}"{% endif %}>
+{% if card.action %}
+{% with action = card.action %}
+{% include "fragments/action_card.html" %}
+{% endwith %}
+{% endif %}
+{% if card.head %}
+  <p class="confirmation-head">{{ card.head }}</p>
+{% elif card.description %}
+  <p class="confirmation-what">{{ card.description }}</p>
+{% endif %}
+{% if card.draft %}{{ draft_lines(card.draft) }}{% endif %}
+{% if card.successors %}{{ successor_lines(card.successors) }}{% endif %}
+{% if card.steps %}
+  <ol class="confirmation-steps">
+{% for step in card.steps %}
+    <li data-step-state="{{ step.state }}"{% if step.checked_in_turn %} data-checked-in-turn{% endif %}{% if step.maybe_done %} data-maybe-done{% endif %}>{{ step.sentence }}
+{%- if step.maybe_done %} <span class="confirmation-step-maybe-done">{{ t("confirmation.step.maybe_done") }}</span>{% endif %}
+{%- if step.draft %}{{ draft_lines(step.draft) }}{% endif %}
+{%- if step.successors %}{{ successor_lines(step.successors) }}{% endif %}</li>
+{% endfor %}
+  </ol>
+{% endif %}
+{% if card.changed and not card.head %}
+  <p class="confirmation-changed">{{ card.changed }}</p>
+{% endif %}
+{% if card.asked and not card.head %}
+  <p class="confirmation-asked">{{ card.asked }}</p>
+{% endif %}
+{% if card.note %}
+  <p class="confirmation-note" role="status">{{ card.note }}</p>
+{% endif %}
+{% if card.can_decide %}
+{% if not card.head %}
+{% if card.question %}
+  <p class="confirmation-question">{{ card.question }}</p>
+{% endif %}
+  <p class="confirmation-hint">{{ card.hint }}</p>
+{% endif %}
+{% if card.proof %}
+  <div class="confirmation-proof" role="group" aria-label="{{ t('confirmation.proof.title') }}">
+    <p class="confirmation-proof-title">{{ t("confirmation.proof.title") }}</p>
+{% if "passkey" in card.proof.means %}
+    <form class="confirmation-proof-passkey" method="post" action="{{ card.proof.prove_url }}"
+          data-passkey-form="prove" data-options-url="{{ card.proof.options_url }}"
+          data-message-cancelled="{{ t('login.passkey.cancelled') }}"
+          data-message-failed="{{ t('confirmation.proof.failed') }}"
+          hx-post="{{ card.proof.prove_url }}" hx-target="closest .confirmation-card" hx-swap="outerHTML">
+      <input type="hidden" name="means" value="passkey">
+      <input type="hidden" name="credential" value="">
+      <p class="alert" data-passkey-message hidden></p>
+      <button type="submit" class="primary" data-action="passkey-prove" data-passkey-only hidden>{{ t("confirmation.proof.passkey") }}</button>
+    </form>
+{% endif %}
+    <form class="confirmation-proof-password" method="post" action="{{ card.proof.prove_url }}"
+          hx-post="{{ card.proof.prove_url }}" hx-target="closest .confirmation-card" hx-swap="outerHTML">
+      <input type="hidden" name="means" value="password">
+      <label>{{ t("confirmation.proof.password") }}
+        <input type="password" name="password" autocomplete="current-password" required>
+      </label>
+      <button type="submit" data-action="password-prove">{{ t("confirmation.proof.submit") }}</button>
+    </form>
+  </div>
+{% endif %}
+  <div class="confirmation-buttons">
+{% if card.ask != "proof" %}
+    <button type="button" class="primary" data-action="confirm"
+            hx-post="/confirmations/{{ card.id }}/approve" hx-target="closest .confirmation-card" hx-swap="outerHTML">{{ t("confirmation.confirm") }}</button>
+{% endif %}
+    <button type="button" data-action="refuse"
+            hx-post="/confirmations/{{ card.id }}/refuse" hx-target="closest .confirmation-card" hx-swap="outerHTML">{{ t("confirmation.refuse") }}</button>
+  </div>
+{% endif %}
+</div>

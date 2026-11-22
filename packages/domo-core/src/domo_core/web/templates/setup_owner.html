@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}{{ t("setup.owner.title") }}{% endblock %}
+{% block content %}
+    <section class="card narrow">
+      <h1>{{ t("setup.owner.title") }}</h1>
+      <p class="muted">{{ t("setup.owner.intro") }}</p>
+      {#- The certificate is served by the edge, not by the core (see deploy/edge/Caddyfile). #}
+      <p class="muted">{{ t("setup.owner.certificate.before") }}<a href="/ca.crt">{{ t("setup.owner.certificate.link") }}</a>{{ t("setup.owner.certificate.after") }}</p>
+{% if error_key %}
+      <p class="alert" role="alert">{{ t(error_key, **error_params) }}</p>
+{% endif %}
+      <form class="stack" method="post" action="/setup/owner">
+        <label for="code">{{ t("setup.owner.code") }}</label>
+        <input id="code" name="code" type="text" value="" placeholder="XXXX-XXXX-XXXX"
+               autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false"
+               required autofocus>
+        <label for="display_name">{{ t("setup.owner.display_name") }}</label>
+        <input id="display_name" name="display_name" type="text" value="{{ display_name }}"
+               autocomplete="name" required>
+        <label for="username">{{ t("setup.owner.username") }}</label>
+        <input id="username" name="username" type="text" value="{{ username }}"
+               autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"
+               required>
+        <label for="password">{{ t("setup.owner.password") }}</label>
+        <input id="password" name="password" type="password" autocomplete="new-password"
+               minlength="{{ min_password_length }}" aria-describedby="password-hint" required>
+        <p id="password-hint" class="muted">{{ t("setup.owner.password_hint", min=min_password_length|string) }}</p>
+        <button type="submit" class="primary">{{ t("setup.owner.submit") }}</button>
+      </form>
+    </section>
+{% endblock %}

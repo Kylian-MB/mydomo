@@ -1,0 +1,22 @@
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e  # frozen: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: 25bcf95026b96e2dd3c0aec3090c3d6ef6ca2e6c  # frozen: v0.17.3
+    hooks:
+      - id: ruff-check
+      - id: ruff-format
+        # Python only: leave the Python snippets inside Markdown docs alone.
+        types_or: [python, pyi]
+
+  - repo: local
+    hooks:
+      - id: check-personal-data
+        name: check personal data
+        description: Reject files containing a term from the local personal-data denylist.
+        entry: python scripts/check_personal_data.py
+        language: system
+        types: [text]

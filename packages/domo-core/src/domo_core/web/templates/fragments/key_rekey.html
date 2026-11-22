@@ -1,0 +1,5 @@
+{#- The "Enter the key again" button: it posts to ``rekey_url`` (channels.page.key_routes: a new form for
+    the model's key) and htmx puts the form, in its frame, in the place of ``target``. Only whoever
+    may change the key is shown it (the owner by default; on a card, the one who asked after
+    someone else's yes, with the request in the address), and only for a provider with a key. -#}
+<div class="key-rekey"><button type="button" class="primary" data-action="rekey" hx-post="{{ rekey_url }}" hx-target="{{ target }}" hx-swap="outerHTML">{{ t("chat.key.action.rekey") }}</button></div>

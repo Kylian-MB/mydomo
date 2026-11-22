@@ -1,0 +1,41 @@
+{#- The household, as the owner sees it (household/routes.py): read only. ``people`` are
+    ``PersonRow``s (everyone who ever joined, with where they stand), ``invitations`` the
+    ``InvitationRow``s of the invitations that wait (never their links: they are not kept).
+    Each person carries ``data-person-role`` and ``data-person-state``, each invitation
+    ``data-invitation-role`` (tests read them, whatever the language). Every value is output
+    through autoescaping: names were written by people, or by the model on their behalf. -#}
+{% extends "base.html" %}
+{% block title %}{{ t("household.title") }}{% endblock %}
+{% block content %}
+    <section class="card">
+      <h1>{{ t("household.title") }}</h1>
+      <p class="muted">{{ t("household.intro") }}</p>
+      <h2>{{ t("household.people") }}</h2>
+      <ul class="household-list">
+{% for row in people %}
+        <li class="household-person" data-person-id="{{ row.id }}" data-person-role="{{ row.role }}" data-person-state="{{ row.state }}">
+          <strong class="household-name">{{ row.name }}</strong>
+          <span class="household-role">{{ t("household.role." + row.role) }}</span>
+          <span class="household-state">{{ row.state_text }}</span>
+        </li>
+{% endfor %}
+      </ul>
+      <h2>{{ t("household.invitations") }}</h2>
+{% if invitations %}
+      <ul class="household-list">
+{% for row in invitations %}
+        <li class="household-invitation" data-invitation-role="{{ row.role }}">
+          <strong class="household-name">{{ row.name }}</strong>
+          <span class="household-role">{{ t("household.role." + row.role) }}</span>
+{% if row.stay %}
+          <span class="household-state">{{ t("household.invitation.stay", duration=row.stay) }}</span>
+{% endif %}
+          <span class="household-state">{{ t("household.invitation.expires", date=row.expires) }}</span>
+        </li>
+{% endfor %}
+      </ul>
+{% else %}
+      <p>{{ t("household.no_invitations") }}</p>
+{% endif %}
+    </section>
+{% endblock %}

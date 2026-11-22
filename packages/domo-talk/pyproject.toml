@@ -1,0 +1,17 @@
+[project]
+name = "domo-talk"
+version = "0.10.0"
+description = "The assistant text program: talk with the assistant from a terminal, on a computer entrusted to him."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    "httpx>=0.28.1",
+]
+
+[project.scripts]
+domo-talk = "domo_talk.__main__:main"
+
+[build-system]
+requires = ["uv_build>=0.12.9,<0.13.0"]
+build-backend = "uv_build"

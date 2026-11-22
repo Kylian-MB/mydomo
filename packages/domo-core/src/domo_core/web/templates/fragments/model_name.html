@@ -1,0 +1,22 @@
+{#- The question of a server that gives no list of its models: the name of the one it serves. At
+    the first launch it takes the place of the whole step, like the other fragments; from the chat
+    (a new key) it takes its own place. ``name_url`` is where it posts (the first launch's, by
+    default), ``name_target`` and ``name_swap`` where the answer goes. Checking the model can take
+    a while: the button is disabled and the note shows while the request runs, as in the form.
+    Its texts are those of ``form_texts``, as in the form. -#}
+{%- set name_url = name_url | default("/setup/model/" ~ provider_id ~ "/name") %}
+{%- set form_texts = form_texts | default("setup.model") %}
+<form class="stack model-name-form" method="post" action="{{ name_url }}"
+      hx-post="{{ name_url }}" hx-target="{{ name_target | default('#model-step') }}" hx-swap="{{ name_swap | default('innerHTML') }}"
+      hx-disabled-elt="find button" hx-indicator="#model-checking" data-model-name>
+  <h2>{{ t(form_texts ~ ".name.title") }}</h2>
+  <p class="muted">{{ t(form_texts ~ ".name.intro") }}</p>
+{% if error_key %}
+  <p class="alert" role="alert">{{ t(error_key, **error_params) }}</p>
+{% endif %}
+  <label for="model">{{ t(form_texts ~ ".name.label") }}</label>
+  <input id="model" name="model" type="text" maxlength="{{ max_model_length }}"
+         autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" required>
+  <button type="submit" class="primary">{{ t(form_texts ~ ".name.submit") }}</button>
+  <p class="muted busy-status" role="status"><span id="model-checking" class="busy-note">{{ t(form_texts ~ ".checking") }}</span></p>
+</form>

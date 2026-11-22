@@ -1,0 +1,4 @@
+{#- The "Add the key" button that a card leaves for the one who asked (tools.key_tools): it asks
+    for the form of a new key at ``key_new_url`` (KEY_NEW_PATH, with the request whose yes it is
+    for), which takes the place of this block (fragments/key_new.html). -#}
+<div class="key-new-button"><button type="button" class="primary" data-action="key-new" hx-get="{{ key_new_url }}" hx-target="closest .key-new-button" hx-swap="outerHTML">{{ t("chat.key.action.add") }}</button></div>

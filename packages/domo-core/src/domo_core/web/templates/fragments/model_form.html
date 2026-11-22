@@ -1,0 +1,38 @@
+{#- The choice of a key: the first model at the first launch, or a new key from the chat
+    (fragments/key_new.html). ``form_url`` is where it posts (/setup/model by default), and what
+    comes back goes to ``form_target`` (the first launch's step, by default), swapped as
+    ``form_swap`` says. The address and the key box only concern "other servers": a stylesheet
+    rule hides them for the other kinds (no script, and the fields are not required, so a hidden
+    one never blocks the form). Checking a model can take a while: while the request runs, the
+    button is disabled and the note under it shows (``.busy-note``), inside a live region that is
+    always there (``.busy-status``), so that a screen reader announces it. Its texts are those of
+    ``form_texts``: the first launch's fixed ones (``setup.model``), or, from the chat, those
+    The assistant wrote (``chat.key.new``). -#}
+{%- set form_url = form_url | default("/setup/model") %}
+{%- set form_texts = form_texts | default("setup.model") %}
+<form class="stack model-form" method="post" action="{{ form_url }}"
+      hx-post="{{ form_url }}" hx-target="{{ form_target | default('#model-step') }}" hx-swap="{{ form_swap | default('innerHTML') }}"
+      hx-disabled-elt="find button" hx-indicator="#model-checking">
+{% if error_key %}
+  <p class="alert" role="alert">{{ t(error_key, **error_params) }}</p>
+{% endif %}
+  <label for="kind">{{ t(form_texts ~ ".kind") }}</label>
+  <select id="kind" name="kind" required>
+{% for option in kinds %}
+    <option value="{{ option }}"{% if option == kind %} selected{% endif %}>{{ t(form_texts ~ ".kind." ~ option) }}</option>
+{% endfor %}
+  </select>
+  <div class="stack compat-only">
+    <label for="base_url">{{ t(form_texts ~ ".base_url") }}</label>
+    <input id="base_url" name="base_url" type="text" inputmode="url" value="{{ base_url }}"
+           placeholder="http://192.168.1.10:11434/v1" autocomplete="off" autocapitalize="none"
+           autocorrect="off" spellcheck="false" aria-describedby="base-url-hint">
+    <p id="base-url-hint" class="muted">{{ t(form_texts ~ ".base_url_hint", local="http://192.168.1.10:11434/v1", remote="https://api.example.com/v1") }}</p>
+    <label class="checkbox" for="has_key">
+      <input id="has_key" name="has_key" type="checkbox" value="on"{% if has_key %} checked{% endif %}>
+      <span>{{ t(form_texts ~ ".has_key") }}</span>
+    </label>
+  </div>
+  <button type="submit" class="primary">{{ t(form_texts ~ ".submit") }}</button>
+  <p class="muted busy-status" role="status"><span id="model-checking" class="busy-note">{{ t(form_texts ~ ".checking") }}</span></p>
+</form>

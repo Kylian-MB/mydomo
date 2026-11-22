@@ -1,0 +1,802 @@
+/* the assistant web interface. Mobile first: the base rules are the phone's, the media queries at the
+   end only add room for larger screens. No inline styles anywhere (the content security policy
+   forbids them): everything is here. */
+
+:root {
+  color-scheme: light dark;
+  --bg: #f4f6f9;
+  --surface: #ffffff;
+  --text: #16202e;
+  --border: #c9d2de;
+  --accent: #1f5fbf;
+  --accent-text: #ffffff;
+  --danger-bg: #fdecec;
+  --danger-text: #8a1c1c;
+  --danger-border: #e3a1a1;
+  --ok-bg: #e8f5ec;
+  --ok-text: #14532d;
+  --ok-border: #8fc9a1;
+  --muted: #4a5a70;
+  --radius: 0.75rem;
+  --gap: 1rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f151e;
+    --surface: #18212e;
+    --text: #e8edf4;
+    --border: #2f3d52;
+    --accent: #6ea8ff;
+    --accent-text: #0b1220;
+    --danger-bg: #3a1a1c;
+    --danger-text: #ffb3b3;
+    --danger-border: #7a3a3d;
+    --ok-bg: #16301f;
+    --ok-text: #a8e6bc;
+    --ok-border: #2f6b45;
+    --muted: #a9b6c9;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+  font: 1rem/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+}
+
+a {
+  color: var(--accent);
+}
+
+h1 {
+  margin: 0 0 var(--gap);
+  font-size: 1.5rem;
+  line-height: 1.25;
+}
+
+/* Top bar: the brand, the navigation and the logout button wrap on a narrow screen. */
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 1rem;
+  padding: 0.5rem max(1rem, env(safe-area-inset-right)) 0.5rem max(1rem, env(safe-area-inset-left));
+  padding-top: max(0.5rem, env(safe-area-inset-top));
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  font-weight: 700;
+  font-size: 1.125rem;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.nav {
+  display: flex;
+  gap: 0.25rem 1rem;
+  flex: 1 1 auto;
+}
+
+.nav a,
+.topbar .link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem; /* a finger-sized target */
+}
+
+.logout {
+  margin: 0;
+}
+
+.page {
+  flex: 1 0 auto;
+  width: 100%;
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: var(--gap) max(1rem, env(safe-area-inset-right)) var(--gap)
+    max(1rem, env(safe-area-inset-left));
+}
+
+.card {
+  padding: 1.25rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.stack > button {
+  margin-top: 0.5rem;
+}
+
+label {
+  font-weight: 600;
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.5rem 0.75rem;
+  font: inherit; /* 16px at least: iOS does not zoom into the field */
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+
+button {
+  min-height: 2.75rem;
+  padding: 0.5rem 1rem;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+/* A link that is a button's equal (the "choose another provider" way out of a failure). */
+a.button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding: 0.5rem 1rem;
+  font-weight: 600;
+  color: var(--text);
+  text-decoration: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+
+button.primary {
+  color: var(--accent-text);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* A button that looks like a link (the logout form). */
+button.link {
+  padding: 0;
+  color: var(--accent);
+  background: none;
+  border: 0;
+  font-weight: 400;
+  text-decoration: underline;
+}
+
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.alert {
+  margin: 0 0 var(--gap);
+  padding: 0.75rem 1rem;
+  color: var(--danger-text);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  border-radius: 0.5rem;
+}
+
+/* A positive notice, next to .alert (the audit page's "chain intact"). */
+.notice.ok {
+  margin: 0 0 var(--gap);
+  padding: 0.75rem 1rem;
+  color: var(--ok-text);
+  background: var(--ok-bg);
+  border: 1px solid var(--ok-border);
+  border-radius: 0.5rem;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+/* The audit log: one line per entry, newest first. Long names wrap. */
+.audit-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.audit-entry {
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+/* The account page: the person's details as labels and values; long names wrap. */
+.account-details {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.5rem 1rem;
+  margin: 0 0 var(--gap);
+  overflow-wrap: anywhere;
+}
+
+.account-details dt {
+  color: var(--muted);
+}
+
+.account-details dd {
+  margin: 0;
+}
+
+/* The household page: one block per person, then per invitation that waits; long names wrap. */
+.card h2 {
+  margin: var(--gap) 0 0.5rem;
+  font-size: 1.125rem;
+}
+
+.household-list {
+  margin: 0 0 var(--gap);
+  padding: 0;
+  list-style: none;
+}
+
+.household-person,
+.household-invitation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+.household-role,
+.household-state {
+  color: var(--muted);
+}
+
+.household-person[data-person-state="removed"] .household-name,
+.household-person[data-person-state="stay_over"] .household-name {
+  color: var(--muted);
+}
+
+/* The passkeys of the account page: one block per passkey, its name, when it was added and last
+   used, and the button that removes it; long names wrap. */
+.passkey-list {
+  margin: 0 0 var(--gap);
+  padding: 0;
+  list-style: none;
+}
+
+.passkey {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 1rem;
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+.passkey-meta {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.card h3 {
+  margin: var(--gap) 0 0.5rem;
+  font-size: 1rem;
+}
+
+/* The passkey sign-in, under the password form of the login page (or why there is none). */
+.passkey-form {
+  margin-top: var(--gap);
+}
+
+/* The chat. Messages are bubbles, the person's on the right and the assistant's on the left; the form
+   stays at the bottom of the screen. The words are in .message-text, which keeps the line breaks
+   of what was written (the text arrives unformatted: no markup, only text). */
+.chat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.messages {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.message {
+  max-width: 88%;
+  padding: 0.625rem 0.875rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.message.user {
+  align-self: flex-end;
+  color: var(--accent-text);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.message.assistant {
+  align-self: flex-start;
+}
+
+.message-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* A reply that has not said anything yet: three dots, until the first word. A reply the assistant writes
+   on the server that this page does not follow word by word (the page was opened again, a wake
+   writes it, or its stream stopped short): the same dots after what it shows, until the reply
+   takes its place (spec 5.7.2). */
+.message[aria-busy="true"] .message-text:empty::after,
+.message[data-writing="true"] .message-text::after {
+  content: "...";
+  color: var(--muted);
+  animation: chat-waiting 1.2s ease-in-out infinite;
+}
+
+.message-note {
+  margin: 0.5rem 0 0;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+.message-note:empty {
+  display: none;
+}
+
+/* What the assistant did while writing a reply: a card per action, under its words. The colour of the
+   edge says how it went (done, waiting for a yes, or not done). */
+.message-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  margin-top: 0.5rem;
+}
+
+.message-actions:empty {
+  display: none;
+}
+
+.action-card {
+  padding: 0.375rem 0.625rem;
+  font-size: 0.875rem;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: 0.5rem;
+  overflow-wrap: anywhere;
+}
+
+.action-card p {
+  margin: 0;
+}
+
+.action-card[data-action-status="done"] {
+  border-left-color: var(--ok-border);
+}
+
+.action-card[data-action-status="waiting"],
+.action-card[data-action-status="running"] {
+  border-left-color: var(--accent);
+}
+
+.action-card[data-action-status="refused"],
+.action-card[data-action-status="invalid"],
+.action-card[data-action-status="failed"] {
+  border-left-color: var(--danger-border);
+}
+
+/* What may be shown only once (an invitation's link): it stands out from the rest of the card,
+   and the link wraps anywhere, so that it can be read and copied on a phone. */
+.action-card .action-once {
+  margin-top: 0.25rem;
+  color: var(--text);
+}
+
+/* The person's own rights that a card of the household tells the owner of, and the button that
+   shows the link of an invitation, once, to the one who asked. */
+.action-card .action-rights ul {
+  margin: 0.25rem 0 0;
+  padding-left: 1.25rem;
+  color: var(--text);
+}
+
+.action-card div.invitation-link {
+  margin-top: 0.5rem;
+}
+
+/* The buttons a chain left for the one who asked: one group per step, under its number. */
+.action-card .action-step-buttons {
+  margin-top: 0.5rem;
+}
+
+.action-card .action-step-buttons .action-step {
+  margin: 0;
+  color: var(--text);
+}
+
+.action-card .action-step-buttons div.invitation-link,
+.action-card .action-step-buttons .key-rekey {
+  margin-top: 0.25rem;
+}
+
+/* The vault's form for the model's key, under the card of the yes that opened it, and then what
+   came of it (channels.page.key_routes), in its place. */
+.action-card .vault-frame {
+  margin: 0.5rem 0;
+}
+
+.action-card .key-result {
+  margin-top: 0.25rem;
+  color: var(--text);
+}
+
+/* The owner's "Enter the key again" button, under a key that does not work (or under the chat's
+   error for it). */
+.key-rekey {
+  margin-top: 0.5rem;
+}
+
+/* A request that waits for a yes: its state (an action card), what it would do, how to answer,
+   and the two buttons while it waits. */
+.confirmation-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+
+.confirmation-card > p {
+  margin: 0 0 0 0.75rem;
+}
+
+.confirmation-what {
+  color: var(--text);
+}
+
+/* The head the assistant wrote for the reader of a card (texts.cards): one text, on as many lines as it
+   needs, and the words of a note it quotes as their author wrote them, spaces included. */
+.confirmation-head,
+.action-card .action-head {
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+/* The sentence of an action's card keeps the line breaks and the spaces of what it quotes: the
+   words of a note, as their author wrote them (note_show). */
+.action-card .action-text {
+  white-space: pre-wrap;
+}
+
+.confirmation-asked,
+.confirmation-changed,
+.confirmation-hint,
+.confirmation-note {
+  color: var(--muted);
+}
+
+.confirmation-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-left: 0.75rem;
+}
+
+/* The frame of a proof that it is the person, above the "Refuse" button: the passkey's button
+   (shown by passkeys.js where the browser can use one), then the password and its button. What
+   is typed here is posted to the card's own address, never into the conversation. */
+.confirmation-proof {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-left: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+
+.confirmation-proof-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.confirmation-proof form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.confirmation-proof label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.confirmation-proof form > button {
+  align-self: flex-start;
+}
+
+.confirmation-proof .alert {
+  margin: 0;
+}
+
+/* The window of the chat page that stays in view wherever the conversation is scrolled to: (for
+   an adult or the owner) the requests of others that wait for their yes. On a phone it starts
+   under the top bar, which it never covers, and stays at the top of the screen as the conversation
+   scrolls under it; on a larger screen it hangs under the top bar's right end, under the logout
+   button (the media query at the end). The zone is loaded by itself (htmx) into its container,
+   which takes no room of its own: with nothing to show, the window takes no room either. */
+.popups {
+  position: sticky;
+  top: max(0.5rem, env(safe-area-inset-top));
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* Nothing to show: no room, not even the gap of the chat's column. */
+.popups:not(:has(section)) {
+  margin-bottom: calc(-1 * var(--gap));
+}
+
+.chat-zone {
+  display: contents;
+}
+
+/* A zone scrolls by itself when it is long, so that the window never fills the screen (and the
+   shadow, outside the zone's box, is not cut by it). */
+.approvals {
+  max-height: 40vh;
+  overflow-y: auto;
+  padding: 0.75rem 0.875rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow-wrap: anywhere;
+  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 0.2);
+}
+
+.approvals h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.approval-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.approval {
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.approval:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.approval-from {
+  margin: 0 0 0.25rem;
+  font-weight: 600;
+}
+
+/* A request the one who asked nudged: it comes first, and says so. */
+.approval-nudged {
+  margin: 0 0 0.25rem;
+  font-size: 0.875rem;
+  color: var(--accent);
+}
+
+.approvals-more {
+  margin: 0.75rem 0 0;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+.chat-notice:empty {
+  display: none;
+}
+
+.chat-notice .alert {
+  margin: 0;
+}
+
+.chat-form {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  padding: 0.5rem 0 max(0.5rem, env(safe-area-inset-bottom));
+  background: var(--bg);
+}
+
+.chat-form textarea {
+  flex: 1 1 auto;
+  min-height: 2.75rem;
+  max-height: 40vh;
+  resize: vertical;
+}
+
+.chat-form button {
+  flex: 0 0 auto;
+}
+
+@keyframes chat-waiting {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message[aria-busy="true"] .message-text:empty::after,
+  .message[data-writing="true"] .message-text::after {
+    animation: none;
+  }
+}
+
+/* htmx adds .htmx-request to the element that makes a request; htmx's own copy of these rules is
+   an inline style, which the content security policy forbids (see the htmx-config meta tag). */
+.htmx-indicator {
+  opacity: 0;
+  transition: opacity 200ms ease-in;
+}
+
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .htmx-indicator {
+    transition: none;
+  }
+}
+
+/* A note that says what a request is doing (the check of the model, say): shown only while it
+   runs, when htmx puts .htmx-request on the element its hx-indicator names, and not displayed at
+   all otherwise. It sits in a live region (.busy-status, role="status") that is always displayed:
+   the note appearing in it is a change a screen reader announces. */
+.busy-note:not(.htmx-request) {
+  display: none;
+}
+
+.busy-status {
+  margin: 0;
+}
+
+@media (min-width: 40rem) {
+  .page {
+    padding-top: 2rem;
+    padding-bottom: 2rem;
+  }
+
+  .card {
+    padding: 2rem;
+  }
+
+  .narrow {
+    max-width: 26rem;
+    margin: 2rem auto 0;
+  }
+
+  /* The top bar stays in view, on one line of a known height (on a phone, where it may take two
+     or three lines, it scrolls away), and the window of the chat page hangs under its right end,
+     under the logout button. The height is the links' (2.75rem), its padding and its border. */
+  :root {
+    --topbar-height: calc(3.75rem + 1px);
+  }
+
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    flex-wrap: nowrap;
+    height: var(--topbar-height);
+  }
+
+  .nav a,
+  .topbar .link {
+    white-space: nowrap;
+  }
+
+  .popups {
+    position: fixed;
+    top: calc(var(--topbar-height) + 0.5rem);
+    right: max(1rem, env(safe-area-inset-right));
+    width: 22rem;
+  }
+}
+
+/* The model step of the first launch. The address and the key box only concern "other servers":
+   the rule hides them for any other kind (a browser without :has() just shows them). */
+.model-form:not(:has(#kind option[value="openai_compatible"]:checked)) .compat-only {
+  display: none;
+}
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 400;
+}
+
+.checkbox input {
+  width: 1.25rem;
+  min-height: 1.25rem;
+  margin: 0;
+}
+
+.secret-wait h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.25rem;
+}
+
+/* The gatekeeper's form for the key, shown in place. */
+.vault-frame {
+  display: block;
+  width: 100%;
+  height: 22rem;
+  margin: var(--gap) 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+
+.model-error .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}

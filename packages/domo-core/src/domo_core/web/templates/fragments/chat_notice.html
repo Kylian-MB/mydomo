@@ -1,0 +1,4 @@
+{#- A refusal, for the notice area of the chat page; with ``key_new_url`` (optional), the button
+    that opens the form of a new key of one's own (fragments/key_new_button.html), which takes its
+    place. -#}
+<p class="alert">{{ t(key, **params) }}</p>{% if key_new_url is defined and key_new_url %}{% include "fragments/key_new_button.html" %}{% endif %}

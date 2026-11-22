@@ -1,0 +1,33 @@
+{#- The requests of the children that wait for an adult's yes, and for the owner also those whose
+    yes a right gives to the owner (confirmations/routes.py): the zone "To approve" of the chat page
+    (its window at the top right), for an adult or the owner. It is empty (no output at all) when
+    nothing waits, and for anyone who cannot answer such a request. The page asks for it again
+    every 15 seconds and puts it in "#approvals".
+
+    ``approvals`` are ``Approval``s: ``requester`` (the display name of the person who asks),
+    ``card`` (a ``ConfirmationCard``, shown as the page shows any request: what it would do, and
+    the two buttons; fragments/confirmation_card.html) and ``nudged`` (the one who asked nudged its
+    approvers: it comes first, its item carries ``data-nudged`` and a line says so). ``more`` is
+    how many requests are waiting beyond those shown. Every value is output through autoescaping:
+    names and words were written by people. -#}
+{% if approvals %}
+<section class="approvals" aria-labelledby="approvals-title">
+  <h2 id="approvals-title">{{ t("approvals.title") }}</h2>
+  <ul class="approval-list">
+{% for approval in approvals %}
+    <li class="approval"{% if approval.nudged %} data-nudged{% endif %}>
+      <p class="approval-from">{{ t("approvals.from", name=approval.requester) }}</p>
+{% if approval.nudged %}
+      <p class="approval-nudged">{{ t("confirmation.nudged") }}</p>
+{% endif %}
+{% with card = approval.card %}
+{% include "fragments/confirmation_card.html" %}
+{% endwith %}
+    </li>
+{% endfor %}
+  </ul>
+{% if more %}
+  <p class="approvals-more">{{ t("approvals.more", count=more|string) }}</p>
+{% endif %}
+</section>
+{% endif %}

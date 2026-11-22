@@ -1,0 +1,12 @@
+# For one end-to-end scenario only (tests/e2e/test_memory_and_time.py): added after compose.yaml
+# and compose.test.yaml, it starts the core with the folder of its local model empty (an empty
+# tmpfs in place of the folder the image fills), as if the image had been built without the model.
+# The core must answer all the same, and find memories by their words alone (spec 6.5). Never use
+# it to run a real instance.
+
+services:
+  core:
+    environment:
+      DOMO_EMBEDDING_MODEL_DIR: /opt/domo/no-model
+    tmpfs:
+      - /opt/domo/no-model

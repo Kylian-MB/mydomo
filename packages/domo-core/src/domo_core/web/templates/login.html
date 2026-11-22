@@ -1,0 +1,39 @@
+{#- The login page (accounts/routes.py). ``passkeys`` says whether the request can use passkeys
+    (accounts/passkeys.py): where it can, a second form signs in with one (static/passkeys.js
+    asks for the options, lets the browser answer and posts the answer in ``credential``; the
+    button stays hidden until the script has checked that the browser can do it). On an IP
+    address, the page says why there is no passkey; the password works everywhere. -#}
+{% extends "base.html" %}
+{% block title %}{{ t("login.title") }}{% endblock %}
+{% block content %}
+    <section class="card narrow">
+      <h1>{{ t("login.title") }}</h1>
+{% if error_key %}
+      <p class="alert" role="alert">{{ t(error_key, **error_params) }}</p>
+{% endif %}
+      <form class="stack" method="post" action="/login">
+        <label for="username">{{ t("login.username") }}</label>
+        <input id="username" name="username" type="text" value="{{ username }}"
+               autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"
+               required autofocus>
+        <label for="password">{{ t("login.password") }}</label>
+        <input id="password" name="password" type="password" autocomplete="current-password"
+               required>
+        <button type="submit" class="primary">{{ t("login.submit") }}</button>
+      </form>
+{% if passkeys.site %}
+      <form class="stack passkey-form" method="post" action="/login/passkey"
+            data-passkey-form="login" data-options-url="/login/passkey/options"
+            data-message-cancelled="{{ t('login.passkey.cancelled') }}"
+            data-message-failed="{{ t('login.passkey.failed') }}"
+            data-message-unsupported="{{ t('login.passkey.unsupported') }}">
+        <input type="hidden" name="credential" value="">
+        <p class="alert" data-passkey-message hidden></p>
+        <button type="submit" data-action="passkey-login" data-passkey-only hidden>{{ t("login.passkey.submit") }}</button>
+      </form>
+      <script src="{{ static_url('passkeys.js') }}" defer></script>
+{% elif passkeys.unavailable == "ip" %}
+      <p class="muted passkey-form" data-passkeys-unavailable="ip">{{ t("account.passkeys.ip_unavailable") }}</p>
+{% endif %}
+    </section>
+{% endblock %}

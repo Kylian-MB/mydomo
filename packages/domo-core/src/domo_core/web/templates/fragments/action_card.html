@@ -1,0 +1,23 @@
+{#- One action of the assistant, under the reply that took it. ``action`` is a ``channels.page.cards.ActionCard``:
+    ``status`` (done, waiting, running, refused, invalid, failed), ``tool`` (the name the model
+    called) and ``text`` (the sentence of its card, in the reader's language). ``once`` is what may
+    be shown only in the answer that executed it (it is never stored, so a reload does not show it
+    again), with ``link``, the address it gives (an invitation's link, R67), as a link the person
+    can open or copy, or ``key_form``, the vault's form for the model's key, in its frame
+    (fragments/key_form.html). ``rights`` are the person's own rights that a card of the household
+    tells the owner of (the rights they keep after a change of role, or that are paused when they
+    come back), under the sentence ``rights_title``. What someone else's yes left for the one who
+    asked to do is a button, on the card of the one who asked only: ``invitation``, to show the
+    invitation's link once (POST /invitations/<id>/link: the fragment that comes back takes the
+    place of ``.invitation-link``, fragments/invitation_link.html), and ``rekey_url``, to open the
+    form for the model's key (fragments/key_rekey.html), and ``key_new_url``, to open the form of a
+    new key of one's own (GET: fragments/key_new.html takes the place of ``.key-new-button``), and
+    ``admin_url``, to open the form of the admin key of one's own key (fragments/key_admin_button.html).
+    ``key_check_url`` is the button that checks a new key of a server without a key (POST: what the
+    check found takes the place of ``.key-check``). A chain's card has the same buttons, one
+    group per step that left one (``buttons``), each under the number of its step, its link's
+    ``.invitation-link`` carrying ``data-step``. ``head`` is the head the assistant wrote for the reader
+    in place of ``text`` (texts.cards): one text, its line breaks kept (``.action-head``, app.css).
+    Every value is output through autoescaping: the text holds names that people or the model
+    wrote. -#}
+<div class="action-card" data-action-status="{{ action.status }}" data-tool="{{ action.tool }}">{% if action.head %}<p class="action-head">{{ action.head }}</p>{% else %}<p class="action-text">{{ action.text }}</p>{% endif %}{% if action.once %}<p class="action-once">{{ action.once }}{% if action.link %} <a class="action-link" href="{{ action.link }}">{{ action.link }}</a>{% endif %}</p>{% endif %}{% if action.rights %}<div class="action-rights"><p>{{ action.rights_title }}</p><ul>{% for summary in action.rights %}<li>{{ summary }}</li>{% endfor %}</ul></div>{% endif %}{% if action.invitation %}<div class="invitation-link"><button type="button" class="primary" data-action="show-link" hx-post="/invitations/{{ action.invitation }}/link" hx-target="closest .invitation-link" hx-swap="outerHTML">{{ t("invitation.link.show") }}</button></div>{% endif %}{% if action.rekey_url %}{% with rekey_url = action.rekey_url, target = "closest .key-rekey" %}{% include "fragments/key_rekey.html" %}{% endwith %}{% endif %}{% if action.key_new_url %}{% with key_new_url = action.key_new_url %}{% include "fragments/key_new_button.html" %}{% endwith %}{% endif %}{% if action.admin_url %}{% with admin_url = action.admin_url %}{% include "fragments/key_admin_button.html" %}{% endwith %}{% endif %}{% if action.key_check_url %}<div class="key-check"><button type="button" class="primary" data-action="key-check" hx-post="{{ action.key_check_url }}" hx-target="closest .key-check" hx-swap="outerHTML" hx-disabled-elt="this">{{ t("chat.key.action.check") }}</button></div>{% endif %}{% for button in action.buttons %}<div class="action-step-buttons"><p class="action-step">{{ t("action.card.step", step=button.step|string) }}</p>{% if button.invitation %}<div class="invitation-link" data-step="{{ button.step }}"><button type="button" class="primary" data-action="show-link" hx-post="/invitations/{{ button.invitation }}/link" hx-target="closest .invitation-link" hx-swap="outerHTML">{{ t("invitation.link.show") }}</button></div>{% endif %}{% if button.rekey_url %}{% with rekey_url = button.rekey_url, target = "closest .key-rekey" %}{% include "fragments/key_rekey.html" %}{% endwith %}{% endif %}{% if button.key_new_url %}{% with key_new_url = button.key_new_url %}{% include "fragments/key_new_button.html" %}{% endwith %}{% endif %}{% if button.admin_url %}{% with admin_url = button.admin_url %}{% include "fragments/key_admin_button.html" %}{% endwith %}{% endif %}</div>{% endfor %}{% if action.key_form %}{% with form_path = action.key_form, status_url = action.key_status_url %}{% include "fragments/key_form.html" %}{% endwith %}{% endif %}</div>

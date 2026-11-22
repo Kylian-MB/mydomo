@@ -1,0 +1,76 @@
+# The edge proxy (Caddy): the only service whose ports are published. It serves the web page over
+# HTTPS with a local certificate authority, redirects HTTP to HTTPS, sends the vault paths straight
+# to the gatekeeper (a secret typed there never passes through the core) and everything else to
+# the core.
+#
+# The {$NAME:default} placeholders are read from the environment when Caddy starts; compose.yaml
+# passes them from .env (see .env.example), and start.sh adds DOMO_DEFAULT_SNI.
+#
+# No access log: the path of the vault form carries a one-time token.
+{
+	# Certificates come from Caddy's own local authority, never from a public one: a home server
+	# is usually not reachable from the Internet, and a LAN address cannot get a public
+	# certificate. The authority is created on the first start, in the caddy-data volume.
+	local_certs
+	# Caddy does not try to install its root anywhere: devices download it from /ca.crt.
+	skip_install_trust
+	http_port {$DOMO_HTTP_PORT:8080}
+	https_port {$DOMO_HTTPS_PORT:8443}
+	# Caddy's own redirects leave out the port when it is https_port (it expects 443 to be
+	# forwarded to it): the published port is https_port itself, so the site below redirects.
+	auto_https disable_redirects
+	# The certificate for browsers that send no server name (a page opened by IP address): set by
+	# start.sh to the first IPv4 address of DOMO_SITE_ADDRESSES.
+	default_sni {$DOMO_DEFAULT_SNI:localhost}
+	servers {
+		# Only TCP is published: no HTTP/3, so no browser is invited to a UDP port that is closed.
+		protocols h1 h2
+	}
+	# The container's health check calls the admin endpoint (inside the container only) every
+	# few seconds: those requests stay out of the log.
+	log default {
+		exclude admin.api
+	}
+}
+
+# Plain HTTP only redirects to the page, on the HTTPS port, for whatever name or address the
+# browser used (as Caddy's own redirects do).
+http:// {
+	redir https://{host}:{$DOMO_HTTPS_PORT:8443}{uri} 308
+}
+
+{$DOMO_SITE_ADDRESSES:localhost} {
+	tls internal
+
+	# The root certificate of the local authority, for devices to trust the page. Only this exact
+	# path, rewritten to one fixed file: nothing else of the authority's directory is served.
+	handle /ca.crt {
+		root * /data/caddy/pki/authorities/local
+		rewrite * /root.crt
+		header Content-Type application/x-x509-ca-cert
+		file_server
+	}
+
+	# The vault form, served by the gatekeeper itself. Its bodies are small: the same limit as the
+	# gatekeeper's own (128 KiB, enough for the longest value it accepts, percent-encoded), so a
+	# bigger one never reaches it. The form needs no cookie, and the browser's cookies for this
+	# site include the core's session: they are dropped on the way.
+	handle /vault/* {
+		request_body {
+			max_size 128KiB
+		}
+		reverse_proxy gatekeeper:8082 {
+			header_up -Cookie
+		}
+	}
+
+	# Everything else: the core. The Host header goes through unchanged (Caddy's default), which
+	# the core's Origin check relies on; Caddy sets X-Forwarded-For and X-Forwarded-Proto, and
+	# replaces whatever the client sent in them.
+	handle {
+		request_body {
+			max_size 1MB
+		}
+		reverse_proxy core:8000
+	}
+}

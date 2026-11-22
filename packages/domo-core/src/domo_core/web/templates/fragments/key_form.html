@@ -1,0 +1,14 @@
+{#- The gatekeeper's form for the model's key, in a frame: the key goes from the browser to the
+    vault, never through the core. It is shown under the card of the yes that opened it
+    (tools.model_key, through fragments/action_card.html), or in place of the owner's "Enter the
+    key again" button (channels.page.key_routes). ``form_path`` is the form's path (a one-time token: it is
+    only in that one answer, never stored) and ``status_url`` the address that follows it
+    (channels.page.key_routes). The poll is a fragment of its own, so that a "still waiting" answer does
+    not put the frame (and the key being typed) back; the answer that ends it takes the place of
+    this whole block. The frame is not sandboxed (the form must be able to post) and sends no
+    referrer. -#}
+<div class="key-form" data-key-form>
+  <iframe class="vault-frame" src="{{ form_path }}" title="{{ t('chat.key.frame_title') }}"
+          referrerpolicy="no-referrer"></iframe>
+{% include "fragments/key_poll.html" %}
+</div>

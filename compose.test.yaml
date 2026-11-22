@@ -1,0 +1,30 @@
+# For the end-to-end tests only (tests/e2e): a second compose file, added to compose.yaml.
+#
+#   FAKE_LLM_EXPECTED_KEY=<a test key> docker compose -f compose.yaml -f compose.test.yaml up -d
+#
+# It adds one service, a fake model provider that speaks the OpenAI chat completions API
+# (tests/fakes/fake_llm), and changes nothing else: every service, network and volume of
+# compose.yaml stays as it is (tests/stack/test_compose_config.py checks it). Never use it to run
+# a real instance.
+#
+# The fake is on the egress network and nowhere else: the gatekeeper, the only service that reaches
+# a provider, calls it as http://fake-llm:9000/v1, the way it would call a server of the owner's own
+# on the network. The core cannot reach it. It publishes no port.
+
+services:
+  fake-llm:
+    build:
+      context: tests/fakes/fake_llm
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    user: "10001:10001"
+    environment:
+      # The only key it accepts (and so the one the tests put in the vault).
+      FAKE_LLM_EXPECTED_KEY: ${FAKE_LLM_EXPECTED_KEY:?set FAKE_LLM_EXPECTED_KEY to the test key the fake model accepts}
+      TZ: ${TZ:-UTC}
+    networks:
+      - egress
+    restart: unless-stopped

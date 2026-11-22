@@ -1,0 +1,27 @@
+{#- Why the model is not set up (kind: what the provider's check said, or what the vault said, or
+    that the key form ran out) and what can be done about it. Tests and the browser tests look for
+    ``data-model-error`` (the kind) and ``data-action`` (rekey, retry, discard). Trying again
+    checks the model: the button is disabled and the note shows while it runs, as in the form. -#}
+<div class="model-error" data-model-error="{{ kind }}">
+  <p class="alert" role="alert">{{ t("setup.model.error." ~ kind) }}</p>
+  <div class="actions">
+{% if can_rekey %}
+    <button type="button" class="primary" data-action="rekey"
+            hx-post="/setup/model/{{ provider_id }}/rekey" hx-target="#model-step" hx-swap="innerHTML">{{ t("setup.model.action.rekey") }}</button>
+{% endif %}
+{% if can_retry %}
+    <button type="button" class="primary" data-action="retry"
+            hx-post="/setup/model/{{ provider_id }}/retry" hx-target="#model-step" hx-swap="innerHTML"
+            hx-disabled-elt="this" hx-indicator="#model-checking">{{ t("setup.model.action.retry") }}</button>
+{% endif %}
+{% if provider_id %}
+    <button type="button" data-action="discard"
+            hx-post="/setup/model/{{ provider_id }}/discard" hx-target="#model-step" hx-swap="innerHTML">{{ t("setup.model.action.discard") }}</button>
+{% else %}
+    <a class="button" data-action="discard" href="/setup/model">{{ t("setup.model.action.discard") }}</a>
+{% endif %}
+  </div>
+{% if can_retry %}
+  <p class="muted busy-status" role="status"><span id="model-checking" class="busy-note">{{ t("setup.model.checking") }}</span></p>
+{% endif %}
+</div>

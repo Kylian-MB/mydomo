@@ -1,0 +1,9 @@
+{#- The answer to a posted message: the person's bubble, and the empty one of the reply, which
+    opens the stream. The notice area is emptied on the way (an earlier refusal is over). -#}
+{% with message = user_message, live = false %}
+{% include "fragments/message.html" %}
+{% endwith %}
+{% with message = reply, live = true %}
+{% include "fragments/message.html" %}
+{% endwith %}
+<div id="chat-notice" class="chat-notice" role="alert" hx-swap-oob="true"></div>

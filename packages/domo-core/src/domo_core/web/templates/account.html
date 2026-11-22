@@ -1,0 +1,107 @@
+{#- The account page (accounts/account_routes.py). ``person`` is whoever is signed in, ``username``
+    their login. ``saved`` is the change a redirect reports (``name`` or ``password``), if any;
+    ``name_value`` what the name field holds; ``name_error`` and ``password_error`` are the
+    (catalog key, parameters) of a refusal, if any. The details carry ``data-account-name``,
+    ``data-account-username`` and ``data-account-role`` (tests read them, whatever the language).
+    Every value is output through autoescaping: a name was written by a person, or by the model
+    on their behalf. The password fields are never filled in.
+    The passkeys section (``data-passkeys="slot"``) lists ``passkey_list`` (a person wrote each
+    label) with a form to remove each one, and ``passkey_error`` is the (key, parameters) of a
+    refused passkey. ``passkeys`` says whether the request can use passkeys: where it can, a form
+    adds one (static/passkeys.js asks for the options with the password, lets the browser answer
+    and posts the answer in ``credential``; its button stays hidden until the script has checked
+    that the browser can do it); elsewhere the page says why (``data-passkeys-unavailable`` is
+    ``ip`` or ``address``). -#}
+{% extends "base.html" %}
+{% block title %}{{ t("account.title") }}{% endblock %}
+{% block content %}
+    <section class="card">
+      <h1>{{ t("account.title") }}</h1>
+{% if saved %}
+      <p class="notice ok" role="status" data-saved="{{ saved }}">{{ t("account.saved." + saved) }}</p>
+{% endif %}
+      <dl class="account-details">
+        <dt>{{ t("account.display_name") }}</dt>
+        <dd data-account-name="{{ person.display_name }}">{{ person.display_name }}</dd>
+        <dt>{{ t("account.username") }}</dt>
+        <dd data-account-username="{{ username }}">{{ username }}</dd>
+        <dt>{{ t("account.role") }}</dt>
+        <dd data-account-role="{{ person.role }}">{{ t("household.role." + person.role) }}</dd>
+      </dl>
+
+      <h2>{{ t("account.name.heading") }}</h2>
+{% if name_error %}
+      <p class="alert" role="alert">{{ t(name_error[0], **name_error[1]) }}</p>
+{% endif %}
+      <form class="stack" method="post" action="/account/name">
+        <label for="name">{{ t("account.name.label") }}</label>
+        <input id="name" name="name" type="text" value="{{ name_value }}"
+               autocomplete="name" aria-describedby="name-hint" required>
+        <p id="name-hint" class="muted">{{ t("account.name.hint", max=max_name_length|string) }}</p>
+        <button type="submit" class="primary">{{ t("account.name.submit") }}</button>
+      </form>
+
+      <h2>{{ t("account.password.heading") }}</h2>
+{% if password_error %}
+      <p class="alert" role="alert">{{ t(password_error[0], **password_error[1]) }}</p>
+{% endif %}
+      <form class="stack" method="post" action="/account/password">
+        <label for="current">{{ t("account.password.current") }}</label>
+        <input id="current" name="current" type="password" autocomplete="current-password" required>
+        <label for="new">{{ t("account.password.new") }}</label>
+        <input id="new" name="new" type="password" autocomplete="new-password"
+               minlength="{{ min_password_length }}" aria-describedby="new-hint" required>
+        <p id="new-hint" class="muted">{{ t("account.password.hint", min=min_password_length|string) }}</p>
+        <label for="confirm">{{ t("account.password.confirm") }}</label>
+        <input id="confirm" name="confirm" type="password" autocomplete="new-password"
+               minlength="{{ min_password_length }}" required>
+        <button type="submit" class="primary">{{ t("account.password.submit") }}</button>
+      </form>
+
+      <section data-passkeys="slot">
+        <h2>{{ t("account.passkeys.heading") }}</h2>
+{% if passkey_error %}
+        <p class="alert" role="alert">{{ t(passkey_error[0], **passkey_error[1]) }}</p>
+{% endif %}
+        <p class="muted">{{ t("account.passkeys.intro") }}</p>
+{% if passkey_list %}
+        <ul class="passkey-list">
+{% for passkey in passkey_list %}
+          <li class="passkey" data-passkey-id="{{ passkey.id }}">
+            <span class="passkey-label">{{ passkey.label }}</span>
+            <span class="passkey-meta">{{ t("account.passkeys.added", date=passkey.added) }} · {% if passkey.last_used %}{{ t("account.passkeys.last_used", date=passkey.last_used) }}{% else %}{{ t("account.passkeys.never_used") }}{% endif %}</span>
+            <form method="post" action="/account/passkeys/{{ passkey.id }}/delete">
+              <button type="submit" class="link" data-action="passkey-remove">{{ t("account.passkeys.remove") }}<span class="visually-hidden"> {{ passkey.label }}</span></button>
+            </form>
+          </li>
+{% endfor %}
+        </ul>
+{% else %}
+        <p class="muted">{{ t("account.passkeys.none") }}</p>
+{% endif %}
+{% if passkeys.site %}
+        <h3>{{ t("account.passkeys.add_heading") }}</h3>
+        <form class="stack" method="post" action="/account/passkeys"
+              data-passkey-form="register" data-options-url="/account/passkeys/options"
+              data-message-cancelled="{{ t('account.passkeys.error.cancelled') }}"
+              data-message-failed="{{ t('account.passkeys.error.failed') }}"
+              data-message-unsupported="{{ t('account.passkeys.error.unsupported') }}">
+          <input type="hidden" name="credential" value="">
+          <label for="passkey-label">{{ t("account.passkeys.label") }}</label>
+          <input id="passkey-label" name="label" type="text" maxlength="{{ max_passkey_label_length }}"
+                 autocomplete="off" aria-describedby="passkey-label-hint" required>
+          <p id="passkey-label-hint" class="muted">{{ t("account.passkeys.label_hint", max=max_passkey_label_length|string) }}</p>
+          <label for="passkey-current">{{ t("account.passkeys.current") }}</label>
+          <input id="passkey-current" name="current" type="password" autocomplete="current-password"
+                 aria-describedby="passkey-current-hint" required>
+          <p id="passkey-current-hint" class="muted">{{ t("account.passkeys.current_hint") }}</p>
+          <p class="alert" data-passkey-message hidden></p>
+          <button type="submit" class="primary" data-action="passkey-register" data-passkey-only hidden>{{ t("account.passkeys.submit") }}</button>
+        </form>
+        <script src="{{ static_url('passkeys.js') }}" defer></script>
+{% else %}
+        <p class="muted" data-passkeys-unavailable="{{ passkeys.unavailable }}">{{ t("account.passkeys.ip_unavailable" if passkeys.unavailable == "ip" else "account.passkeys.unavailable") }}</p>
+{% endif %}
+      </section>
+    </section>
+{% endblock %}

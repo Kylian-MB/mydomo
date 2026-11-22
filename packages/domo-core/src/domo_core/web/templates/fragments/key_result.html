@@ -1,0 +1,8 @@
+{#- What came of the form for the model's key (channels.page.key_routes), in the place of the form and its
+    poll: ``status`` is checked (the new key works), failed (``kind`` says what failed, as
+    ``data-model-error``), expired or superseded (the form is over and the key did not change:
+    The assistant can open a new one), or lost (the vault no longer knows the form); ``message`` says it
+    in the owner's language. ``rekey_url``, for anything but a key that works (and a destination
+    the vault refuses), is where the owner's "Enter the key again" button opens a new form
+    (fragments/key_rekey.html), in the place of this answer. -#}
+<div class="key-result" data-key-status="{{ status }}"{% if kind %} data-model-error="{{ kind }}"{% endif %} role="{{ 'alert' if kind else 'status' }}"><p>{{ message }}</p>{% if rekey_url %}{% with target = "closest .key-result" %}{% include "fragments/key_rekey.html" %}{% endwith %}{% endif %}</div>

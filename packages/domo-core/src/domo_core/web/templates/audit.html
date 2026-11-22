@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}{{ t("audit.title") }}{% endblock %}
+{% block content %}
+    <section class="card">
+      <h1>{{ t("audit.title") }}</h1>
+{% if check.ok %}
+      <p class="notice ok" role="status" data-chain-status="ok">{{ t("audit.chain.ok", count=check.count) }}</p>
+{% else %}
+      <p class="alert" role="alert" data-chain-status="broken">{{ t("audit.chain.broken", id=check.first_bad_id) }}</p>
+{% endif %}
+      <p class="muted">{{ t("audit.intro", limit=limit) }}</p>
+{% if rows %}
+      <ul class="audit-list">
+{% for row in rows %}
+        <li class="audit-entry" data-entry-id="{{ row.id }}">{{ row.line }}</li>
+{% endfor %}
+      </ul>
+{% else %}
+      <p>{{ t("audit.empty") }}</p>
+{% endif %}
+    </section>
+{% endblock %}

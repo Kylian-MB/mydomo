@@ -1,0 +1,25 @@
+# Keep LF line endings on every platform (Dockerfiles, shell scripts and
+# config files must not be checked out with CRLF on Windows).
+* text=auto eol=lf
+
+# Binary files: never touch line endings, never diff as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.zip binary
+*.gz binary
+*.tar binary
+
+# Left out of the published copy (git archive): the step-by-step plans already
+# carried out. The design documents (docs/superpowers/specs) and the notes kept
+# while building (docs/superpowers/followups) are published.
+docs/superpowers/plans export-ignore

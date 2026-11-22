@@ -1,0 +1,6 @@
+{#- What waits for the model's key (channels.page.key_routes): it asks where the form stands every two
+    seconds and replaces itself with the answer. ``note`` (if given) says that the vault did not
+    answer just now: the poll goes on. No trigger filter: with htmx's allowEval off, a filter is
+    silently always true. -#}
+<div class="key-poll" role="status"
+     hx-get="{{ status_url }}" hx-trigger="every 2s" hx-swap="outerHTML">{% if note is defined and note %}{{ t("chat.key.waiting_vault") }}{% else %}{{ t("chat.key.waiting") }}{% endif %}</div>

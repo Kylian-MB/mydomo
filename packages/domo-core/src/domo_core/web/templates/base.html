@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="{{ lang }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#1f5fbf">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="htmx-config" content='{"allowEval": false, "allowScriptTags": false, "includeIndicatorStyles": false, "historyCacheSize": 0}'>
+  {#- The name the person reading calls the assistant by, on their own pages only (spec 6.7): a word
+      that takes the place of "Domo", escaped like any text someone gave. -#}
+  {% set domo = (person.calls_domo or "Domo") if person is defined else "Domo" %}
+  <title>{% block title %}{% endblock %} - {{ domo }}</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="{{ static_url('icon.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ static_url('app.css') }}">
+  <script src="{{ static_url('htmx.min.js') }}" defer></script>
+  <script src="{{ static_url('htmx-ext-sse.js') }}" defer></script>
+</head>
+{#- A page rendered for someone says for whom with each of its requests (htmx sends
+    "hx-headers" with every request of the page; chat.js reads "data-page-person" for its own):
+    when the browser's session became someone else's since, the server does nothing and has
+    the tab reload (web.deps.current_person). -#}
+<body{% if person is defined %} data-page-person="{{ person.id }}" hx-headers='{"X-Domo-Page-Person": "{{ person.id }}"}'{% endif %}>
+  <header class="topbar">
+    <a class="brand" href="/">{{ domo }}</a>
+{% if person is defined %}
+    <nav class="nav" aria-label="{{ t('nav.label') }}">
+      <a href="/chat">{{ t("nav.chat") }}</a>
+{% if person.role == "owner" %}
+      <a href="/household">{{ t("nav.household") }}</a>
+      <a href="/audit">{{ t("nav.audit") }}</a>
+{% endif %}
+      <a href="/account">{{ t("nav.account") }}</a>
+    </nav>
+    <form class="logout" method="post" action="/logout">
+      <button type="submit" class="link">{{ t("nav.logout") }}</button>
+    </form>
+{% endif %}
+  </header>
+  <main class="page">
+{% block content %}{% endblock %}
+  </main>
+</body>
+</html>

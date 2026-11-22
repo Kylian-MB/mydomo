@@ -1,0 +1,10 @@
+{#- The answer to the "Show the link" button of a card (POST /invitations/<id>/link,
+    household.routes), in the place of the button. With a ``link``: the link, as a link the person
+    can open or copy, with the sentence that says it is shown only now. Without one (the status is
+    410): the link was shown already, or the invitation is closed. Every value is output through
+    autoescaping: the sentence holds a name that someone wrote. -#}
+{% if link %}
+<p class="action-once invitation-link" data-invitation-link="shown">{{ once }} <a class="action-link" href="{{ link }}">{{ link }}</a></p>
+{% else %}
+<p class="action-once invitation-link" data-invitation-link="gone" role="status">{{ t("invitation.link.gone") }}</p>
+{% endif %}

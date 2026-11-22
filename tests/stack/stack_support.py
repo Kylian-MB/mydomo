@@ -1,0 +1,292 @@
+"""Starting the Docker Compose stack for the tests, and looking into it.
+
+``running_stack`` builds the images from the working tree, starts the stack, waits until every
+service is healthy and the HTTPS site answers, and always takes the stack down again with its
+volumes: when the tests are over, when they fail, and when the start itself fails. It also takes
+down what a previous, interrupted run may have left, so every run starts from a new instance.
+
+``StackInfo`` is what the tests get: the URLs of the page, and ways to run a command in a
+service, read its log and inspect its container.
+
+The project name (``domo-test``), and the ports (18443 and 18080, on 127.0.0.1) and internal
+network (``DOMO_CORE_NET_PREFIX=10.247.91``, so ``10.247.91.0/24``) of ``test.env``, keep the
+test stack apart from a real instance on the same machine: its own containers, networks, volumes
+and images. Docker refuses a network whose fixed subnet overlaps another's, so a variant of the
+stack (more compose files, more environment) that may run at the same time as another stack
+needs its own project name, its own ports and its own ``DOMO_CORE_NET_PREFIX`` (through its
+env file or ``extra_env``: the shell's ``DOMO_*`` variables are not passed on).
+
+``running_stack_with_fake_llm`` is the variant of the end-to-end tests (``tests/e2e``): the stack
+plus the fake model service of ``compose.test.yaml``, and a new random test key it accepts
+(``StackInfo.test_key``). Those stacks have their own project names, ports and core networks
+(``tests/e2e/*.env``), so that they can run next to the one of ``test.env``.
+
+The environment the ``docker`` commands run in is the test runner's, without its ``DOMO_*``
+variables and the ones ``test.env`` sets: a variable of the shell would win over ``test.env``.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import secrets
+import subprocess
+import time
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+# Relative to the repository root, where the docker commands run.
+TEST_ENV_FILE = "tests/stack/test.env"
+BASE_COMPOSE_FILES: tuple[str, ...] = ("compose.yaml",)
+# The end-to-end tests add a fake model provider to the stack (see compose.test.yaml); the key it
+# accepts is passed to Compose through this variable.
+FAKE_LLM_COMPOSE_FILES: tuple[str, ...] = (*BASE_COMPOSE_FILES, "compose.test.yaml")
+FAKE_LLM_KEY_VARIABLE = "FAKE_LLM_EXPECTED_KEY"
+PROJECT = "domo-test"
+MIN_DOCKER_MAJOR = 28
+
+# The first build downloads the dependencies: give it time.
+UP_TIMEOUT_S = 900
+# After `up --wait`: until the edge has issued its certificate and the page answers.
+READY_TIMEOUT_S = 60
+COMMAND_TIMEOUT_S = 120
+# The core logs its setup code when it starts; logs can lag a little behind the container.
+SETUP_CODE_WAIT_S = 15
+SETUP_CODE_LINE = re.compile(
+    r"The assistant setup code: "
+    r"([A-HJ-NP-Z2-9]{4}(?:-[A-HJ-NP-Z2-9]{4}){2})"
+)
+
+
+def read_env_file(path: Path) -> dict[str, str]:
+    """The ``NAME=value`` lines of an env file (comments and blank lines skipped)."""
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            name, value = line.split("=", 1)
+            values[name.strip()] = value.strip()
+    return values
+
+
+def docker_environment(
+    env_file: str = TEST_ENV_FILE, extra_env: Mapping[str, str] | None = None
+) -> dict[str, str]:
+    """The environment of the docker commands: the runner's, minus what could override the
+    settings of ``env_file``, plus ``extra_env``."""
+    overridden = set(read_env_file(REPO_ROOT / env_file))
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith(("DOMO_", "FAKE_LLM_")) and name not in overridden
+    }
+    env.update(extra_env or {})
+    return env
+
+
+def run(
+    command: Sequence[str],
+    *,
+    env: Mapping[str, str] | None = None,
+    timeout: float = COMMAND_TIMEOUT_S,
+) -> subprocess.CompletedProcess[str]:
+    """Run ``command`` from the repository root and capture its output (never raises on a
+    non-zero exit: callers look at ``returncode``)."""
+    return subprocess.run(
+        list(command),
+        cwd=REPO_ROOT,
+        env=dict(env) if env is not None else None,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        check=False,
+    )
+
+
+@dataclass(frozen=True)
+class StackInfo:
+    """A running stack, as the tests see it."""
+
+    base_url: str
+    http_url: str
+    project: str
+    compose_command: tuple[str, ...] = ()
+    env: Mapping[str, str] = field(default_factory=dict[str, str])
+
+    def compose(
+        self, *args: str, timeout: float = COMMAND_TIMEOUT_S
+    ) -> subprocess.CompletedProcess[str]:
+        """``docker compose`` with this stack's project, env file and compose files."""
+        return run([*self.compose_command, *args], env=self.env, timeout=timeout)
+
+    def exec(
+        self, service: str, cmd: list[str], *, user: str | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        """Run ``cmd`` in the running container of ``service`` (as ``user`` when given)."""
+        options = ["-T", *(["--user", user] if user is not None else [])]
+        return self.compose("exec", *options, service, *cmd)
+
+    def logs(self, service: str) -> str:
+        """Everything ``service`` wrote to its output so far. A failed ``docker compose logs`` is
+        an error, not an empty log: a test that looks for something to be absent must not pass on
+        a log it could not read."""
+        result = self.compose("logs", "--no-color", "--no-log-prefix", service)
+        if result.returncode != 0:
+            raise AssertionError(f"`docker compose logs {service}` failed: {result.stderr}")
+        return result.stdout
+
+    def setup_code(self) -> str:
+        """The one-time setup code the core logged when it started (the last one, if it logged
+        several): what whoever runs the server reads in the logs and types into the first page."""
+        deadline = time.monotonic() + SETUP_CODE_WAIT_S
+        while True:
+            codes = SETUP_CODE_LINE.findall(self.logs("core"))
+            if codes:
+                return codes[-1]
+            if time.monotonic() > deadline:
+                raise AssertionError("the core's log has no setup code")
+            time.sleep(0.5)
+
+    @property
+    def test_key(self) -> str:
+        """The API key the fake model service accepts (stacks started with it only)."""
+        try:
+            return self.env[FAKE_LLM_KEY_VARIABLE]
+        except KeyError:
+            raise AssertionError("this stack has no fake model service") from None
+
+    def container_id(self, service: str) -> str:
+        """The id of the container of ``service`` (running or not: ``init`` has exited)."""
+        ids = self.compose("ps", "--all", "--quiet", service).stdout.split()
+        if len(ids) != 1:
+            raise AssertionError(f"expected one container for {service}, found {ids}")
+        return ids[0]
+
+    def inspect(self, service: str) -> dict[str, Any]:
+        """``docker inspect`` of the container of ``service``."""
+        return self.inspect_object(self.container_id(service))
+
+    def inspect_network(self, network: str) -> dict[str, Any]:
+        """``docker network inspect`` of one of the compose file's networks."""
+        return self.inspect_object(self.network_name(network), kind="network")
+
+    def inspect_object(self, name: str, *, kind: str | None = None) -> dict[str, Any]:
+        command = ["docker", *([kind] if kind else []), "inspect", name]
+        result = run(command, env=self.env)
+        if result.returncode != 0:
+            raise AssertionError(f"{' '.join(command)} failed: {result.stderr}")
+        [found] = json.loads(result.stdout)
+        return found
+
+    def network_name(self, network: str) -> str:
+        """The Docker name of one of the compose file's networks (or volumes)."""
+        return f"{self.project}_{network}"
+
+
+def require_docker(env: Mapping[str, str]) -> None:
+    """Fail when there is no Docker engine (or one older than 28); skip when it only runs
+    Windows containers."""
+    result = run(["docker", "version", "--format", "{{.Server.Version}} {{.Server.Os}}"], env=env)
+    if result.returncode != 0:
+        pytest.fail(
+            "The stack tests need a running Docker engine (28 or later, with Compose): "
+            f"`docker version` failed: {result.stderr.strip()}"
+        )
+    version, _, server_os = result.stdout.strip().partition(" ")
+    if server_os != "linux":
+        pytest.skip(f"The Docker engine runs {server_os} containers; the stack needs Linux ones")
+    major = int(version.split(".", 1)[0])
+    if major < MIN_DOCKER_MAJOR:
+        pytest.fail(f"The stack needs Docker {MIN_DOCKER_MAJOR} or later, found {version}")
+
+
+def wait_until_ready(base_url: str) -> None:
+    """Wait until the page answers over HTTPS (the edge issues its certificate when it starts)."""
+    deadline = time.monotonic() + READY_TIMEOUT_S
+    last_error = "no answer"
+    while time.monotonic() < deadline:
+        try:
+            response = httpx.get(f"{base_url}/ca.crt", verify=False, timeout=5)
+            if response.status_code == 200:
+                return
+            last_error = f"status {response.status_code}"
+        except httpx.HTTPError as exc:
+            last_error = repr(exc)
+        time.sleep(1)
+    pytest.fail(f"The page at {base_url} did not answer in {READY_TIMEOUT_S} s: {last_error}")
+
+
+@contextmanager
+def running_stack(
+    *,
+    files: Sequence[str] = BASE_COMPOSE_FILES,
+    extra_env: Mapping[str, str] | None = None,
+    project: str = PROJECT,
+    env_file: str = TEST_ENV_FILE,
+) -> Iterator[StackInfo]:
+    """Start the stack (``docker compose up -d --build --wait``), yield it, and take it down with
+    its volumes (``down -v --remove-orphans``) whatever happens.
+
+    Two stacks running at the same time need different ``project`` names, ports and
+    ``DOMO_CORE_NET_PREFIX`` values (see the module's docstring).
+    """
+    env = docker_environment(env_file, extra_env)
+    require_docker(env)
+    settings = read_env_file(REPO_ROOT / env_file)
+    compose = ["docker", "compose", "-p", project, "--env-file", env_file]
+    for compose_file in files:
+        compose += ["-f", compose_file]
+    info = StackInfo(
+        base_url=f"https://localhost:{settings['DOMO_HTTPS_PORT']}",
+        http_url=f"http://localhost:{settings['DOMO_HTTP_PORT']}",
+        project=project,
+        compose_command=tuple(compose),
+        env=env,
+    )
+
+    def down() -> subprocess.CompletedProcess[str]:
+        return info.compose("down", "--volumes", "--remove-orphans", timeout=COMMAND_TIMEOUT_S)
+
+    down()  # what an interrupted run may have left
+    try:
+        started = info.compose("up", "--detach", "--build", "--wait", timeout=UP_TIMEOUT_S)
+        if started.returncode != 0:
+            status = info.compose("ps", "--all").stdout
+            logs = info.compose("logs", "--no-color", "--tail", "40").stdout
+            pytest.fail(
+                f"`docker compose up` failed ({started.returncode}).\n{started.stderr[-4000:]}\n"
+                f"--- containers ---\n{status}\n--- logs ---\n{logs[-8000:]}"
+            )
+        wait_until_ready(info.base_url)
+        yield info
+    finally:
+        stopped = down()
+    # Only reached when nothing else failed: a failure to clean up must not hide the first one.
+    if stopped.returncode != 0:
+        raise RuntimeError(f"`docker compose down` failed: {stopped.stderr}")
+
+
+@contextmanager
+def running_stack_with_fake_llm(*, project: str, env_file: str) -> Iterator[StackInfo]:
+    """``running_stack`` with the fake model service of ``compose.test.yaml``, which accepts one
+    new random test key per run (``StackInfo.test_key``). It is a variant of the stack that may run
+    next to another one, so ``project`` and ``env_file`` (ports, ``DOMO_CORE_NET_PREFIX``) are
+    required."""
+    key = "sk-test-" + secrets.token_hex(16)
+    with running_stack(
+        files=FAKE_LLM_COMPOSE_FILES,
+        extra_env={FAKE_LLM_KEY_VARIABLE: key},
+        project=project,
+        env_file=env_file,
+    ) as info:
+        yield info

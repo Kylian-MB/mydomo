@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}{{ t("setup.model.title") }}{% endblock %}
+{% block content %}
+    <section class="card narrow">
+      <h1>{{ t("setup.model.title") }}</h1>
+      <p class="muted">{{ t("setup.model.intro") }}</p>
+{#- The step is one container: the form, the vault form and its wait, and the errors all take its
+    place in turn (htmx swaps them in), so what follows a choice never reloads the page. -#}
+      <div id="model-step">
+{% include "fragments/model_form.html" %}
+      </div>
+    </section>
+    <script src="{{ static_url('model-step.js') }}" defer></script>
+{% endblock %}

@@ -1,0 +1,20 @@
+
+# Secrets et données d'instance
+.env
+.env.*
+!.env.example
+data/
+# The catalog of models ships with the package
+!packages/domo-core/src/domo_core/llm/data/
+secrets/
+
+# Python and tooling caches
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+test-results/
+
+# Local agent workspace
+.superpowers/
+.idea/

@@ -1,0 +1,17 @@
+# What a build never needs: keeps the context small and keeps local state and notes out of it.
+.git
+.github
+.venv
+.superpowers
+.pytest_cache
+.ruff_cache
+.pyright
+**/__pycache__
+**/*.pyc
+docs
+packages/*/tests
+# Instance settings and data, keys: never part of an image.
+.env
+.env.*
+**/*.key
+**/*.db
