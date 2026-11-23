@@ -68,7 +68,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from web_support import OWNER_PASSWORD, OWNER_USERNAME
 
 # How long a test waits for the server, a stream or a database change before giving up.
-WAIT_SECONDS = 10.0
+# Long enough for a pause of a shared build machine (11 s seen); a test that hangs still fails.
+WAIT_SECONDS = 30.0
 
 
 class _Server(uvicorn.Server):

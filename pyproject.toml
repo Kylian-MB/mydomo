@@ -21,6 +21,7 @@ dev = [
     "pip-licenses",
     "pre-commit",
     "httpx>=0.28.1",
+    "pytest-xdist>=3.8.0",
 ]
 # Only what the license check needs: it runs in an environment without the dev tools
 # (see scripts/check_licenses.py).

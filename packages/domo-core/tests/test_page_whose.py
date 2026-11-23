@@ -92,7 +92,9 @@ async def test_a_message_sent_from_another_persons_page_is_not_sent(
     assert await conversations_of(adult_chat) == 1 and len(chat_server.calls) > calls
 
 
-@pytest.mark.parametrize("path", ["/chat/since", f"/chat/since/{uuid.uuid4()}", "/approvals"])
+@pytest.mark.parametrize(
+    "path", ["/chat/since", "/chat/since/00000000-0000-4000-8000-000000000001", "/approvals"]
+)
 async def test_what_an_open_page_asks_by_itself_notices_it_too(owner_chat, adult_chat, path):
     """The page asks for what is new every few seconds: a tab left open corrects itself even if
     nothing is typed in it."""

@@ -993,13 +993,18 @@ def test_a_confirmation_card_is_read_from_its_html():
 # --- fix round 1: time limits, too many calls, records that cannot be stored ---------------------
 
 
-def test_the_arguments_are_read_only_when_short_flat_json_objects():
-    with pytest.raises(RecursionError):  # what the parser does with "[" * 5000
-        json.loads("[" * 5000)
+def test_the_arguments_are_read_only_when_short_flat_json_objects(monkeypatch):
     assert execution._arguments_of("[" * 5000) is None
     assert execution._arguments_of('{"a": "' + "x" * 16_000 + '"}') is None
     assert execution._arguments_of("[1]") is None
     assert execution._arguments_of('{"name": "Alex"}') == {"name": "Alex"}
+
+    # How deep the parser goes before it gives up depends on the Python and the system.
+    def too_deep(raw: str) -> object:
+        raise RecursionError
+
+    monkeypatch.setattr(execution.json, "loads", too_deep)
+    assert execution._arguments_of('{"name": "Alex"}') is None
 
 
 async def test_a_tool_that_takes_too_long_is_recorded_with_an_unknown_outcome(

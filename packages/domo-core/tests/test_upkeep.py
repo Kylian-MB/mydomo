@@ -19,10 +19,11 @@ from domo_core.llm import real_spend
 from domo_core.llm.models import Provider, new_provider_id
 from domo_core.llm.spending import RESERVATION_TTL
 from domo_core.llm.spending_models import ModelCall, RealSpend
+from domo_core.sandbox_client import NO_SANDBOX
 from domo_core.upkeep import UpkeepPass, real_spend_pass, stale_reservations_pass
 from domo_core.web import app as web_app
 from domo_core.web.app import create_app
-from domo_core.web.deps import get_clock
+from domo_core.web.deps import get_clock, get_sandbox
 from llm_support import GATEKEEPER_URL
 from sqlalchemy import delete, select
 
@@ -111,6 +112,7 @@ async def test_the_upkeep_reads_neither_the_catalog_nor_the_rate_by_itself(
     monkeypatch.setattr(web_app, "run_upkeep", one_round)
     app = create_app(settings.model_copy(update={"gatekeeper_url": GATEKEEPER_URL}))
     app.dependency_overrides[get_clock] = lambda: clock
+    app.dependency_overrides[get_sandbox] = lambda: NO_SANDBOX  # this test is about the gatekeeper
     async with app.router.lifespan_context(app):
         with anyio.fail_after(30):
             while not rounds:

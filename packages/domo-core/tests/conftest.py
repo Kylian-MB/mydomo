@@ -213,7 +213,11 @@ def postgres_container() -> Iterator[PostgresContainer]:
         pytest.fail(f"The database tests need a running Docker engine: {error}", pytrace=False)
     if engine_os != "linux":
         pytest.skip(f"the database tests need a Linux container engine (found: {engine_os})")
-    with PostgresContainer(POSTGRES_IMAGE, driver="asyncpg") as container:
+    # A throwaway database: nothing has to survive a crash, so no test waits on the disk.
+    database = PostgresContainer(POSTGRES_IMAGE, driver="asyncpg").with_command(
+        "postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off"
+    )
+    with database as container:
         yield container
 
 

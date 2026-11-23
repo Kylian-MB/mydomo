@@ -28,6 +28,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-playwright" },
+    { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "respx" },
     { name = "ruff" },
     { name = "testcontainers", extras = ["postgres"] },
@@ -702,6 +703,144 @@ wheels = [
 ]
 
 [[package]]
+name = "domo-common"
+version = "0.10.0"
+source = { editable = "packages/domo-common" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pydantic", specifier = ">=2.14.1" }]
+
+[[package]]
+name = "domo-core"
+version = "0.10.0"
+source = { editable = "packages/domo-core" }
+dependencies = [
+    { name = "alembic" },
+    { name = "anthropic" },
+    { name = "anyio" },
+    { name = "argon2-cffi" },
+    { name = "asyncpg" },
+    { name = "babel" },
+    { name = "common-expression-language" },
+    { name = "domo-common" },
+    { name = "fastapi" },
+    { name = "fastembed" },
+    { name = "google-genai" },
+    { name = "httpx" },
+    { name = "httpx2" },
+    { name = "jinja2" },
+    { name = "openai" },
+    { name = "pgvector" },
+    { name = "pydantic-settings" },
+    { name = "python-dateutil" },
+    { name = "python-multipart" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "tzdata" },
+    { name = "uvicorn" },
+    { name = "webauthn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "alembic", specifier = ">=1.20.0" },
+    { name = "anthropic", specifier = ">=1.13.0" },
+    { name = "anyio", specifier = ">=4.15.1" },
+    { name = "argon2-cffi", specifier = ">=25.1.0" },
+    { name = "asyncpg", specifier = ">=0.32.0,<0.33" },
+    { name = "babel", specifier = ">=2.18.0" },
+    { name = "common-expression-language", specifier = ">=0.10.0" },
+    { name = "domo-common", editable = "packages/domo-common" },
+    { name = "fastapi", specifier = ">=0.143.0" },
+    { name = "fastembed", specifier = ">=0.9.0" },
+    { name = "google-genai", specifier = ">=2.30.1" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "httpx2", specifier = ">=2.12" },
+    { name = "jinja2", specifier = ">=3.1.6" },
+    { name = "openai", specifier = ">=3.29.0" },
+    { name = "pgvector", specifier = ">=0.5.1" },
+    { name = "pydantic-settings", specifier = ">=2.15.0" },
+    { name = "python-dateutil", specifier = ">=2.9.0.post0" },
+    { name = "python-multipart", specifier = ">=0.0.32" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.1.4" },
+    { name = "tzdata", specifier = ">=2026.5" },
+    { name = "uvicorn", specifier = ">=0.54.0" },
+    { name = "webauthn", specifier = ">=3.0.1" },
+]
+
+[[package]]
+name = "domo-gatekeeper"
+version = "0.10.0"
+source = { editable = "packages/domo-gatekeeper" }
+dependencies = [
+    { name = "anyio" },
+    { name = "cryptography" },
+    { name = "domo-common" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "jinja2" },
+    { name = "pydantic-settings" },
+    { name = "python-multipart" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anyio", specifier = ">=4.15.1" },
+    { name = "cryptography", specifier = ">=50.0.2" },
+    { name = "domo-common", editable = "packages/domo-common" },
+    { name = "fastapi", specifier = ">=0.143.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "jinja2", specifier = ">=3.1.6" },
+    { name = "pydantic-settings", specifier = ">=2.15.0" },
+    { name = "python-multipart", specifier = ">=0.0.32" },
+    { name = "uvicorn", specifier = ">=0.54.0" },
+]
+
+[[package]]
+name = "domo-sandbox"
+version = "0.10.0"
+source = { editable = "packages/domo-sandbox" }
+dependencies = [
+    { name = "anyio" },
+    { name = "bandit" },
+    { name = "domo-common" },
+    { name = "fastapi" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anyio", specifier = ">=4.15.1" },
+    { name = "bandit", specifier = ">=1.8.0" },
+    { name = "domo-common", editable = "packages/domo-common" },
+    { name = "fastapi", specifier = ">=0.143.0" },
+    { name = "uvicorn", specifier = ">=0.54.0" },
+]
+
+[[package]]
+name = "domo-talk"
+version = "0.10.0"
+source = { editable = "packages/domo-talk" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "httpx", specifier = ">=0.28.1" }]
+
+[[package]]
+name = "execnet"
+version = "2.1.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/bf/89/780e11f9588d9e7128a3f87788354c7946a9cbb1401ad38a48c4db9a4f07/execnet-2.1.2.tar.gz", hash = "sha256:63d83bfdd9a23e35b9c6a3261412324f964c2ec8dcd8d3c6916ee9373e0befcd", size = 166622, upload-time = "2025-11-12T09:56:37.75Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ab/84/02fc1827e8cdded4aa65baef11296a9bbe595c474f0d6d758af082d849fd/execnet-2.1.2-py3-none-any.whl", hash = "sha256:67fba928dd5a544b783f6056f449e5e3931a5c378b128bc18501f7ea79e296ec", size = 40708, upload-time = "2025-11-12T09:56:36.333Z" },
+]
+
+[[package]]
 name = "fastapi"
 version = "0.143.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1017,135 +1156,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/01/e1/2069291243c926a2f
 wheels = [
     { url = "https://files.pythonhosted.org/packages/56/43/4ca9e49d27a1fcf6bece6f6aec0ea46bb9112489b93d4b688fb415457bdb/iniconfig-2.3.1-py3-none-any.whl", hash = "sha256:9121e2c1fdb355232495be3194c8dfe87ccc2d5dee45947b78e68f499790d7a7", size = 7552, upload-time = "2026-10-06T22:48:36.959Z" },
 ]
-
-[[package]]
-name = "domo-common"
-version = "0.10.0"
-source = { editable = "packages/domo-common" }
-dependencies = [
-    { name = "pydantic" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "pydantic", specifier = ">=2.14.1" }]
-
-[[package]]
-name = "domo-core"
-version = "0.10.0"
-source = { editable = "packages/domo-core" }
-dependencies = [
-    { name = "alembic" },
-    { name = "anthropic" },
-    { name = "anyio" },
-    { name = "argon2-cffi" },
-    { name = "asyncpg" },
-    { name = "babel" },
-    { name = "common-expression-language" },
-    { name = "fastapi" },
-    { name = "fastembed" },
-    { name = "google-genai" },
-    { name = "httpx" },
-    { name = "httpx2" },
-    { name = "domo-common" },
-    { name = "jinja2" },
-    { name = "openai" },
-    { name = "pgvector" },
-    { name = "pydantic-settings" },
-    { name = "python-dateutil" },
-    { name = "python-multipart" },
-    { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "tzdata" },
-    { name = "uvicorn" },
-    { name = "webauthn" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "alembic", specifier = ">=1.20.0" },
-    { name = "anthropic", specifier = ">=1.13.0" },
-    { name = "anyio", specifier = ">=4.15.1" },
-    { name = "argon2-cffi", specifier = ">=25.1.0" },
-    { name = "asyncpg", specifier = ">=0.32.0,<0.33" },
-    { name = "babel", specifier = ">=2.18.0" },
-    { name = "common-expression-language", specifier = ">=0.10.0" },
-    { name = "fastapi", specifier = ">=0.143.0" },
-    { name = "fastembed", specifier = ">=0.9.0" },
-    { name = "google-genai", specifier = ">=2.30.1" },
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "httpx2", specifier = ">=2.12" },
-    { name = "domo-common", editable = "packages/domo-common" },
-    { name = "jinja2", specifier = ">=3.1.6" },
-    { name = "openai", specifier = ">=3.29.0" },
-    { name = "pgvector", specifier = ">=0.5.1" },
-    { name = "pydantic-settings", specifier = ">=2.15.0" },
-    { name = "python-dateutil", specifier = ">=2.9.0.post0" },
-    { name = "python-multipart", specifier = ">=0.0.32" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.1.4" },
-    { name = "tzdata", specifier = ">=2026.5" },
-    { name = "uvicorn", specifier = ">=0.54.0" },
-    { name = "webauthn", specifier = ">=3.0.1" },
-]
-
-[[package]]
-name = "domo-gatekeeper"
-version = "0.10.0"
-source = { editable = "packages/domo-gatekeeper" }
-dependencies = [
-    { name = "anyio" },
-    { name = "cryptography" },
-    { name = "fastapi" },
-    { name = "httpx" },
-    { name = "domo-common" },
-    { name = "jinja2" },
-    { name = "pydantic-settings" },
-    { name = "python-multipart" },
-    { name = "uvicorn" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "anyio", specifier = ">=4.15.1" },
-    { name = "cryptography", specifier = ">=50.0.2" },
-    { name = "fastapi", specifier = ">=0.143.0" },
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "domo-common", editable = "packages/domo-common" },
-    { name = "jinja2", specifier = ">=3.1.6" },
-    { name = "pydantic-settings", specifier = ">=2.15.0" },
-    { name = "python-multipart", specifier = ">=0.0.32" },
-    { name = "uvicorn", specifier = ">=0.54.0" },
-]
-
-[[package]]
-name = "domo-sandbox"
-version = "0.10.0"
-source = { editable = "packages/domo-sandbox" }
-dependencies = [
-    { name = "anyio" },
-    { name = "bandit" },
-    { name = "fastapi" },
-    { name = "domo-common" },
-    { name = "uvicorn" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "anyio", specifier = ">=4.15.1" },
-    { name = "bandit", specifier = ">=1.8.0" },
-    { name = "fastapi", specifier = ">=0.143.0" },
-    { name = "domo-common", editable = "packages/domo-common" },
-    { name = "uvicorn", specifier = ">=0.54.0" },
-]
-
-[[package]]
-name = "domo-talk"
-version = "0.10.0"
-source = { editable = "packages/domo-talk" }
-dependencies = [
-    { name = "httpx" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "httpx", specifier = ">=0.28.1" }]
 
 [[package]]
 name = "jinja2"
@@ -2171,6 +2181,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/91/de/1c45f90a545771201ac11aead321ced92b66190da56f2138ee1ee78cee8a/pytest_playwright-0.10.0.tar.gz", hash = "sha256:47baf574dfb120bb53675d05c9784f8bf94e04c6dd7477dc56159ce732191952", size = 22634, upload-time = "2026-10-08T22:38:46.758Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/09/15/ab14dfdfd6756389e0a5467417863cf6fffa18ecfba0a68bfdc15dc5895a/pytest_playwright-0.10.0-py3-none-any.whl", hash = "sha256:8314d1af726e2c15531635902ece3ee47ed83f5a75c937a7eda8686d3dae6c0d", size = 22485, upload-time = "2026-10-08T22:38:49.089Z" },
+]
+
+[[package]]
+name = "pytest-xdist"
+version = "3.8.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "execnet" },
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/78/b4/439b179d1ff526791eb921115fca8e44e596a13efeda518b9d845a619450/pytest_xdist-3.8.0.tar.gz", hash = "sha256:7e578125ec9bc6050861aa93f2d59f1d8d085595d6551c2c90b6f4fad8d3a9f1", size = 88069, upload-time = "2025-07-01T13:30:59.346Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ca/31/d4e37e9e550c2b92a9cbc2e4d0b7420a27224968580b5a447f420847c975/pytest_xdist-3.8.0-py3-none-any.whl", hash = "sha256:202ca578cfeb7370784a8c33d6d05bc6e13b4f25b5053c30a152269fd10f0b88", size = 46396, upload-time = "2025-07-01T13:30:56.632Z" },
 ]
 
 [[package]]
