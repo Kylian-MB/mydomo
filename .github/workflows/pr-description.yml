@@ -1,0 +1,57 @@
+name: Pull request
+
+# pull_request_target so that a first-time contributor gets an answer at once, without waiting for
+# a maintainer to approve the run. It holds a write token, so it must NEVER check out or run
+# anything from the pull request: the checkout below is the base branch, and the description is
+# only read as data from the event file.
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, edited, reopened, synchronize, ready_for_review, converted_to_draft]
+
+permissions: {}
+
+concurrency:
+  group: pr-description-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  description:
+    name: Pull request description
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/check_pr_description.py
+      - name: Read the description
+        id: check
+        run: |
+          if python3 -I scripts/check_pr_description.py --report "$RUNNER_TEMP/report.md"; then
+            echo "complete=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "complete=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Tell the author
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          COMPLETE: ${{ steps.check.outputs.complete }}
+        run: |
+          [ -s "$RUNNER_TEMP/report.md" ] || exit 0
+          if [ "$COMPLETE" = "true" ]; then
+            # Only replaces an earlier request: a complete description gets no comment of its own.
+            gh pr comment "$PR" -R "$GITHUB_REPOSITORY" --edit-last \
+              --body-file "$RUNNER_TEMP/report.md" || true
+          else
+            gh pr comment "$PR" -R "$GITHUB_REPOSITORY" --edit-last --create-if-none \
+              --body-file "$RUNNER_TEMP/report.md"
+          fi
+      - name: Result
+        env:
+          COMPLETE: ${{ steps.check.outputs.complete }}
+        run: test "$COMPLETE" = "true"

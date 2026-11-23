@@ -2,6 +2,30 @@
 
 Thank you for your interest in MyDomo.
 
+## Proposing a change
+
+Anyone can propose a change, with no permission to ask first:
+
+1. **Fork** the repository and create a branch from `main`.
+2. Make **one** change per pull request, with its tests. For a large change,
+   open an issue first so that the idea can be discussed before you build it.
+3. Open a **pull request** to `main`. GitHub fills the description with
+   [the template](.github/pull_request_template.md). Open it as a draft if it
+   is not ready.
+4. **Fill in every section**: the summary, why, the full detail of the change,
+   the behaviour before and after, how it was tested, the risks, and the
+   checklist. The `Pull request description` check tells you in a comment what
+   is missing, and runs again when you edit the description.
+5. A maintainer approves the **CI run** (needed for outside contributions, since
+   it runs your code), then **reviews** the change.
+
+A pull request is merged once its description is complete, the required checks
+pass, every conversation is resolved and a maintainer has approved it. It is
+squashed into one commit on `main`, whose message is the pull request's title
+and description.
+
+Security problems are not reported this way: see [SECURITY.md](SECURITY.md).
+
 ## Licensing
 
 MyDomo is released under the [MIT License](LICENSE). By sending a

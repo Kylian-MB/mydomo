@@ -17,7 +17,7 @@ import logging
 import re
 import uuid
 from collections.abc import AsyncGenerator, Sequence
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -454,7 +454,11 @@ async def test_a_reply_nobody_writes_any_more_does_not_hold_the_wake(
 ):
     reply = await adult_chat.say_with_tool("profile_rename", {"name": "Alex B"})
     dead = await a_busy_conversation(session_factory, reply.message_id)
-    chat_server.clock.advance(STALE_AFTER + timedelta(seconds=5))  # nobody writes it now
+    # Nobody writes it now. From the real time, which the database stamped it with: the test
+    # clock stopped when the server started, however long ago that was on a slow machine.
+    chat_server.clock.advance(
+        datetime.now(UTC) - chat_server.clock() + STALE_AFTER + timedelta(seconds=5)
+    )
     adult_chat.use_model(FakeChatModel(["Ton nom est changé."]))
     await adult_chat.post(approve(reply.pending_confirmation_id))
     await chat_server.wait_for_wakes()

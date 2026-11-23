@@ -169,10 +169,25 @@ def test_the_gatekeeper_alone_has_a_way_out(stack):
     assert stack.exec("gatekeeper", ["python", "-c", CONNECT, "1.1.1.1", "443"]).returncode == 0
 
 
+# Run inside the listener's container: returns once its server accepts connections.
+LISTENING = (
+    "import socket, sys, time\n"
+    "deadline = time.monotonic() + 30\n"
+    "while True:\n"
+    "    try:\n"
+    "        socket.create_connection(('127.0.0.1', int(sys.argv[1])), timeout=1).close()\n"
+    "        break\n"
+    "    except OSError:\n"
+    "        if time.monotonic() > deadline:\n"
+    "            raise\n"
+    "        time.sleep(0.1)\n"
+)
+
+
 @pytest.fixture
 def host_listener(stack: StackInfo) -> Iterator[None]:
     """A web server in the host's network namespace (the Docker VM's, on Docker Desktop),
-    listening on every address, from the core's image."""
+    listening on every address, from the core's image, and ready when the test starts."""
     image = stack.inspect("core")["Image"]
     name = f"{stack.project}-host-listener-{uuid.uuid4().hex[:8]}"
     command = ["docker", "run", "--detach", "--rm", "--name", name, "--network", "host"]
@@ -180,6 +195,9 @@ def host_listener(stack: StackInfo) -> Iterator[None]:
     started = run(command, env=stack.env)
     assert started.returncode == 0, started.stderr
     try:
+        ready = ["docker", "exec", name, "python", "-c", LISTENING, str(HOST_PROBE_PORT)]
+        listening = run(ready, env=stack.env)
+        assert listening.returncode == 0, listening.stderr
         yield
     finally:
         run(["docker", "rm", "--force", name], env=stack.env)
