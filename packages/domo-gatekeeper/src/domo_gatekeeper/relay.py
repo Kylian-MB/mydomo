@@ -32,7 +32,7 @@ from functools import partial
 import anyio
 import anyio.to_thread
 import httpx
-from domo_common.gatekeeper_api import ProviderRoute
+from domo_common.gatekeeper_api import HeaderLocation, ProviderRoute
 
 from domo_gatekeeper.errors import (
     BindingMismatchError,
@@ -43,9 +43,9 @@ from domo_gatekeeper.errors import (
 )
 from domo_gatekeeper.providers import binding_allows, default_port, require_secure_transport
 from domo_gatekeeper.scrub import Scrubber, scrub_text
-from domo_gatekeeper.vault import Vault
+from domo_gatekeeper.vault import Vault, secret_parts
 
-_HOP_BY_HOP = frozenset(
+HOP_BY_HOP = frozenset(
     {
         "connection",
         "keep-alive",
@@ -59,7 +59,7 @@ _HOP_BY_HOP = frozenset(
     }
 )
 # What the caller must not decide: its own credentials, the target host and the body length.
-_DROPPED_REQUEST_HEADERS = _HOP_BY_HOP | {
+_DROPPED_REQUEST_HEADERS = HOP_BY_HOP | {
     "authorization",
     "x-api-key",
     "x-goog-api-key",
@@ -68,7 +68,7 @@ _DROPPED_REQUEST_HEADERS = _HOP_BY_HOP | {
     "content-length",
 }
 # The body is rewritten by the scrubber, so its length and encoding no longer describe it.
-_DROPPED_RESPONSE_HEADERS = _HOP_BY_HOP | {"content-length", "content-encoding"}
+_DROPPED_RESPONSE_HEADERS = HOP_BY_HOP | {"content-length", "content-encoding"}
 # The content codings httpx always decodes (a test pins this to httpx's own table). Anything
 # else would reach the scrubber still encoded. ``br`` and ``zstd`` are decoded only when their
 # libraries are installed, so they are refused too.
@@ -156,7 +156,7 @@ def _target_url(route: ProviderRoute, path: str, query: str) -> httpx.URL:
     return url
 
 
-def _connection_tokens(headers: Iterable[tuple[str, str]]) -> set[str]:
+def connection_tokens(headers: Iterable[tuple[str, str]]) -> set[str]:
     """The header names a Connection header declares hop-by-hop."""
     return {
         token.strip().lower()
@@ -168,7 +168,7 @@ def _connection_tokens(headers: Iterable[tuple[str, str]]) -> set[str]:
 
 
 def _outgoing_headers(headers: Mapping[str, str]) -> dict[str, str]:
-    dropped = _DROPPED_REQUEST_HEADERS | _connection_tokens(headers.items())
+    dropped = _DROPPED_REQUEST_HEADERS | connection_tokens(headers.items())
     outgoing = {
         name.lower(): value for name, value in headers.items() if name.lower() not in dropped
     }
@@ -178,7 +178,7 @@ def _outgoing_headers(headers: Mapping[str, str]) -> dict[str, str]:
     return outgoing
 
 
-def _header_value(ref: str, template: str, value: str) -> str:
+def header_value(ref: str, template: str, value: str) -> str:
     # str.replace, not str.format: a template is data from the core, not a format string.
     header = template.replace("{value}", value)
     if _HEADER_VALUE.fullmatch(header) is None:
@@ -194,18 +194,21 @@ def _prepare(
     if ref is None:
         return {}, vault.values()
     value, bindings = vault.reveal_bound(ref)
+    # A provider's key goes in a header only: an account (Basic, a login body) is never placed
+    # here.
     allowed = sorted(
-        (binding for binding in bindings if binding_allows(binding, host, port)),
-        key=lambda binding: (binding.location.name, binding.location.template),
+        (
+            binding.location
+            for binding in bindings
+            if isinstance(binding.location, HeaderLocation) and binding_allows(binding, host, port)
+        ),
+        key=lambda location: (location.name, location.template),
     )
     if not allowed:
         raise BindingMismatchError(f"No binding of the secret {ref!r} permits {host}:{port}.")
-    injected = {
-        binding.location.name: _header_value(ref, binding.location.template, value)
-        for binding in allowed
-    }
+    injected = {location.name: header_value(ref, location.template, value) for location in allowed}
     # The value is added to the list in case it was rotated since the vault was read.
-    secrets = [*vault.values(), value]
+    secrets = [*vault.values(), *secret_parts(value)]
     vault.mark_used(ref)
     return injected, secrets
 
@@ -238,7 +241,7 @@ def _is_decoded(response: httpx.Response) -> bool:
 
 def _response_headers(response: httpx.Response, secrets: list[str]) -> list[tuple[str, str]]:
     items = response.headers.multi_items()
-    dropped = _DROPPED_RESPONSE_HEADERS | _connection_tokens(items)
+    dropped = _DROPPED_RESPONSE_HEADERS | connection_tokens(items)
     return [
         (name, scrub_text(value, secrets)) for name, value in items if name.lower() not in dropped
     ]

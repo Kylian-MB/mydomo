@@ -17,22 +17,36 @@ before the core sees it. ``read_ask`` reads one such line into what it asks (``P
   and time with its offset;
 * ``{"do": "wake", "content"}`` (``WakeAsk``): wake Domo with ``content``, any JSON value (what
   it weighs is the launch's ``wake_bytes``, a setting of Domo's: ``madetools.means`` refuses a
-  heavier one, naming it).
+  heavier one, naming it);
+* ``{"do": "out", "method", "url", "headers", "body" | "body_b64", "account"}`` (``OutAsk``, step
+  2): an HTTP request the gatekeeper sends for the program. ``method`` is one of ``OUT_METHODS``
+  (any case), ``url`` an ``http`` or ``https`` address that names a host, without a user or a
+  password in it nor any blank or control character, ``MAX_URL`` characters at most; ``headers``
+  an object of header names (an RFC 9110 token) to values of printable ASCII and tabs; the body
+  is text (``body``, sent in UTF-8) or base64 (``body_b64``), never both; ``account`` the name of
+  an account (``ACCOUNT_NAME_PATTERN``), whose secret the program never sees. What a body may
+  weigh is what the line of a request holds (the sandbox's frame).
 
 ``arguments`` may be left out (``{}``), and so may ``params`` (none), ``space`` (``common``) and
-``amount_cents`` (``null``). Anything else is not right (``AskNotRight``: its message says what,
+``amount_cents`` (``null``), and an out's ``headers`` (none), body and ``account`` (or be
+``null``). Anything else is not right (``AskNotRight``: its message says what,
 never a value of it). This is the union ``ProgramAsk``, not ``policy.asks.Ask`` (what kind of yes
 a request asks)."""
 
+import base64
+import binascii
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Final, cast
+from typing import Final, cast, get_args
 
+import httpx
+from domo_common.gatekeeper_api import OutMethod
 from domo_common.sandbox_api import JsonObject
 from pydantic import JsonValue
 
 from domo_core.madetools.models import NAME_PATTERN
+from domo_core.outward.models import ACCOUNT_NAME_PATTERN
 from domo_core.toolsdb.store import Space
 
 # The most characters of one statement, and the most parameters it is given.
@@ -46,8 +60,18 @@ MAX_ACTION: Final = 100
 # The name of an operation of a tool.
 OPERATION_PATTERN: Final = "^[a-z][a-z0-9_]{0,29}$"
 
+# What an out may ask: its methods, and the longest address (the gatekeeper's own bound).
+OUT_METHODS: Final[tuple[str, ...]] = get_args(OutMethod)
+MAX_URL: Final = 8192
+# The methods that only read: an account used with any other cannot be undone (spec 13.6).
+READING_METHODS: Final = frozenset({"GET", "HEAD"})
+
 _NAME: Final = re.compile(NAME_PATTERN)
 _OPERATION: Final = re.compile(OPERATION_PATTERN)
+_ACCOUNT: Final = re.compile(ACCOUNT_NAME_PATTERN)
+# RFC 9110 "token", and what the HTTP stack carries as a header value, as the gatekeeper reads them.
+_HEADER_NAME: Final = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+_HEADER_VALUE: Final = re.compile(r"[\x20-\x7e\t]*")
 _SPACES: Final[frozenset[str]] = frozenset({"common", "mine"})
 # What each request needs, and what it may hold, by its ``do``.
 _FIELDS: Final[dict[str, tuple[frozenset[str], frozenset[str]]]] = {
@@ -58,6 +82,10 @@ _FIELDS: Final[dict[str, tuple[frozenset[str], frozenset[str]]]] = {
     "tool": (frozenset({"do", "name"}), frozenset({"do", "name", "arguments"})),
     "later": (frozenset({"do", "at"}), frozenset({"do", "at", "arguments"})),
     "wake": (frozenset({"do", "content"}), frozenset({"do", "content"})),
+    "out": (
+        frozenset({"do", "method", "url"}),
+        frozenset({"do", "method", "url", "headers", "body", "body_b64", "account"}),
+    ),
 }
 
 
@@ -124,7 +152,41 @@ class WakeAsk:
     content: JsonValue
 
 
-type ProgramAsk = BeginAsk | ReadAsk | WriteAsk | ActAsk | ToolAsk | LaterAsk | WakeAsk
+@dataclass(frozen=True)
+class OutAsk:
+    """Send an HTTP request through the gatekeeper: ``method`` (upper case), ``url``, the
+    program's ``headers``, its ``body`` (bytes, ``None``: none) and the name of the ``account``
+    the gatekeeper puts in it (``None``: none)."""
+
+    method: str
+    url: str
+    headers: dict[str, str]
+    body: bytes | None
+    account: str | None
+
+    @property
+    def address(self) -> tuple[str, int]:
+        """The host and port the request goes to, as the gatekeeper compares them with the open
+        addresses: the host in lower case (an IPv6 one without its brackets), the port the
+        scheme's own when none is written."""
+        return out_address(self.url)
+
+    @property
+    def writes(self) -> bool:
+        """Whether the request does more than read (``READING_METHODS``)."""
+        return self.method not in READING_METHODS
+
+
+def out_address(url: str) -> tuple[str, int]:
+    """The host and port of ``url`` (see ``OutAsk.address``); ``ValueError`` when it has none."""
+    parsed = httpx.URL(url)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if not parsed.host:
+        raise ValueError("no host")
+    return parsed.host, port
+
+
+type ProgramAsk = BeginAsk | ReadAsk | WriteAsk | ActAsk | ToolAsk | LaterAsk | WakeAsk | OutAsk
 
 
 def read_ask(raw: JsonObject) -> ProgramAsk:
@@ -159,8 +221,81 @@ def read_ask(raw: JsonObject) -> ProgramAsk:
             return ToolAsk(name, _arguments(raw))
         case "later":
             return LaterAsk(_moment(raw["at"]), _arguments(raw))
+        case "out":
+            return _out(raw)
         case _:
             return WakeAsk(raw["content"])
+
+
+def _out(raw: JsonObject) -> OutAsk:
+    method = raw["method"]
+    if not isinstance(method, str) or method.upper() not in OUT_METHODS:
+        raise AskNotRight(f"method is one of {', '.join(OUT_METHODS)}")
+    url = _url(raw["url"])
+    headers = raw.get("headers")
+    if headers is None:
+        headers = {}
+    if not isinstance(headers, dict):
+        raise AskNotRight("headers is an object of names to values")
+    for name, value in headers.items():
+        if _HEADER_NAME.fullmatch(name) is None:
+            raise AskNotRight("a header's name is a token of letters, digits and !#$%&'*+.^_`|~-")
+        if not isinstance(value, str) or _HEADER_VALUE.fullmatch(value) is None:
+            raise AskNotRight("a header's value is text of printable ASCII, on one line")
+    account = raw.get("account")
+    if account is not None and (not isinstance(account, str) or not _ACCOUNT.fullmatch(account)):
+        raise AskNotRight("account is the name of an account: 2 to 40 of a-z, 0-9 and _")
+    return OutAsk(method.upper(), url, cast(dict[str, str], headers), _out_body(raw), account)
+
+
+def _url(url: JsonValue) -> str:
+    if (
+        not isinstance(url, str)
+        or not 1 <= len(url) <= MAX_URL
+        or any(char.isspace() or not char.isprintable() for char in url)
+    ):
+        raise AskNotRight(
+            f"url is an address of 1 to {MAX_URL} characters, with no blank nor control character"
+        )
+    try:
+        parsed = httpx.URL(url)
+        _ = out_address(url)
+    except (httpx.InvalidURL, TypeError, ValueError):
+        parsed = None
+    if (
+        parsed is None
+        or parsed.scheme not in ("http", "https")
+        or not parsed.host
+        or not 1 <= out_address(url)[1] <= 65535
+    ):
+        raise AskNotRight("url is an http or https address that names a host, at a port")
+    if parsed.userinfo:
+        raise AskNotRight("url holds no user nor password: an account is named, never written")
+    return url
+
+
+def _out_body(raw: JsonObject) -> bytes | None:
+    text, coded = raw.get("body"), raw.get("body_b64")
+    if text is not None and coded is not None:
+        raise AskNotRight("a body is text (body) or base64 (body_b64), never both")
+    if text is not None:
+        if not isinstance(text, str):
+            raise AskNotRight("body is text")
+        try:
+            return text.encode("utf-8")
+        except UnicodeEncodeError:
+            raise AskNotRight("body is text that UTF-8 can write") from None
+    if coded is None:
+        return None
+    decoded: bytes | None = None
+    if isinstance(coded, str):
+        try:
+            decoded = base64.b64decode(coded, validate=True)
+        except (binascii.Error, ValueError):
+            decoded = None
+    if decoded is None:
+        raise AskNotRight("body_b64 is base64")
+    return decoded
 
 
 def _begin(raw: JsonObject) -> BeginAsk:

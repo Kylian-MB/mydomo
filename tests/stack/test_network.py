@@ -7,6 +7,7 @@ import socket
 import uuid
 from collections.abc import Iterator
 
+import httpx
 import pytest
 
 from .stack_support import StackInfo, run
@@ -228,6 +229,69 @@ def test_core_cannot_reach_the_host_through_its_network(stack, host_listener):
     for address in sorted(candidates):
         attempt = stack.exec("core", ["python", "-c", CONNECT, address, str(HOST_PROBE_PORT)])
         assert attempt.returncode != 0, f"the core reached the host at {address}"
+
+
+# --- going out: what the gatekeeper knows, and the edge closed to my tools -------------------
+
+# The mark the gatekeeper's relay puts on every request a program sends (domo_gatekeeper.out).
+FROM_MY_TOOLS = {"Via": "1.1 domo-out"}
+
+
+def test_the_gatekeeper_knows_its_own_networks_and_the_host(stack):
+    """What the gatekeeper logs when it starts: the core's network and the edge's lan are its
+    own, the lan's gateway is (also) the machine that hosts Domo, where the edge's published
+    ports are its own."""
+    line = next(
+        (line for line in stack.logs("gatekeeper").splitlines() if "My own networks" in line),
+        None,
+    )
+    assert line is not None, "the gatekeeper did not say what it may reach"
+    core_net = stack.inspect_network("core_net")["IPAM"]["Config"][0]["Subnet"]
+    [lan] = stack.inspect_network("lan")["IPAM"]["Config"]
+    lan_gateway = lan["Gateway"]
+    egress_gateway = stack.inspect_network("egress")["IPAM"]["Config"][0]["Gateway"]
+    own, _, host = line.partition("The machine that hosts me:")
+    # The edge's lan is Domo's own too (its gateway stays a host address, never reachable).
+    assert core_net in own and lan["Subnet"] in own
+    assert lan_gateway in host and egress_gateway in host
+    assert "18443" in host and "18080" in host and "8081" in host
+
+
+@pytest.mark.parametrize("path", ["/", "/ca.crt", "/vault/r/unknown", "/chat", "/setup/owner"])
+def test_the_edge_refuses_a_request_of_my_tools_on_every_path(stack, path):
+    for base in (stack.base_url, stack.http_url):
+        refused = httpx.get(
+            base + path, headers=FROM_MY_TOOLS, verify=False, follow_redirects=False
+        )
+        assert refused.status_code == 403, (base, path)
+        assert "x-domo-component" not in refused.headers
+
+
+def test_the_edge_still_serves_its_pages_to_everyone_else(stack):
+    root = httpx.get(stack.base_url + "/", verify=False, follow_redirects=True)
+    assert root.status_code == 200 and root.url.path == "/setup/owner"
+    authority = httpx.get(stack.base_url + "/ca.crt", verify=False)
+    assert authority.status_code == 200 and "BEGIN CERTIFICATE" in authority.text
+    vault = httpx.get(stack.base_url + "/vault/r/unknown", verify=False)
+    assert vault.status_code == 404 and vault.headers["x-domo-component"] == "gatekeeper"
+    redirect = httpx.get(stack.http_url + "/chat", follow_redirects=False)
+    assert redirect.status_code == 308
+    assert redirect.headers["location"] == "https://localhost:18443/chat"
+
+
+def test_the_edge_refuses_my_tools_from_inside_too(stack):
+    """From the gatekeeper's side of core_net, where the relay never sends (Domo's own network
+    is never reachable): the mark is refused there as well."""
+    code = (
+        "import httpx\n"
+        "for via in ('1.1 domo-out', 'HTTP/1.1 domo-out, 1.0 other', ''):\n"
+        "    headers = {'Via': via} if via else {}\n"
+        "    r = httpx.get('http://edge:18080/', headers=headers, trust_env=False)\n"
+        "    print(r.status_code)\n"
+    )
+    result = stack.exec("gatekeeper", ["python", "-c", code])
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["403", "403", "308"]
 
 
 # --- the sandbox -----------------------------------------------------------------------------

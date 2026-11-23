@@ -16,18 +16,24 @@ can forget to: the setup's model step, the steps that put a model key to use
 (``channels.page.key_routes``) alike. The line says the operation (a route of the API, never a path
 with an id in it), the status and the code, and nothing else: never the token, a request's body, a
 form's path or what the gatekeeper's answer said beyond its code.
+
+A program's request goes through the gatekeeper's relay for programs (``out``): what comes back
+is its answer, scrubbed by the gatekeeper, or ``OutRefused`` with the relay's code alone.
 """
 
 import logging
 import re
 from pathlib import Path
-from typing import cast
+from typing import Final, cast, get_args
 from urllib.parse import quote
 
 import httpx
 from domo_common.core_token import CoreTokenError
 from domo_common.core_token import load_core_token as common_load_core_token
 from domo_common.gatekeeper_api import (
+    OutRefusalCode,
+    OutRequest,
+    OutResponse,
     ProviderRoute,
     SecretMetadata,
     SecretRequestCreate,
@@ -74,6 +80,24 @@ class GatekeeperError(Exception):
 class BindingConflictError(GatekeeperError):
     """The gatekeeper refused because a secret is already bound to other destinations: the
     bindings of a secret never change. To use other destinations, use another reference."""
+
+
+# The route of a program's request, and the codes its refusals carry (``{"code": ...}``).
+OUT_OPERATION: Final = "POST /internal/out"
+_OUT_CODES: Final[frozenset[str]] = frozenset(get_args(OutRefusalCode))
+# What the core waits beyond a program's own seconds, for the gatekeeper to answer once they ran
+# out (it bounds the request itself by them).
+OUT_MARGIN_S: Final = 10.0
+
+
+class OutRefused(GatekeeperError):
+    """A program's request (``GatekeeperClient.out``) was not relayed: ``code`` is the relay's
+    own code (``OutRefusalCode``), ``unreachable`` when the gatekeeper gave no answer, or
+    ``failed`` for any other answer. Nothing of an answer's text is kept."""
+
+    def __init__(self, code: str, *, status: int | None = None) -> None:
+        super().__init__(OUT_OPERATION, status=status, code=code)
+        self.refusal = code
 
 
 def _logged[E: GatekeeperError](error: E) -> E:
@@ -127,6 +151,19 @@ def _error_code(response: httpx.Response) -> str | None:
     if isinstance(code, str) and _ERROR_CODE.fullmatch(code):
         return code
     return None
+
+
+def _out_code(response: httpx.Response) -> str:
+    """The relay's code of a refused program's request (``{"code": "<code>"}``, one of
+    ``OutRefusalCode``), else ``failed``: never anything else an answer says."""
+    try:
+        body: object = response.json()
+    except ValueError:
+        return "failed"
+    code = cast(dict[str, object], body).get("code") if isinstance(body, dict) else None
+    if response.status_code != 200 and isinstance(code, str) and code in _OUT_CODES:
+        return code
+    return "failed"
 
 
 class GatekeeperClient:
@@ -194,8 +231,41 @@ class GatekeeperClient:
         response = await self._send(operation, "PUT", path, body=route)
         self._check(response, operation, expected=204)
 
+    async def out(self, request: OutRequest) -> OutResponse:
+        """Have the gatekeeper send a program's request (``POST /internal/out``) and give its
+        answer. Raises ``OutRefused`` with the relay's code when it refuses or fails,
+        ``unreachable`` when the gatekeeper does not answer, ``failed`` for anything else: never
+        with a word of what an answer said beyond a code it knows. The wait follows the
+        request's own ``seconds``, which the gatekeeper bounds it by."""
+        seconds = request.seconds + OUT_MARGIN_S
+        timeout = httpx.Timeout(
+            connect=CONNECT_TIMEOUT_S, read=seconds, write=WRITE_TIMEOUT_S, pool=POOL_TIMEOUT_S
+        )
+        try:
+            response = await self._send(
+                OUT_OPERATION, "POST", "/internal/out", body=request, timeout=timeout
+            )
+        except GatekeeperError:
+            # Logged where it was raised: the gatekeeper gave no answer.
+            refused = OutRefused("unreachable")
+        else:
+            if response.status_code == 200:
+                try:
+                    return OutResponse.model_validate_json(response.content)
+                except ValueError:
+                    pass
+            refused = OutRefused(_out_code(response), status=response.status_code)
+            _logged(refused)
+        raise refused
+
     async def _send(
-        self, operation: str, method: str, path: str, *, body: BaseModel | None = None
+        self,
+        operation: str,
+        method: str,
+        path: str,
+        *,
+        body: BaseModel | None = None,
+        timeout: httpx.Timeout | None = None,
     ) -> httpx.Response:
         headers = {"authorization": f"Bearer {self._token}"}
         content = None
@@ -204,9 +274,18 @@ class GatekeeperClient:
             headers["content-type"] = "application/json"
         response: httpx.Response | None
         try:
-            response = await self._http.request(
-                method, f"{self._base_url}{path}", content=content, headers=headers
-            )
+            if timeout is None:
+                response = await self._http.request(
+                    method, f"{self._base_url}{path}", content=content, headers=headers
+                )
+            else:
+                response = await self._http.request(
+                    method,
+                    f"{self._base_url}{path}",
+                    content=content,
+                    headers=headers,
+                    timeout=timeout,
+                )
         except (httpx.HTTPError, httpx.InvalidURL):
             response = None
         if response is None:

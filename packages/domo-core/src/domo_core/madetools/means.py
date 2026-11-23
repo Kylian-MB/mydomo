@@ -46,7 +46,43 @@ request:
 * ``wake`` (``program.wake``): gathered for whom the launch is (``None``: the house, told to the
   owner of the moment it is given), one wake per person per chain (what each tool said, in the
   order asked), counted on the tool (``service.count_wake``: past ``wakes_per_day`` the tool is
-  set aside and the wake refused). It is given once the chain ends (``handover.wake_chain``).
+  set aside and the wake refused). It is given once the chain ends (``handover.wake_chain``);
+* ``out`` (``program.out``, step 2, spec 13.3 to 13.6): an HTTP request the gatekeeper sends for
+  the program (``_out``, below).
+
+**Going out.** An ``out`` is counted first (past ``out_per_launch`` in the launch:
+``too_many_requests``). In a dry run nothing is looked up: an address the internet's as written
+under an operation that does not declare ``outward`` is refused ``risk_not_declared``, but for a
+port the tool has open on the machine that hosts Domo. For real, before
+anything is judged or sent: its host and port must be one of the live addresses of the launch's
+tool (``outward.service.open_for``; a program run by hand: those open without a tool), else
+``closed_address``; then its zone is found (rulings R12, R14): ``host`` for a port of the machine
+that hosts Domo opened as such (the house's for the barrier), the literal of an address, or, for
+a name (a host its literal does not settle), what the gatekeeper finds on a first ``resolve_only``
+lookup, whose refusal is the request's. The internet by the literal or by the lookup (never for
+an opened host port) under an operation without ``outward`` is ``risk_not_declared``: the one
+place the zone is decided. It is then judged as ``program.out`` (its
+facts: that zone, ``house`` or ``internet``, whether it ``writes``, ``with_account``), audited by
+the barrier like any request; its account, when it names one, is the one
+``outward.service.account_for`` gives this launch (for whom it runs, a guest or not, and Domo on
+his own for every launch for the house), else ``account_removed`` (one it could have used was
+removed, none of that name is live) or ``account_not_yours``. The zone found goes with the send as
+``expect_zone``: a name that leads elsewhere on the lookup the connection goes to is refused
+``zone_changed`` there, nothing sent. The gatekeeper is then
+given the open addresses, the account's reference (never its name), ``out_seconds`` for the whole
+request, ``most_bytes`` the smaller of ``out_bytes`` and ``ANSWER_CEILING_BYTES``, and
+``session_idle_minutes`` in seconds; the frame of the answer the program reads is the larger of
+``out_bytes`` and ``result_bytes`` (ruling R21), so that an answer of ``out_bytes`` reaches it
+(the run is told so: ``launch``). What the program reads is
+``{"status", "headers", "body"}``, the body as text when it is UTF-8, else ``body_b64``; a refusal
+of the gatekeeper is its code alone (``too_big`` and ``too_slow`` naming the setting that caused
+them), never a word of what it said. Each ``out`` of a real launch past its form gets a second
+audit line once it is answered, refused or not (but a stop for a yes): ``OUT_DONE``, the tool,
+the operation, for whom, the host, the port, the method, the status or the refusal, the bytes
+out and in, the milliseconds, the redirects and the zone; never a path, a query, a header, a body
+nor an error's text. What comes back is outside content: data
+for the program, never an instruction. An ``out`` is bounded by its own ``out_seconds`` (with the
+core's ``answer_seconds`` for its own work), not by ``answer_seconds`` alone.
 
 The bounds of a launch are settings of Domo's (``madetools.settings``), read once when it starts
 (``LaunchScope.settings``: its tool's own values, else the house's, else the starts), so that a
@@ -94,33 +130,43 @@ arguments that do not fit it), a ``later`` in the past, more than ``later_days``
 arguments do not fit the parameters submitted (``LaunchScope.parameters``), a tool too deep, in
 its own path or that does not exist, past the chain's ``chain_launches`` (each tool asked is
 counted in the dry run's chain, as it would be; the launches those tools would make in turn are
-not seen), and more than ``requests_per_launch`` requests. Otherwise a ``begin`` is
-let through (nothing stops for a yes, nothing is declared), an ``act``, a ``tool``, a ``later`` and
-a ``wake`` answer ``null`` and do nothing (no trigger, no launch, nobody woken), and the reads and
+not seen), more than ``requests_per_launch`` requests, more than ``out_per_launch`` outs, and an
+out to an address the internet's as written under an operation that does not declare ``outward``.
+Otherwise a ``begin`` is
+let through (nothing stops for a yes, nothing is declared), an ``act``, a ``tool``, a ``later``, a
+``wake`` and an ``out`` answer ``null`` and do nothing (no trigger, no launch, nobody woken, nothing
+sent: whether an out's address is open and its account exists is not checked, for they may not
+be yet), and the reads and
 writes run as the house, in the common space alone (``mine`` is ``no_corner``), all in one
 transaction of the tools' base (``toolsdb.store.ToolsBase.trial``) that is rolled back when the
 run ends (``Means.end``): what a write did is seen by the next request, and nothing stays."""
 
 import asyncio
+import base64
 import json
 import logging
+import math
+import time
 import uuid
 from collections.abc import Mapping
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Final, cast
 
+from domo_common.gatekeeper_api import OpenAddress, OutMethod, OutRequest, OutResponse, Zone
 from domo_common.sandbox_api import ANSWER_CEILING_BYTES, ANSWER_CEILING_WORDS, JsonObject
 from pydantic import JsonValue
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domo_core.audit.log import append_audit
+from domo_core.gatekeeper_client import OutRefused
 from domo_core.madetools.asks import (
     ActAsk,
     AskNotRight,
     BeginAsk,
     LaterAsk,
+    OutAsk,
     ProgramAsk,
     ReadAsk,
     ToolAsk,
@@ -151,12 +197,15 @@ from domo_core.madetools.yes import (
     declare_again,
     stop,
 )
+from domo_core.outward.literal import is_a_host, is_an_address, literal_zone
+from domo_core.outward.service import account_for, open_for, was_removed
 from domo_core.policy.actions import DescribedAction, FactValue
 from domo_core.policy.barrier import Refuse, record_decision
 from domo_core.policy.catalog import (
     NO_RISK,
     PROGRAM_BEGIN,
     PROGRAM_LATER,
+    PROGRAM_OUT,
     PROGRAM_READ,
     PROGRAM_WAKE,
     PROGRAM_WRITE,
@@ -192,6 +241,14 @@ TOOL_REFUSED: Final = "madetool.tool_refused"
 # The audit entry of a launch stopped for a yes: the tool, the operation, the amount in cents, why,
 # whose yes and what kind; never an argument nor what the operation says.
 STOPPED: Final = "madetool.stopped"
+# The audit entry of a request sent out once it is answered (the barrier's line came before it):
+# see the module docstring. Never a path, a query, a header, a body nor an error's text.
+OUT_DONE: Final = "madetool.out_done"
+# What a program is told of a request out to the internet under an operation that does not say it
+# leaves the house.
+OUTWARD_NOT_DECLARED: Final = (
+    "this address is outside the house: the operation must declare outward (nothing was sent)"
+)
 
 # Whom a wake goes to: a person, or ``None``, the owner for the house (looked up when it is told).
 type WakeFor = uuid.UUID | None
@@ -359,6 +416,51 @@ def _refused(
     return answer
 
 
+@dataclass
+class _OutTrace:
+    """What the second audit line of a request out says (``OUT_DONE``), gathered as it goes:
+    whether it is to be written (``audited``: every request out of a real launch past its form,
+    whatever comes of it but a stop for a yes), its status or its refusal, the bytes out and in,
+    the redirects and the zone the gatekeeper found."""
+
+    host: str
+    port: int
+    method: str
+    bytes_out: int
+    audited: bool = False
+    status: int | None = None
+    refused: str | None = None
+    bytes_in: int = 0
+    hops: int = 0
+    zone: Zone | None = None
+    started: float = field(default_factory=time.monotonic)
+
+    def refuse(self, reason: str, detail: str | None = None) -> JsonObject:
+        """The refusal ``reason``, noted for the audit line."""
+        self.refused = reason
+        return _refused(reason, detail)
+
+    def details(self) -> dict[str, JsonValue]:
+        return {
+            # Only ever a valid host name or address: else what the program wrote, kept out.
+            "host": self.host if is_a_host(self.host) else None,
+            "port": self.port,
+            "method": self.method,
+            "status": self.status,
+            "refused": self.refused,
+            "bytes_out": self.bytes_out,
+            "bytes_in": self.bytes_in,
+            "ms": round((time.monotonic() - self.started) * 1000),
+            "hops": self.hops,
+            "zone": self.zone,
+        }
+
+
+def _on_host(open_now: list[OpenAddress], host: str, port: int) -> bool:
+    """Whether ``host``:``port`` is open as a port of the machine that hosts Domo."""
+    return any(o.on_host and o.host.strip("[]") == host and o.port == port for o in open_now)
+
+
 class _StopRun(Exception):
     """A request needs a yes: the run stops there (``Means.answer`` answers ``None``)."""
 
@@ -401,6 +503,8 @@ class Means:
         self._bound_bytes = 0
         self.requests = 0
         self.reads = 0
+        # How many requests out this launch asked (``out_per_launch``).
+        self.outs = 0
         self.too_many = False
         # The operation begun last, what it said it costs, and whether the yes of this launch
         # covers it.
@@ -464,6 +568,9 @@ class Means:
             if isinstance(ask, ToolAsk):
                 # Bounded by the tool's own limits (its time, its depth, its chain).
                 return self._framed(await self._tool(ask), ask)
+            if isinstance(ask, OutAsk):
+                # Bounded by its own out_seconds (``_out``).
+                return self._framed(await self._out(ask), ask)
             async with asyncio.timeout(wait_for(self._scope.bound("answer_seconds"))):
                 return self._framed(await self._answered(ask), ask)
         except _StopRun as stopped:
@@ -498,6 +605,8 @@ class Means:
                 return await self._wake(ask)
             case ToolAsk():
                 return await self._tool(ask)
+            case OutAsk():
+                return await self._out(ask)
 
     async def _tried(self, ask: ProgramAsk) -> JsonObject:
         """A request of a dry run (see the module docstring): refused for its form as for real,
@@ -541,6 +650,8 @@ class Means:
                 return {"ok": None}
             case ToolAsk():
                 return await self._tool(ask)
+            case OutAsk():
+                return await self._out(ask)
 
     # --- judging ---------------------------------------------------------------------------------
 
@@ -996,7 +1107,8 @@ class Means:
         return None
 
     def _framed(self, answer: JsonObject | None, ask: ProgramAsk) -> JsonObject | None:
-        """``answer`` when the program can read it: its launch's ``result_bytes`` at most, and
+        """``answer`` when the program can read it: its launch's ``result_bytes`` at most (for a
+        request out, the larger of ``out_bytes`` and ``result_bytes``: ``_frame_of``), and
         ``ANSWER_CEILING_BYTES`` whatever the setting (ruling R37), as JSON in UTF-8. Else a
         refusal that says which: the setting (``hit``), or the code's ceiling (no setting: read in
         pieces). When what was asked was carried out (anything but a read that answered), the
@@ -1004,7 +1116,7 @@ class Means:
         (it is small: it always fits the sandbox's floor of an answer)."""
         if answer is None:
             return None
-        most = self._scope.bound("result_bytes")
+        setting, most = self._frame_of(ask)
         try:
             size = len(json.dumps(answer, ensure_ascii=False, allow_nan=False).encode("utf-8"))
         except (ValueError, TypeError, RecursionError):
@@ -1023,7 +1135,17 @@ class Means:
             said = f"done: {said}"
         if size > ANSWER_CEILING_BYTES:
             return _refused("too_big", f"{said}; {ANSWER_CEILING_WORDS}")
-        return _refused("too_big", said, ("result_bytes", most))
+        return _refused("too_big", said, (setting, most))
+
+    def _frame_of(self, ask: ProgramAsk) -> tuple[str, int]:
+        """The setting that frames the answer to ``ask``, and its figure: ``result_bytes``; for a
+        request out, the larger of ``out_bytes`` and ``result_bytes`` (ruling R21: an answer of
+        ``out_bytes`` reaches the program)."""
+        result = ("result_bytes", self._scope.bound("result_bytes"))
+        if not isinstance(ask, OutAsk):
+            return result
+        out = ("out_bytes", self._scope.bound("out_bytes"))
+        return out if out[1] > result[1] else result
 
     async def _later(self, ask: LaterAsk) -> JsonObject:
         refused = await self._judged(_program_action(PROGRAM_LATER), ask, audited=True)
@@ -1172,3 +1294,214 @@ class Means:
                 return _refused(said, None, setting)
             return _refused(said)
         return _refused(came.status, said, setting)
+
+    # --- going out -------------------------------------------------------------------------------
+
+    @property
+    def _declares_outward(self) -> bool:
+        """Whether the operation begun last says it leaves the house."""
+        return self._begun is not None and self._begun.risks.outward
+
+    async def _out(self, ask: OutAsk) -> JsonObject:
+        """A request out (see the module docstring, "Going out"): counted, then, in a dry run,
+        weighed by its literal (but for an opened host port), and for real, its zone found once,
+        judged, checked and sent within ``out_seconds`` (and the core's own
+        ``answer_seconds``), its second audit line written once it is answered."""
+        scope = self._scope
+        most = scope.bound("out_per_launch")
+        self.outs += 1
+        if self.outs > most:
+            return _refused(
+                "too_many_requests",
+                f"one launch sends {most} requests out at most",
+                ("out_per_launch", most),
+            )
+        host, port = ask.address
+        literal = literal_zone(host)
+        if scope.dry_run:
+            # Nothing is looked up nor sent, and its address and account may not exist yet: the
+            # literal alone is weighed, but for a port the tool has open on the host machine.
+            if literal == "internet" and not self._declares_outward:
+                async with self._deps.session_factory() as session:
+                    open_now = await open_for(session, scope.tool_name)
+                if not _on_host(open_now, host, port):
+                    return _refused("risk_not_declared", OUTWARD_NOT_DECLARED)
+            return {"ok": None}
+        trace = _OutTrace(host, port, ask.method, len(ask.body or b""))
+        seconds = scope.bound("out_seconds")
+        bound = wait_for(seconds) + wait_for(scope.bound("answer_seconds"))
+        try:
+            async with asyncio.timeout(bound):
+                answer = await self._sent_out(ask, literal, trace)
+        except TimeoutError:
+            logger.warning("A program's request out took too long to answer")
+            trace.refused = "too_slow"
+            answer = _refused("too_slow", setting=("out_seconds", seconds))
+        except _StopRun:
+            # A yes is needed: the barrier's line and the stop say so; nothing went out.
+            raise
+        except Exception:
+            if trace.audited:
+                trace.refused = "failed"
+                await self._out_audited(trace)
+            raise
+        if trace.audited:
+            await self._out_audited(trace)
+        return answer
+
+    async def _sent_out(self, ask: OutAsk, literal: str, trace: _OutTrace) -> JsonObject:
+        """The request out: its address checked open, its zone found (a name is looked up first,
+        ruling R14), judged with that zone, its account checked, then sent held to that zone:
+        what the program reads (``trace`` notes what came of it, for the audit)."""
+        trace.audited = True
+        gatekeeper = self._deps.gatekeeper
+        if gatekeeper is None:
+            return trace.refuse("unreachable")
+        open_now = await self._open_now(trace)
+        if not isinstance(open_now, list):
+            return open_now
+        scope = self._scope
+        seconds = scope.bound("out_seconds")
+        ends = time.monotonic() + seconds
+        # The body read: out_bytes, under the channel's ceiling (the frame of its answer follows
+        # the larger of out_bytes and result_bytes, ``_framed``: ruling R21).
+        most = min(scope.bound("out_bytes"), ANSWER_CEILING_BYTES)
+        idle = scope.bound("session_idle_minutes") * 60
+        # The zone judged, which the barrier reads and the gatekeeper holds the send to (rulings
+        # R12, R14): a port of the machine that hosts Domo opened as such (the house's, for the
+        # barrier), the literal of an address, or, for a name, where the gatekeeper finds it leads
+        # (the internet when its literal or its lookup says so).
+        judged: Zone = cast(Zone, literal)
+        if _on_host(open_now, trace.host, trace.port):
+            judged = "host"
+        elif not is_an_address(trace.host):
+            # Always looked up (ruling R16): its refusal (host_not_opened, never_reachable...)
+            # says what is true, before the risk is weighed.
+            looked = OutRequest(
+                method=cast(OutMethod, ask.method),
+                url=ask.url,
+                open=open_now,
+                seconds=seconds,
+                most_bytes=0,
+                session_idle_seconds=idle,
+                resolve_only=True,
+            )
+            try:
+                judged = (await gatekeeper.out(looked)).zone
+            except OutRefused as refusal:
+                return self._out_refused(refusal, trace, most)
+            trace.zone = judged
+        # The one decision of the zone: an opened host port is the house, whatever its literal.
+        internet = judged != "host" and (literal == "internet" or judged == "internet")
+        if internet and not self._declares_outward:
+            return trace.refuse("risk_not_declared", OUTWARD_NOT_DECLARED)
+        facts: dict[str, FactValue] = {
+            "zone": "internet" if internet else "house",
+            "writes": ask.writes,
+            "with_account": ask.account is not None,
+        }
+        refused = await self._judged(_program_action(PROGRAM_OUT, facts), ask, audited=True)
+        if refused is not None:
+            trace.refused = str(refused["refused"])
+            return refused
+        ref: str | None = None
+        if ask.account is not None:
+            found = await self._account_ref(ask.account, trace)
+            if not isinstance(found, str):
+                return found
+            ref = found
+        sent = OutRequest(
+            method=cast(OutMethod, ask.method),
+            url=ask.url,
+            headers=ask.headers,
+            body_b64=None if ask.body is None else base64.b64encode(ask.body).decode("ascii"),
+            account=ref,
+            open=open_now,
+            seconds=max(1, math.ceil(ends - time.monotonic())),
+            most_bytes=most,
+            session_idle_seconds=idle,
+            expect_zone=judged,
+        )
+        try:
+            response = await gatekeeper.out(sent)
+        except OutRefused as refusal:
+            return self._out_refused(refusal, trace, most)
+        return self._read_back(response, trace)
+
+    async def _open_now(self, trace: _OutTrace) -> list[OpenAddress] | JsonObject:
+        """The addresses open for the launch's tool (``None``: a program run by hand), when the
+        request's host and port are one of them; else ``closed_address``."""
+        async with self._deps.session_factory() as session:
+            open_now = await open_for(session, self._scope.tool_name)
+        if not any(o.host.strip("[]") == trace.host and o.port == trace.port for o in open_now):
+            return trace.refuse("closed_address")
+        return open_now
+
+    async def _account_ref(self, name: str, trace: _OutTrace) -> str | JsonObject:
+        """The reference of the account ``name`` this launch may use (``account_for``: for whom
+        it runs, a guest or not, Domo on his own for every launch for the house, spec 13.5);
+        else ``account_removed`` or ``account_not_yours`` (``was_removed``)."""
+        person = self._scope.for_whom.person
+        for_person = None if person is None else person.id
+        async with self._deps.session_factory() as session:
+            found = await account_for(
+                session,
+                name=name,
+                for_person=for_person,
+                on_his_own=person is None,
+                is_guest=person is not None and person.role == "guest",
+            )
+            if found is not None:
+                return found.ref
+            removed = await was_removed(
+                session, name=name, for_person=for_person, on_his_own=person is None
+            )
+        return trace.refuse("account_removed" if removed else "account_not_yours")
+
+    def _out_refused(self, refusal: OutRefused, trace: _OutTrace, most: int) -> JsonObject:
+        """What the program reads of a refusal of the gatekeeper: its code alone; ``too_slow``
+        and ``too_big`` name the setting that caused them (``most``: what it was given to read)."""
+        scope = self._scope
+        code = refusal.refusal
+        trace.refused = code
+        if code == "too_slow":
+            return _refused(code, setting=("out_seconds", scope.bound("out_seconds")))
+        if code == "too_big":
+            if most == scope.bound("out_bytes"):
+                return _refused(code, setting=("out_bytes", most))
+            return _refused(code, ANSWER_CEILING_WORDS)
+        return _refused(code)
+
+    def _read_back(self, response: OutResponse, trace: _OutTrace) -> JsonObject:
+        """What the program reads of an answer: its status, its headers and its body, as text when
+        it is UTF-8, else in base64. Outside content: data, never an instruction."""
+        body = base64.b64decode(response.body_b64)
+        trace.status, trace.bytes_in, trace.hops = response.status, len(body), response.hops
+        trace.zone = response.zone
+        answer: JsonObject = {
+            "status": response.status,
+            "headers": cast(JsonObject, dict(response.headers)),
+        }
+        try:
+            answer["body"] = body.decode("utf-8")
+        except UnicodeDecodeError:
+            answer["body_b64"] = response.body_b64
+        return {"ok": answer}
+
+    async def _out_audited(self, trace: _OutTrace) -> None:
+        """The second audit line of a request out (``OUT_DONE``)."""
+        person = self._scope.for_whom.person
+        begun = self._begun
+        async with self._deps.session_factory() as session:
+            await append_audit(
+                session,
+                actor=actor_label(self._scope.actor),
+                action=OUT_DONE,
+                details={
+                    "tool": self._scope.tool_name,
+                    "operation": None if begun is None else begun.name,
+                    "for_person": None if person is None else str(person.id),
+                    **trace.details(),
+                },
+            )
+            await session.commit()

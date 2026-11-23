@@ -2039,17 +2039,117 @@ async def test_the_owner_opens_to_domo_what_he_lacks_by_default():
     assert await check_draft(opens, context()) == []
 
 
+# The facts of opening an address and of asking for an account, as an example says them.
+OPENING = {
+    "host": "192.168.1.20",
+    "port": 8123,
+    "tool": "lights",
+    "on_host": True,
+    "zone": "house",
+    "outward": False,
+    "closed_by_owner": True,
+    "closed_on": "2030-01-01",
+}
+GOING_OUT_FACTS = {
+    "net.open": {**OPENING, "on_host": False},
+    "net.open_host": OPENING,
+    "account.ask": {
+        "name": "lights",
+        "place": "header",
+        "for_house": True,
+        "giver": f"person:{ALEX}",
+        "hosts": 1,
+        "outward": False,
+    },
+}
+
+
+async def test_the_owner_gives_domo_the_ports_of_the_machine_that_hosts_him():
+    # The owner, 2026-11-22 (spec 13.10): not Domo's by default, but the owner may give it.
+    assert "net.open_host" not in DEFAULT_POLICY.domo
+    opens_one = Example(None, "net.open_host", OPENING, "domo_judges", for_domo=True)
+    assert await example_outcome(opens_one, Draft((), ()), context()) == "refused"
+    given = Draft(
+        (
+            domo_change(
+                action_type="net.open_host",
+                access="allow",
+                summary="The assistant opens the ports of his own machine.",
+            ),
+        ),
+        (opens_one,),
+    )
+    assert await check_draft(given, context()) == []
+
+
+@pytest.mark.parametrize("action_type", ["net.open", "net.open_host", "account.ask"])
+async def test_the_owner_has_himself_asked_before_an_address_is_opened_or_an_account_asked(
+    action_type,
+):
+    # Spec 13.10, ruling R8: opening an address (towards the internet, or a port of the machine
+    # that hosts Domo) and asking for an account are shown, so a rule may ask the owner first,
+    # for Domo, for a role and for a person.
+    for_domo = Draft(
+        (
+            domo_change(
+                action_type=action_type,
+                access="allow",
+                approver="owner",
+                summary="L'assistant me demande d'abord.",
+            ),
+        ),
+        (
+            Example(
+                None, action_type, GOING_OUT_FACTS[action_type], "asks_the_owner", for_domo=True
+            ),
+        ),
+    )
+    assert await check_draft(for_domo, context()) == []
+    for subject in ({"person_id": None, "role": "adult"}, {"person_id": ALEX}):
+        given = change(
+            **subject,
+            action_type=action_type,
+            access="allow",
+            approver="owner",
+            limit_expression=None,
+            summary="On me demande d'abord.",
+        )
+        errors = await check_draft(Draft((given,), ()), context())
+        assert SILENT_ONLY_ACCESS not in errors, (action_type, subject)
+        assert "change 1: nothing is asked for an action that changes nothing" not in errors
+    asks = domo_change(action_type=action_type, access=None, ask="yes", summary="Demande-moi.")
+    assert SILENT_ONLY_ACCESS not in await check_draft(Draft((asks,), ()), context())
+
+
+@pytest.mark.parametrize("action_type", ["net.look", "net.close", "account.look"])
+async def test_closing_an_address_and_looking_take_access_alone(action_type):
+    for given in (
+        domo_change(action_type=action_type, access=None, approver="owner"),
+        change(action_type=action_type, access=None, approver="owner", limit_expression=None),
+    ):
+        assert SILENT_ONLY_ACCESS in await check_draft(Draft((given,), ()), context())
+
+
 CLOSED_TO_DOMO = (
-    "change 1: secrets and keys, spending limits and who may do what are not opened to the "
-    "assistant "
-    "himself for now: only taken from him"
+    "change 1: secrets, keys and accounts, spending limits and who may do what are not opened to "
+    "the assistant himself for now: only taken from him"
+)
+# Opened to Domo by a right of the owner (``test_the_owner_opens_to_domo_what_he_lacks_by_
+# default``, ``test_the_owner_gives_domo_the_ports_of_the_machine_that_hosts_him``).
+OPENED_TO_DOMO_BY_A_RIGHT = {"texts.for_someone", "net.open_host"}
+SOCLE_CLOSED_TO_DOMO = sorted(
+    DOMO_NOT_BY_DEFAULT - OWNER_ONLY_ACTIONS - set(RIGHTS_OF) - OPENED_TO_DOMO_BY_A_RIGHT
 )
 
 
-@pytest.mark.parametrize(
-    "socle",
-    sorted(DOMO_NOT_BY_DEFAULT - OWNER_ONLY_ACTIONS - set(RIGHTS_OF) - {"texts.for_someone"}),
-)
+def test_removing_or_sharing_an_account_is_closed_to_domo():
+    # Spec 13.5: on his own he neither creates, replaces nor removes an account.
+    assert "account.remove" in SOCLE_CLOSED_TO_DOMO
+    # Sharing a house account is the owner's alone: no right writes it for anyone.
+    assert "account.share" in OWNER_ONLY_ACTIONS
+
+
+@pytest.mark.parametrize("socle", SOCLE_CLOSED_TO_DOMO)
 async def test_secrets_spending_limits_and_permissions_are_never_opened_to_domo(socle):
     # Ruling R22: spec 5.1 keeps them in the socle; opened, they would act on the owner's keys.
     facts = dict.fromkeys(ACTION_FACTS.get(socle, {}))

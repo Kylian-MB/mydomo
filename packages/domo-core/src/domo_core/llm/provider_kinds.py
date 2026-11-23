@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Literal
 
-from domo_common.gatekeeper_api import InjectionLocation
+from domo_common.gatekeeper_api import HeaderLocation
 
 ProviderKind = Literal["anthropic", "openai", "google", "openai_compatible"]
 
@@ -25,7 +25,7 @@ class ProviderKindSpec:
     """
 
     default_base_url: str | None
-    key_location: InjectionLocation
+    key_location: HeaderLocation
     key_required: bool
 
 
@@ -33,26 +33,24 @@ PROVIDER_KINDS: Mapping[ProviderKind, ProviderKindSpec] = MappingProxyType(
     {
         "anthropic": ProviderKindSpec(
             default_base_url="https://api.anthropic.com",
-            key_location=InjectionLocation(kind="header", name="x-api-key", template="{value}"),
+            key_location=HeaderLocation(kind="header", name="x-api-key", template="{value}"),
             key_required=True,
         ),
         "openai": ProviderKindSpec(
             default_base_url="https://api.openai.com/v1",
-            key_location=InjectionLocation(
+            key_location=HeaderLocation(
                 kind="header", name="authorization", template="Bearer {value}"
             ),
             key_required=True,
         ),
         "google": ProviderKindSpec(
             default_base_url="https://generativelanguage.googleapis.com",
-            key_location=InjectionLocation(
-                kind="header", name="x-goog-api-key", template="{value}"
-            ),
+            key_location=HeaderLocation(kind="header", name="x-goog-api-key", template="{value}"),
             key_required=True,
         ),
         "openai_compatible": ProviderKindSpec(
             default_base_url=None,
-            key_location=InjectionLocation(
+            key_location=HeaderLocation(
                 kind="header", name="authorization", template="Bearer {value}"
             ),
             key_required=False,

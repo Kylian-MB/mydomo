@@ -89,6 +89,7 @@ from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
 from zoneinfo import ZoneInfo
 
+from domo_common.gatekeeper_api import OutRequest, OutResponse
 from domo_common.sandbox_api import ANSWER_CEILING_BYTES, JsonObject, RunRequest, RunResult
 from pydantic import JsonValue
 from sqlalchemy import select
@@ -207,6 +208,13 @@ class Waker(Protocol):
     ) -> Awaitable[bool]: ...
 
 
+class WayOut(Protocol):
+    """What sends a program's request out (``gatekeeper_client.GatekeeperClient.out``): its
+    answer, or ``gatekeeper_client.OutRefused`` with the relay's code."""
+
+    def out(self, request: OutRequest, /) -> Awaitable[OutResponse]: ...
+
+
 @dataclass(frozen=True)
 class LaunchDeps:
     """What a launch needs: the database, the sandbox, the clock, the catalog of the code the open
@@ -214,9 +222,10 @@ class LaunchDeps:
     a turn handed over and the turns that wake Domo go on (``wakes``: ``None``, the turn waits
     for the run whatever it takes, and a wake is awaited where it is asked), what wakes Domo
     when a tool asks it (``waker``: ``None``, nobody is woken;
-    ``conversation.prepare.made_tool_deps`` gives the application's) and the tools' database the
+    ``conversation.prepare.made_tool_deps`` gives the application's), the tools' database the
     programs read and write (``tools_base``: ``None``, there is none, and each such request is
-    refused)."""
+    refused) and the gatekeeper their requests out go through (``gatekeeper``: ``None``, nothing
+    goes out, each such request is refused ``unreachable``)."""
 
     session_factory: SessionFactory
     sandbox: Sandbox
@@ -225,6 +234,7 @@ class LaunchDeps:
     wakes: Spawner | None = None
     waker: Waker | None = None
     tools_base: ToolsBase | None = None
+    gatekeeper: WayOut | None = None
 
 
 @dataclass(frozen=True)
@@ -700,8 +710,11 @@ async def _run(deps: LaunchDeps, ready: _Ready, scope: "LaunchScope", *, nested:
         max_seconds=ready.max_seconds,
         memory_mb=ready.settings["memory_mb"],
         output_bytes=ready.settings["output_bytes"],
-        # What its program reads of one answer: what a tool it launches may give back.
-        answer_bytes=min(ready.settings["result_bytes"], ANSWER_CEILING_BYTES),
+        # What its program reads of one answer: what a tool it launches may give back, or what a
+        # request out may read (ruling R21), the larger.
+        answer_bytes=min(
+            max(ready.settings["result_bytes"], ready.settings["out_bytes"]), ANSWER_CEILING_BYTES
+        ),
         wait_for_a_place=not nested,
     )
     ran: RunResult | None = None

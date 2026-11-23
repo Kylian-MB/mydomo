@@ -9,7 +9,10 @@ import pytest
 from domo_common import core_token
 from domo_common.gatekeeper_api import (
     Binding,
-    InjectionLocation,
+    HeaderLocation,
+    OpenAddress,
+    OutRequest,
+    OutResponse,
     ProviderRoute,
     SecretRequestCreate,
 )
@@ -19,6 +22,7 @@ from domo_core.gatekeeper_client import (
     BindingConflictError,
     GatekeeperClient,
     GatekeeperError,
+    OutRefused,
     load_core_token,
 )
 from domo_core.llm.factory import ModelFactory
@@ -35,9 +39,7 @@ REQ = SecretRequestCreate(
     bindings=[
         Binding(
             host="api.example.com",
-            location=InjectionLocation(
-                kind="header", name="authorization", template="Bearer {value}"
-            ),
+            location=HeaderLocation(kind="header", name="authorization", template="Bearer {value}"),
         )
     ],
 )
@@ -162,6 +164,83 @@ async def test_a_route_for_an_unknown_secret_is_a_gatekeeper_error(respx_mock, g
     with pytest.raises(GatekeeperError) as excinfo:
         await gk_client.register_provider(ROUTE)
     assert (excinfo.value.status, excinfo.value.code) == (404, "unknown_secret")
+
+
+# --- a program's request (step 2) ----------------------------------------------------------
+
+OUT = OutRequest(
+    method="GET",
+    url="http://192.168.1.20:8123/api/states",
+    headers={"accept": "application/json"},
+    account="account.0123456789abcdef0123456789abcdef",
+    open=[OpenAddress(host="192.168.1.20", port=8123)],
+    seconds=30,
+    most_bytes=1000,
+    session_idle_seconds=3600,
+)
+ANSWERED = {"status": 200, "headers": {"x": "1"}, "body_b64": "e30=", "zone": "house", "hops": 0}
+
+
+async def test_out_posts_the_request_with_the_token_and_reads_the_answer(respx_mock, gk_client):
+    route = respx_mock.post("http://gatekeeper.test/internal/out").respond(200, json=ANSWERED)
+    answer = await gk_client.out(OUT)
+    assert answer == OutResponse.model_validate(ANSWERED)
+    request = route.calls.last.request
+    assert request.headers["authorization"] == f"Bearer {CORE_TOKEN}"
+    assert json.loads(request.content) == OUT.model_dump(mode="json")
+
+
+async def test_out_waits_for_the_gatekeeper_beyond_the_request_s_own_seconds(respx_mock, gk_client):
+    # Its read timeout follows the request's seconds, past the client's usual 320 s.
+    route = respx_mock.post("http://gatekeeper.test/internal/out").respond(200, json=ANSWERED)
+    await gk_client.out(OUT.model_copy(update={"seconds": 900}))
+    timeout = route.calls.last.request.extensions["timeout"]
+    assert timeout["read"] > 900
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [(403, "closed_address"), (404, "account_not_found"), (502, "too_big"), (504, "too_slow")],
+)
+async def test_a_refusal_of_the_relay_is_out_refused_with_its_code(
+    respx_mock, gk_client, status, code
+):
+    respx_mock.post("http://gatekeeper.test/internal/out").respond(status, json={"code": code})
+    with pytest.raises(OutRefused) as excinfo:
+        await gk_client.out(OUT)
+    assert excinfo.value.code == code
+
+
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        (401, {"error": "unauthorized"}),
+        (500, {"code": "the site said: secret-1234"}),
+        (403, {"code": "not_a_code"}),
+        (200, {"status": "x"}),
+        (404, {"error": "not_found"}),
+    ],
+)
+async def test_any_other_answer_is_out_refused_failed_with_nothing_of_its_text(
+    respx_mock, gk_client, status, body
+):
+    respx_mock.post("http://gatekeeper.test/internal/out").respond(status, json=body)
+    with pytest.raises(OutRefused) as excinfo:
+        await gk_client.out(OUT)
+    assert excinfo.value.code == "failed"
+    assert "secret" not in str(excinfo.value) and "not_a_code" not in str(excinfo.value)
+
+
+async def test_a_gatekeeper_out_of_reach_is_out_refused_unreachable(respx_mock, gk_client):
+    respx_mock.post("http://gatekeeper.test/internal/out").mock(
+        side_effect=httpx.ConnectError("refused")
+    )
+    with pytest.raises(OutRefused) as excinfo:
+        await gk_client.out(OUT)
+    error = excinfo.value
+    assert error.code == "unreachable"
+    assert error.__cause__ is None and error.__context__ is None
+    assert CORE_TOKEN not in str(error)
 
 
 # --- the relay address and the token -----------------------------------------------------

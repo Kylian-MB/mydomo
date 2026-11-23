@@ -39,6 +39,7 @@ it.
 
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Final, Literal
@@ -49,6 +50,7 @@ from domo_common.gatekeeper_api import (
     FORM_TEXT_KEYS,
     Binding,
     ProviderRoute,
+    SecretFields,
     SecretRequestCreate,
     SecretRequestView,
 )
@@ -141,15 +143,33 @@ class KeyForm:
 
         Raises ``GatekeeperError`` (``invalid_request``) for a request the gatekeeper would
         refuse, so that it fails as the gatekeeper's refusals do: nothing is asked of it."""
+        return self.request_for(ref, [binding], self.texts(purpose_key))
+
+    def request_for(
+        self,
+        ref: str,
+        bindings: Sequence[Binding],
+        purpose: str,
+        *,
+        fields: SecretFields = "value",
+    ) -> SecretRequestCreate:
+        """What the gatekeeper is asked for, as ``request`` says, for a secret sent only to
+        ``bindings``, made of ``fields`` (one value, or an account's user name and password), whose
+        form says ``purpose``, a text already in the words of the one who gives it (an account
+        Domo asks for, ``outward.service``: its name and where it is placed). Raises
+        ``GatekeeperError`` (``invalid_request``) as ``request`` does."""
         texts = self.texts
         language = texts.language if LANGUAGE_TAG.fullmatch(texts.language) else UNDETERMINED
         try:
             if self.installing:
-                return SecretRequestCreate(ref=ref, purpose=texts(purpose_key), bindings=[binding])
+                return SecretRequestCreate(
+                    ref=ref, purpose=purpose, bindings=list(bindings), fields=fields
+                )
             request = SecretRequestCreate(
                 ref=ref,
-                purpose=texts(purpose_key),
-                bindings=[binding],
+                purpose=purpose,
+                bindings=list(bindings),
+                fields=fields,
                 language=language,
                 texts={key: texts.template(key) for key in sorted(FORM_TEXT_KEYS)},
             )

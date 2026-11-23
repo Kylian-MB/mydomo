@@ -50,6 +50,7 @@ from domo_core.madetools.build import (
 from domo_core.madetools.build_writes import (
     YES_WITHDRAWN,
     pause_after,
+    withdrawn_outcome,
 )
 from domo_core.madetools.checks import review_prompt
 from domo_core.madetools.launch import LAUNCHED, ForWhom, launch
@@ -68,6 +69,8 @@ from domo_core.madetools.service import fingerprint, open_build
 from domo_core.madetools.settings import SETTINGS, set_house, starts
 from domo_core.madetools.upkeep import toolmaking_pass
 from domo_core.madetools.yes import digest_of
+from domo_core.outward.models import OpenAddress
+from domo_core.outward.service import close_address, open_address
 from domo_core.policy.catalog import OpenKind
 from domo_core.policy.models import PolicyRight
 from domo_core.policy.open_catalog import KindRefused, load_policy, replace_kind
@@ -1199,7 +1202,179 @@ async def test_the_reviewer_reads_the_operations(
     assert isinstance(message, ChatMessage)
     case = json.loads(message.content)
     assert case["operations"] == ORDER_OPERATIONS
-    assert set(case) == {"purpose", "description", "parameters", "operations", "code"}
+    assert set(case) == {
+        "purpose",
+        "description",
+        "parameters",
+        "operations",
+        "open_addresses",
+        "accounts",
+        "code",
+    }
+
+
+# What a tool that goes out declares: the addresses and the accounts of its operations.
+GOING_OUT: dict[str, Any] = {
+    "add": {
+        "says": "Adds two numbers, read from a device.",
+        "risks": [],
+        "accounts": ["lights"],
+        "addresses": [{"host": "192.168.1.20", "port": 8080}, {"host": "lamps", "port": 80}],
+    }
+}
+
+
+async def open_rows(server: ChatServer) -> list[OpenAddress]:
+    async with server.session_factory() as session:
+        found = await session.scalars(select(OpenAddress).order_by(OpenAddress.opened_at))
+        return list(found.all())
+
+
+async def test_a_build_that_names_an_address_the_tool_lacks_opens_nothing_and_says_which(
+    chat_server: ChatServer, sandbox: FakeSandbox, alex: Person
+):
+    # Task 7: opening is Domo's act, never a build's; the build's result tells him what lacks.
+    async with chat_server.session_factory() as session:
+        await open_address(
+            session,
+            tool_name="add",
+            host="192.168.1.20",
+            port=8080,
+            on_host=False,
+            by="domo",
+            now=chat_server.clock(),
+        )
+        await session.commit()
+    maker = use(chat_server, Maker(submit(operations=GOING_OUT)))
+    build_id = await opened(chat_server, alex)
+    await run_the_pass(chat_server)
+    build = await build_of(chat_server, build_id)
+    assert build.state == "ready"
+    [tool] = await tools(chat_server)
+    assert tool.operations == GOING_OUT
+    # Nothing was opened by the build.
+    assert [(row.tool_name, row.host, row.port) for row in await open_rows(chat_server)] == [
+        ("add", "192.168.1.20", 8080)
+    ]
+    assert build.outcome is not None
+    assert "lamps:80" in build.outcome and "address_open" in build.outcome
+    assert "192.168.1.20" not in build.outcome
+    # The model that writes and the reviewer were told the addresses open for it.
+    shown = [{"host": "192.168.1.20", "port": 8080, "on_host": False}]
+    assert maker.told(0)["open_addresses"] == shown
+    [review] = maker.reviewing
+    [message] = review.messages
+    assert isinstance(message, ChatMessage)
+    case = json.loads(message.content)
+    assert case["open_addresses"] == shown and case["accounts"] == ["lights"]
+    # Audited by their number alone.
+    [built] = await audit_of(chat_server, BUILT)
+    assert built.details["missing_addresses"] == 1
+    assert "lamps" not in json.dumps(built.details)
+
+
+async def test_a_build_that_withdraws_and_lacks_addresses_keeps_the_withdrawal_whole(
+    chat_server: ChatServer, sandbox: FakeSandbox, alex: Person
+):
+    # Fix round 1: the withdrawn notice is never cut by the addresses, which are said short
+    # (tool_look lists them all), those the owner closed said apart: they take his yes.
+    tool = await add_ready_tool(chat_server, name="add")
+    before = {"add": {"says": "Adds two numbers.", "risks": []}}
+    many = [{"host": f"device-number-{n}.home.arpa", "port": 8000 + n} for n in range(8)]
+    after = {
+        "add": {
+            "says": "Adds two numbers, read from a device.",
+            "risks": ["outward"],
+            "addresses": many,
+        },
+    }
+    now = chat_server.clock()
+    async with chat_server.session_factory() as writer:
+        await writer.execute(
+            update(MadeTool).where(MadeTool.id == tool.id).values(operations=before)
+        )
+        writer.add(
+            StandingAgreement(
+                tool_id=tool.id,
+                operation="add",
+                for_person_id=alex.id,
+                amount_cents_at_most=4000,
+                times=1,
+                per="week",
+                given_by=alex.id,
+            )
+        )
+        owner = (await writer.scalars(select(Person).where(Person.role == "owner"))).first()
+        assert owner is not None
+        # One of them the owner closed, for another tool: closed for this one too (ruling R20).
+        await open_address(
+            writer,
+            tool_name="another",
+            host="device-number-3.home.arpa",
+            port=8003,
+            on_host=False,
+            by="domo",
+            now=now,
+        )
+        await close_address(
+            writer,
+            tool_name="another",
+            host="device-number-3.home.arpa",
+            port=8003,
+            by=str(owner.id),
+            now=now,
+        )
+        await writer.commit()
+    use(chat_server, Maker(submit(CODE + "# goes out\n", operations=after)))
+    build_id = await opened(chat_server, alex, tool_id=tool.id)
+    await run_the_pass(chat_server)
+    build = await build_of(chat_server, build_id)
+    assert build.state == "ready" and build.outcome is not None
+    withdrawn = withdrawn_outcome({"operations": ["add"], "agreements": 1, "stops": 0})
+    assert build.outcome.startswith(withdrawn)
+    assert len(build.outcome) <= build_writes.MAX_OUTCOME
+    rest = build.outcome[len(withdrawn) :]
+    assert "8 addresses" in rest and "tool_look" in rest
+    assert "device-number-3.home.arpa:8003" in rest and "owner" in rest
+
+
+LACKING = [(f"device-number-{n}.home.arpa", 8000 + n) for n in range(3)]
+
+
+def test_with_no_room_left_the_missing_addresses_say_nothing():
+    # Fix round 2: a room of nothing, or less, gives nothing, never a head cut from its end.
+    for room in (0, -1, -37):
+        assert build_writes.missing_outcome("add", LACKING, set(), room) == ""
+    assert len(build_writes.missing_outcome("add", LACKING, set(), 20)) <= 20
+
+
+def test_an_outcome_whose_withdrawn_and_kept_notices_fill_the_bound_leaves_the_addresses_out():
+    names = [f"operation_with_a_long_name_{n}" for n in range(6)]
+    withdrawn = withdrawn_outcome({"operations": names, "agreements": 6, "stops": 0})
+    kept = build_writes.settings_kept(["launches_per_day", "run_seconds"])
+    said = build_writes.outcome_of(withdrawn, kept, "add", LACKING, {LACKING[0]})
+    assert len(said) <= build_writes.MAX_OUTCOME
+    assert said.startswith(withdrawn) and "device-number" not in said
+    # Almost full: what room is left is used, within the bound.
+    short = withdrawn_outcome({"operations": ["add"], "agreements": 1, "stops": 0})
+    for kept_text in (kept, None):
+        said = build_writes.outcome_of(short, kept_text, "add", LACKING, {LACKING[0]})
+        assert len(said) <= build_writes.MAX_OUTCOME and said.startswith(short)
+    # Nothing withdrawn nor kept: the addresses alone, whole.
+    alone = build_writes.outcome_of(None, None, "add", LACKING, set())
+    assert alone.startswith("built; 3 addresses") and len(alone) <= build_writes.MAX_OUTCOME
+
+
+async def test_a_build_whose_addresses_are_all_open_says_nothing_of_them(
+    chat_server: ChatServer, sandbox: FakeSandbox, alex: Person
+):
+    use(chat_server, Maker(submit()))
+    build_id = await opened(chat_server, alex)
+    await run_the_pass(chat_server)
+    build = await build_of(chat_server, build_id)
+    assert (build.state, build.outcome) == ("ready", None)
+    [built] = await audit_of(chat_server, BUILT)
+    assert "missing_addresses" not in built.details
 
 
 # The table the dry runs below write in, made for real in the common space beforehand.

@@ -8,8 +8,9 @@ from pathlib import Path
 import pytest
 from domo_common.gatekeeper_api import (
     FORM_TEXT_KEYS,
+    BasicLocation,
     Binding,
-    InjectionLocation,
+    HeaderLocation,
     SecretRequestCreate,
 )
 from domo_gatekeeper.errors import (
@@ -19,7 +20,7 @@ from domo_gatekeeper.errors import (
 )
 from domo_gatekeeper.secret_requests import PendingRequest, SecretRequestStore
 
-EVIL = Binding(host="evil.example.net", location=InjectionLocation(kind="header", name="x-api-key"))
+EVIL = Binding(host="evil.example.net", location=HeaderLocation(kind="header", name="x-api-key"))
 
 
 def token_of(form_path: str | None) -> str:
@@ -52,6 +53,19 @@ def test_create_ids_and_tokens_are_unique(store, vault, req):
     views = [store.create(req, vault) for _ in range(5)]
     assert len({v.id for v in views}) == 5
     assert len({v.form_path for v in views}) == 5
+
+
+def test_a_request_says_what_its_secret_is_made_of(store, vault, req):
+    account = SecretRequestCreate(
+        ref="account:device",
+        purpose="p",
+        bindings=[Binding(host="device.example.com", location=BasicLocation(kind="basic"))],
+        fields="user_password",
+    )
+    one = store.pending_by_token(token_of(store.create(req, vault).form_path))
+    two = store.pending_by_token(token_of(store.create(account, vault).form_path))
+    assert one is not None and one.fields == "value"
+    assert two is not None and two.fields == "user_password"
 
 
 def test_request_is_single_use(store, vault, req):

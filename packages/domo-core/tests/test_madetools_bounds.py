@@ -618,6 +618,9 @@ async def test_what_a_program_reads_of_a_tool_it_launched_follows_result_bytes(
     asker = await add_tool(session_factory, "asker")
     given = await add_tool(session_factory, "big")
     await own(session_factory, given, result_bytes=200_000)
+    # Its out_bytes under its result_bytes: the run's frame is the latter (ruling R21 takes the
+    # larger of the two).
+    await own(session_factory, asker, out_bytes=1)
     sandbox = by_program(asker=reads_it, big=gives_big)
     deps = deps_of(session_factory, live_clock, sandbox, [])
     # The tool it launched ran; what it gave is over the asking launch's result_bytes: never a

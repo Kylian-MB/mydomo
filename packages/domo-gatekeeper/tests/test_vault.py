@@ -7,20 +7,28 @@ from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from domo_common.gatekeeper_api import Binding, InjectionLocation
+from domo_common.gatekeeper_api import BasicLocation, Binding, HeaderLocation, LoginLocation
 from domo_gatekeeper.errors import (
     BindingMismatchError,
     InvalidSecretValueError,
     VaultDecryptError,
 )
-from domo_gatekeeper.vault import Vault, _associated_data, _stored_associated_data
+from domo_gatekeeper.vault import (
+    _LOCATION_FIELDS,
+    Vault,
+    _associated_data,
+    _stored_associated_data,
+    join_account,
+    secret_parts,
+    split_account,
+)
 from pydantic import TypeAdapter
 
-B = Binding(host="api.example.com", location=InjectionLocation(kind="header", name="x-api-key"))
-EVIL = Binding(host="evil.example.net", location=InjectionLocation(kind="header", name="x-api-key"))
+B = Binding(host="api.example.com", location=HeaderLocation(kind="header", name="x-api-key"))
+EVIL = Binding(host="evil.example.net", location=HeaderLocation(kind="header", name="x-api-key"))
 B_AUTH = Binding(
     host="api.example.com",
-    location=InjectionLocation(kind="header", name="authorization", template="Bearer {value}"),
+    location=HeaderLocation(kind="header", name="authorization", template="Bearer {value}"),
 )
 
 
@@ -97,7 +105,7 @@ def test_a_different_injection_location_counts_as_a_rebinding(vault):
 def test_header_name_case_does_not_make_a_different_binding(vault):
     upper = Binding(
         host="api.example.com",
-        location=InjectionLocation(kind="header", name="X-API-Key"),
+        location=HeaderLocation(kind="header", name="X-API-Key"),
     )
     vault.put("r", "v1", purpose="p", bindings=[upper])
     meta = vault.put("r", "v2", purpose="p", bindings=[B])  # B uses "x-api-key"
@@ -442,7 +450,7 @@ def test_associated_data_v1_is_canonical_for_several_bindings():
     other = Binding(
         host="localhost",
         port=8080,
-        location=InjectionLocation(kind="header", name="authorization", template="Bearer {value}"),
+        location=HeaderLocation(kind="header", name="authorization", template="Bearer {value}"),
     )
     expected = (
         b"domo-vault-aad/v1\nr\n["
@@ -501,7 +509,20 @@ def test_the_binding_models_have_exactly_the_fields_the_aad_covers():
     # a field to either model means deciding whether it is part of the authenticated data: if it
     # is, that needs a v2 AAD (new prefix, and v1 rows must stay readable).
     assert set(Binding.model_fields) == {"host", "port", "location"}
-    assert set(InjectionLocation.model_fields) == {"kind", "name", "template"}
+    assert set(HeaderLocation.model_fields) == {"kind", "name", "template"}
+    assert set(BasicLocation.model_fields) == {"kind"}
+    assert set(LoginLocation.model_fields) == {
+        "kind",
+        "path",
+        "encoding",
+        "user_field",
+        "password_field",
+    }
+    assert {kind: set(fields) for kind, fields in _LOCATION_FIELDS.items()} == {
+        "header": set(HeaderLocation.model_fields),
+        "basic": set(BasicLocation.model_fields),
+        "login": set(LoginLocation.model_fields),
+    }
 
 
 def stored_bindings_json(db: Path, ref: str) -> str:
@@ -599,3 +620,163 @@ def test_reveal_bound_reads_the_database_once(vault, monkeypatch):
     monkeypatch.setattr("domo_gatekeeper.vault.sqlite3.connect", counting_connect)
     vault.reveal_bound("r")
     assert opened == 1
+
+
+# --- a secret of two values: an account --------------------------------------------------------
+
+BASIC = Binding(host="device.example.com", location=BasicLocation(kind="basic"))
+LOGIN_LOCATION = LoginLocation(
+    kind="login",
+    path="/api/login",
+    encoding="form",
+    user_field="username",
+    password_field="password",
+)
+LOGIN = Binding(host="site.example.com", location=LOGIN_LOCATION)
+ACCOUNT = join_account("house-user", "s3cr3t-password")
+
+
+def test_an_account_is_one_stored_string_of_its_two_values(vault, vault_db_path):
+    assert ACCOUNT == '{"user":"house-user","password":"s3cr3t-password"}'
+    vault.put("account:site", ACCOUNT, purpose="p", bindings=[LOGIN, BASIC])
+    value, bindings = vault.reveal_bound("account:site")
+    assert value == ACCOUNT and set(bindings) == {LOGIN, BASIC}
+    assert split_account(value) == ("house-user", "s3cr3t-password")
+    assert b"s3cr3t-password" not in vault_db_path.read_bytes()
+    assert b"house-user" not in vault_db_path.read_bytes()
+
+
+def test_the_parts_of_a_secret_are_what_is_scrubbed():
+    assert secret_parts("sk-one-value") == ("sk-one-value",)
+    user, password, *_ = secret_parts(ACCOUNT)
+    assert (user, password) == ("house-user", "s3cr3t-password")
+    # What Basic sends, so that an echoed header is masked too, in base64.
+    assert "house-user:s3cr3t-password" in secret_parts(ACCOUNT)
+    # A value that only looks like the start of an account is one value.
+    for value in ('{"user":"a"}', '{"user":"a","password":1}', "{not json", '["a","b"]'):
+        assert secret_parts(value) == (value,)
+
+
+def test_values_yields_what_every_answer_is_scrubbed_of(vault):
+    vault.put("a", "value-of-a", purpose="p", bindings=[B])
+    vault.put("account:site", ACCOUNT, purpose="p", bindings=[LOGIN])
+    values = vault.values()
+    assert "value-of-a" in values
+    assert "s3cr3t-password" in values and "house-user:s3cr3t-password" in values
+    # A user name is not a secret: it is scrubbed only from the answer to its own request.
+    assert "house-user" not in values and "house-user" in secret_parts(ACCOUNT)
+    assert ACCOUNT not in values
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "s3cr3t-password",
+        '{"user":"house-user"}',
+        '{"user":"","password":"s3cr3t-password"}',
+        '{"user":"house-user","password":""}',
+        '{"user":"house-user","password":"s3cr3t-password","more":"x"}',
+    ],
+)
+def test_an_account_place_needs_a_user_and_a_password(vault, value: str):
+    with pytest.raises(InvalidSecretValueError) as excinfo:
+        vault.put("account:site", value, purpose="p", bindings=[LOGIN])
+    assert "s3cr3t-password" not in str(excinfo.value) and "house-user" not in str(excinfo.value)
+    assert vault.metadata("account:site") is None
+
+
+def test_a_basic_user_has_no_colon(vault):
+    # Basic joins the user and the password with a colon: one in the user would move the cut.
+    with pytest.raises(InvalidSecretValueError):
+        vault.put("account:device", join_account("a:b", "pw-12345"), purpose="p", bindings=[BASIC])
+    vault.put("account:site", join_account("a:b", "pw-12345"), purpose="p", bindings=[LOGIN])
+    vault.put("account:device", join_account("ab", "pw:12345"), purpose="p", bindings=[BASIC])
+
+
+def test_a_lone_surrogate_in_an_account_is_refused(vault):
+    with pytest.raises(InvalidSecretValueError):
+        vault.put("account:site", join_account("\ud800user", "pw"), purpose="p", bindings=[LOGIN])
+    assert vault.metadata("account:site") is None
+
+
+def test_a_single_value_never_has_the_shape_of_an_account(vault):
+    with pytest.raises(InvalidSecretValueError):
+        vault.put("r", ACCOUNT, purpose="p", bindings=[B])
+
+
+def test_a_secret_cannot_mix_a_header_and_an_account(vault):
+    with pytest.raises(ValueError, match="binding"):
+        vault.put("r", ACCOUNT, purpose="p", bindings=[B, BASIC])
+    with pytest.raises(ValueError, match="binding"):
+        vault.put("r", "sk-one-value", purpose="p", bindings=[B, BASIC])
+    assert vault.metadata("r") is None
+
+
+def test_a_header_binding_keeps_its_associated_data():
+    # The literal pinned above: a header secret stored before accounts existed stays readable.
+    assert _associated_data("r", [B]) == AAD_V1_FOR_R_AND_B
+
+
+def test_the_associated_data_of_basic_and_login_is_pinned():
+    assert _associated_data("r", [BASIC]) == (
+        b"domo-vault-aad/v1\nr\n"
+        b'[{"host":"device.example.com","location":{"kind":"basic"},"port":null}]'
+    )
+    assert _associated_data("r", [LOGIN]) == (
+        b"domo-vault-aad/v1\nr\n"
+        b'[{"host":"site.example.com","location":{"encoding":"form","kind":"login",'
+        b'"password_field":"password","path":"/api/login","user_field":"username"},'
+        b'"port":null}]'
+    )
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        Binding(host="site.example.com", location=BasicLocation(kind="basic")),
+        Binding(host="site.example.com", location=HeaderLocation(kind="header", name="password")),
+        Binding(host="site.example.com", location=LOGIN_LOCATION.model_copy(update={"path": "/"})),
+        Binding(
+            host="site.example.com",
+            location=LOGIN_LOCATION.model_copy(update={"encoding": "json"}),
+        ),
+        Binding(
+            host="site.example.com",
+            location=LOGIN_LOCATION.model_copy(update={"user_field": "email"}),
+        ),
+        Binding(
+            host="site.example.com",
+            location=LOGIN_LOCATION.model_copy(update={"password_field": "pass"}),
+        ),
+    ],
+)
+def test_a_stored_account_cannot_be_read_under_another_place(vault, vault_db_path, other):
+    assert _associated_data("account:site", [other]) != _associated_data("account:site", [LOGIN])
+    vault.put("account:site", ACCOUNT, purpose="p", bindings=[LOGIN])
+    # Someone with write access to the file (but not the key) moves the account elsewhere.
+    set_stored_bindings(
+        vault_db_path, "account:site", TypeAdapter(list[Binding]).dump_json([other]).decode()
+    )
+    for read in (vault.reveal, vault.reveal_bound):
+        with pytest.raises(VaultDecryptError) as excinfo:
+            read("account:site")
+        assert "s3cr3t-password" not in str(excinfo.value)
+
+
+def test_a_stored_binding_of_an_unknown_kind_cannot_be_read(vault, vault_db_path):
+    vault.put("account:device", ACCOUNT, purpose="p", bindings=[BASIC])
+    set_stored_bindings(
+        vault_db_path,
+        "account:device",
+        '[{"host":"device.example.com","port":null,"location":{"kind":"digest"}}]',
+    )
+    with pytest.raises(VaultDecryptError):
+        vault.reveal_bound("account:device")
+
+
+def test_an_account_rotates_under_the_same_places(vault):
+    vault.put("account:site", ACCOUNT, purpose="p", bindings=[LOGIN])
+    rotated = join_account("house-user", "n3w-password")
+    meta = vault.put("account:site", rotated, purpose="p", bindings=[LOGIN])
+    assert meta.rotated_at is not None and vault.reveal("account:site") == rotated
+    assert meta.bindings == [LOGIN]

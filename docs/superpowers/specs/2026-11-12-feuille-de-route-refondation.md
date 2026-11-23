@@ -86,6 +86,21 @@ Chacun est livré d'un bloc : une branche, une conception, un plan, une fusion.
 - Demande le chantier A. La reconnaissance et la synthèse de la parole passent par le gardien ou par des modèles locaux : à décider en conception.
 - À rappeler au propriétaire (demandé le 2026-11-12) : refaire à la voix l'essai du deuxième canal du chantier A (même assistant, même discussion, ce qu'une carte montre est dit en mots). Les actions pour convenir d'un moyen de preuve ou en retirer un arrivent ici, avec le mot de passe vocal.
 
+### Chantier D bis — L'application Android
+
+*Demandé le 2026-11-22. Placé juste après D : l'application a besoin que l'assistant sache déjà entendre et parler. Android seulement pour l'instant.*
+
+- Un mot de réveil au nom que chacun a donné à l'assistant (« ok domo », « ok friday »), détecté sur le téléphone, application fermée et écran éteint. Rien ne part vers le serveur avant le mot. Quand quelqu'un lui donne un nom, l'assistant prépare lui-même ce qu'il faut pour le détecter et l'envoie au téléphone de cette personne ; le serveur vérifie le mot et reconnaît la voix.
+- Une écoute en continu pour apprendre à connaître la personne, hors de la maison aussi. Le téléphone ne garde que les moments où quelqu'un parle, chiffre le son et l'envoie par paquets ; seul le serveur a la clé. Tout le monde est enregistré, pas seulement la voix connue : sans l'autre moitié d'une conversation, l'assistant ne comprend pas un « oui ».
+- Personne d'autre que l'assistant n'écoute ces enregistrements. La transcription se fait sur le serveur, pas chez un fournisseur extérieur. L'assistant retient ce qui concerne la personne et jette le son.
+- Réglage de départ, modifiable : une conversation où la voix du propriétaire du téléphone n'apparaît jamais est jetée. Le propriétaire est belge : en droit belge, enregistrer une conversation à laquelle on participe n'est pas un délit, capter celle des autres l'est (à vérifier dans le nouveau Code pénal, en vigueur depuis avril 2026).
+- Le propriétaire du téléphone peut toujours couper : un bouton dans la notification, appliqué sur le téléphone, sans l'assistant ni réseau, qui ferme tout le micro. Ce n'est pas la coupure des micros de la maison (E), que l'assistant juge : le propriétaire d'un téléphone n'est pas forcément celui de l'assistant.
+- Des coupures automatiques selon le lieu (zones, nom du Wi-Fi) ou entre certaines heures. Les règles vivent sur le téléphone ; on les dit en langage naturel (« ne m'écoute pas au travail »), l'assistant les écrit et peut en proposer. Par défaut elles arrêtent l'écoute pour apprendre et laissent le mot de réveil. Le téléphone garde les dernières minutes avant de les envoyer et les efface s'il se découvre dans un lieu interdit.
+- La notification dit toujours l'état du moment et sa raison.
+- Les appels ne sont pas écoutés par l'application : Android ne le permet pas à une application ordinaire. Un propriétaire qui le veut peut faire passer ses appels par l'assistant (téléphonie par internet reliée au serveur) ; ce n'est pas construit ici.
+- À mesurer en conception : ce que l'écoute coûte en batterie sur un vrai téléphone.
+- Demande les chantiers A (un canal de plus, un appareil identifié), B (la mémoire, le nom que chacun lui donne) et D (entendre et parler). La reconnaissance de qui parle est commune avec E.
+
 ### Chantier E — La maison
 
 *Les anciens chantiers 4 ter, 5 et 7.*
@@ -122,7 +137,7 @@ Chacun est livré d'un bloc : une branche, une conception, un plan, une fusion.
 
 ### Ensuite
 
-Les serveurs et les applications (ancien chantier 6), le téléphone, les autres connecteurs : des adaptateurs de plus sur A, B et C.
+Les serveurs et les applications (ancien chantier 6), l'iPhone, les appels qui passent par l'assistant, les autres connecteurs : des adaptateurs de plus sur A, B et C.
 
 ## 5. L'ordre accepté
 
@@ -130,6 +145,7 @@ A, B, C, D, E, F, G. G peut passer avant E et F pour tout ce qui ne touche pas l
 
 - A d'abord : sans lui, la mémoire et les initiatives seraient encore bâties autour de la page, et à refaire pour la voix.
 - D peut passer juste après A si le propriétaire veut entendre l'assistant plus tôt : il ne dépend ni de B ni de C.
+- D bis (l'application Android) a été ajouté le 2026-11-22, juste après D, avec l'accord du propriétaire : à commencer dès que D est fusionné.
 - C avant E et F : les connecteurs de la maison et l'interface de chacun sont des outils, écrits par le projet ou par l'assistant.
 
 ## 6. Ce qui ne change pas

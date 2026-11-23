@@ -8,7 +8,7 @@ import pytest
 from domo_common.gatekeeper_api import (
     FORM_TEXT_MAX,
     Binding,
-    InjectionLocation,
+    HeaderLocation,
     ProviderRoute,
     SecretMetadata,
     SecretRequestCreate,
@@ -27,8 +27,8 @@ CORE_TOKEN = "core-token-for-tests"
 BEARER = {"authorization": f"Bearer {CORE_TOKEN}"}
 KEY = "real-key"  # what the route_p1 fixture stores in the vault
 
-B = Binding(host="api.example.com", location=InjectionLocation(kind="header", name="x-api-key"))
-EVIL = Binding(host="evil.example.net", location=InjectionLocation(kind="header", name="x-api-key"))
+B = Binding(host="api.example.com", location=HeaderLocation(kind="header", name="x-api-key"))
+EVIL = Binding(host="evil.example.net", location=HeaderLocation(kind="header", name="x-api-key"))
 REQ = SecretRequestCreate(
     ref="provider:p1:api_key", purpose="API key for provider p1", bindings=[B]
 )
@@ -758,7 +758,7 @@ async def test_a_secret_that_cannot_be_decrypted_returns_500(
 async def test_a_secret_that_cannot_go_in_a_header_returns_500(internal_client, vault, registry):
     value_with_newline = "line\nbreak"
     unusable = Binding(
-        host="api.example.com", location=InjectionLocation(kind="header", name="x-api-key")
+        host="api.example.com", location=HeaderLocation(kind="header", name="x-api-key")
     )
     vault.put("provider:p3:api_key", value_with_newline, purpose="p", bindings=[unusable])
     route = ProviderRoute(

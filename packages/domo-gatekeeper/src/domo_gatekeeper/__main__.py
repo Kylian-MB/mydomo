@@ -6,7 +6,8 @@ edge proxy). Both write no access log: the path of the vault form carries a one-
 
 The startup order matters. The core's token is read first, so that a missing file stops the
 start before anything is created; then the master key is loaded (created only for an empty
-vault, see ``load_or_create_master_key``), then the stores are opened.
+vault, see ``load_or_create_master_key``), then the stores are opened, and what a program may
+reach is read once (``reach``), for the relay of programs (``out``).
 """
 
 import asyncio
@@ -33,10 +34,15 @@ from domo_gatekeeper.errors import (
 )
 from domo_gatekeeper.internal_api import create_internal_app
 from domo_gatekeeper.master_key import load_or_create_master_key
+from domo_gatekeeper.out import ProgramRelay, create_out_ssl_context
 from domo_gatekeeper.providers import ProviderRegistry
 from domo_gatekeeper.public_app import create_public_app
+from domo_gatekeeper.reach import describe, reach_from
 from domo_gatekeeper.secret_requests import SecretRequestStore
+from domo_gatekeeper.sessions import Sessions
 from domo_gatekeeper.vault import Vault
+
+logger = logging.getLogger("domo_gatekeeper")
 
 # httpcore logs the response headers of every call at DEBUG, before they are scrubbed, and
 # httpx logs every URL at INFO: neither belongs in the logs of the one component that holds keys.
@@ -195,6 +201,11 @@ async def serve(settings: GatekeeperSettings) -> None:
     """Start both servers and run them until they are asked to stop."""
     token = load_core_token(settings.core_token_file)
     vault, requests, providers = open_stores(settings)
+    reach = reach_from(settings)
+    logger.info("%s", describe(reach))
+    out_relay = ProgramRelay(
+        vault=vault, sessions=Sessions(), reach=reach, ssl_context=create_out_ssl_context()
+    )
     async with create_http_client() as http_client:
         servers = build_servers(
             create_internal_app(
@@ -203,6 +214,7 @@ async def serve(settings: GatekeeperSettings) -> None:
                 providers=providers,
                 http_client=http_client,
                 core_token=token,
+                out_relay=out_relay,
             ),
             create_public_app(requests, vault),
             host=settings.gatekeeper_host,

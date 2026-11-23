@@ -92,6 +92,8 @@ def test_every_table_is_declared_on_the_shared_base():
         "tool_settings",
         "made_tool_launches",
         "tool_trouble_days",
+        "open_addresses",
+        "service_accounts",
     }
 
 

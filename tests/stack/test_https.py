@@ -169,13 +169,13 @@ def post(url: str, body: bytes, headers: dict[str, str]) -> httpx.Response | Non
 
 
 def test_the_edge_limits_request_bodies(stack):
-    # The vault form's own limit (128 KiB) for the gatekeeper; 1 MB for the core.
-    assert edge_body_limits(stack) == {"/vault/*": 128 * 1024, "*": 1_000_000}
+    # The vault form's own limit (256 KiB, the gatekeeper's) for the gatekeeper; 1 MB for the core.
+    assert edge_body_limits(stack) == {"/vault/*": 256 * 1024, "*": 1_000_000}
 
 
 def test_bodies_within_the_limits_go_through(stack):
     headers = {**FORM, "origin": stack.base_url}
-    vault = post(stack.base_url + "/vault/r/unknown", b"value=" + b"a" * (100 * 1024), headers)
+    vault = post(stack.base_url + "/vault/r/unknown", b"value=" + b"a" * (200 * 1024), headers)
     assert vault is not None and vault.headers.get("x-domo-component") == "gatekeeper"
     core = post(stack.base_url + "/login", b"username=a&password=" + b"a" * (512 * 1024), headers)
     assert core is not None and core.status_code != 413
@@ -193,9 +193,9 @@ def test_a_body_over_the_core_limit_never_gets_an_answer_from_the_core(stack):
 
 def test_a_body_over_the_vault_limit_is_refused(stack):
     """Refused by the edge, or by the gatekeeper's own check of the declared length, whichever
-    comes first: either way the gatekeeper never reads more than 128 KiB."""
+    comes first: either way the gatekeeper never reads more than 256 KiB."""
     headers = {**FORM, "origin": stack.base_url}
-    body = b"value=" + b"a" * (200 * 1024)
+    body = b"value=" + b"a" * (300 * 1024)
     refused = post(stack.base_url + "/vault/r/unknown", body, headers)
     assert refused is None or refused.status_code == 413
 

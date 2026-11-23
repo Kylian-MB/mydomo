@@ -15,7 +15,7 @@
 #   edge        Caddy: HTTPS with a local certificate authority; the only published ports.
 #
 # Networks
-#   lan       bridge     edge                         where the ports are published
+#   lan       bridge     edge                         where the ports are published (fixed subnet)
 #   core_net  internal   edge, core, gatekeeper, db   no way out, not even to the host
 #   egress    bridge     gatekeeper                   the way to the Internet
 #   (none)               sandbox                      network_mode none: no network of any kind
@@ -115,6 +115,23 @@ services:
       init:
         condition: service_completed_successfully
     environment:
+      # The assistant's own networks, never reachable by a program: core_net, and lan, the edge's (the
+      # same subnets as below; the edge is a service of the assistant whatever address leads to it). An
+      # own network wins over a host address, so the lan's gateway is never reachable either.
+      # egress is the way out, not one of them: the machine that hosts the assistant (its gateway) is
+      # detected.
+      DOMO_OWN_NETWORKS: ${DOMO_CORE_NET_PREFIX:-10.247.81}.0/24,${DOMO_LAN_NET_PREFIX:-10.247.80}.0/24
+      # The edge's published ports (the same as the edge's, below): never reachable on the
+      # machine that hosts the assistant. The page's addresses, as the core and the edge have them: the
+      # IP literals among them are that machine.
+      DOMO_OWN_PORTS: ${DOMO_HTTPS_PORT:-8443},${DOMO_HTTP_PORT:-8080}
+      # The machine's address on each network of this file with a fixed subnet (its gateway),
+      # added to what the gatekeeper detects: the edge publishes on every address of the host,
+      # those included. core_net's is isolated (no address) and is one of its own networks anyway.
+      # Then the machine's other addresses the person names in .env (DOMO_EXTRA_HOST_ADDRESSES,
+      # empty by default: the gatekeeper skips an empty item).
+      DOMO_HOST_ADDRESSES: ${DOMO_LAN_NET_PREFIX:-10.247.80}.1,${DOMO_CORE_NET_PREFIX:-10.247.81}.1,${DOMO_EXTRA_HOST_ADDRESSES:-}
+      DOMO_SITE_ADDRESSES: ${DOMO_SITE_ADDRESSES:-localhost}
       TZ: ${TZ:-UTC}
     volumes:
       - vault-data:/data
@@ -234,8 +251,15 @@ services:
     restart: unless-stopped
 
 networks:
+  # A fixed subnet, so that the gatekeeper knows the host's address on it (its gateway, .1):
+  # the edge's ports are published there too. Change DOMO_LAN_NET_PREFIX in .env if it collides
+  # with a network of yours, as DOMO_CORE_NET_PREFIX below.
   lan:
     driver: bridge
+    ipam:
+      config:
+        - subnet: ${DOMO_LAN_NET_PREFIX:-10.247.80}.0/24
+          gateway: ${DOMO_LAN_NET_PREFIX:-10.247.80}.1
   # Internal: no route out of it. Its gateway is isolated (Docker 28 or later): the bridge gets
   # no address on it, so the containers cannot reach the host's own services either.
   #

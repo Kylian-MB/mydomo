@@ -1,4 +1,5 @@
 import asyncio
+import ipaddress
 import logging
 import os
 import signal
@@ -10,7 +11,7 @@ from pathlib import Path
 import httpx
 import pytest
 import uvicorn
-from domo_common.gatekeeper_api import Binding, InjectionLocation
+from domo_common.gatekeeper_api import Binding, HeaderLocation
 from domo_gatekeeper.__main__ import (
     build_servers,
     create_http_client,
@@ -259,6 +260,45 @@ async def test_serve_creates_the_vault_files_and_the_master_key(tmp_path, token_
     assert len((data / "master.key").read_bytes()) == 32
 
 
+async def test_serve_says_what_a_program_may_never_reach(tmp_path, token_file, caplog):
+    settings = local_settings(tmp_path, token_file).model_copy(
+        update={
+            "own_networks": (ipaddress.ip_network("10.99.7.0/24"),),
+            "host_addresses": (ipaddress.ip_address("192.168.1.20"),),
+        }
+    )
+    caplog.set_level(logging.INFO, logger="domo_gatekeeper")
+    task = await start(settings)
+    await stop(task)
+    assert "10.99.7.0/24" in caplog.text and "192.168.1.20" in caplog.text
+
+
+async def test_serve_relays_programs_within_what_it_may_reach(tmp_path, token_file):
+    settings = local_settings(tmp_path, token_file).model_copy(
+        update={"own_networks": (ipaddress.ip_network("10.99.7.0/24"),)}
+    )
+    task = await start(settings)
+    request = {
+        "method": "GET",
+        "url": "http://10.99.7.5:9000/",
+        "open": [{"host": "10.99.7.5", "port": 9000}],
+        "seconds": 5,
+        "most_bytes": 1000,
+        "session_idle_seconds": 60,
+        "resolve_only": True,
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                f"http://127.0.0.1:{settings.gatekeeper_internal_port}/internal/out",
+                headers={"authorization": f"Bearer {TOKEN}"},
+                json=request,
+            )
+    finally:
+        await stop(task)
+    assert (r.status_code, r.json()) == (403, {"code": "never_reachable"})
+
+
 async def test_the_one_time_form_path_is_not_written_to_any_log(tmp_path, token_file, caplog):
     settings = local_settings(tmp_path, token_file)
     pin_http_loggers()  # the test's own client would otherwise log the URL it requests
@@ -400,7 +440,7 @@ def test_a_missing_token_file_stops_the_start_with_a_clear_message(monkeypatch, 
 def test_a_vault_without_its_master_key_stops_the_start(monkeypatch, tmp_path, token_file):
     data = tmp_path / "data"
     key = create_master_key(tmp_path / "elsewhere.key")
-    binding = Binding(host="api.example.com", location=InjectionLocation(kind="header", name="x"))
+    binding = Binding(host="api.example.com", location=HeaderLocation(kind="header", name="x"))
     Vault(data / "vault.db", key).put("provider:p1:api_key", "v", purpose="p", bindings=[binding])
     monkeypatch.setenv("DOMO_GATEKEEPER_DATA_DIR", str(data))
     monkeypatch.setenv("DOMO_CORE_TOKEN_FILE", str(token_file))

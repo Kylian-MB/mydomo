@@ -65,6 +65,7 @@ MODEL_MODULES = (
     "domo_core.trust.models",
     "domo_core.madetools.models",
     "domo_core.toolsdb.spaces",
+    "domo_core.outward.models",
 )
 
 # What the application hands out to open a database session (``async with factory() as session``).

@@ -213,6 +213,7 @@ from domo_core.tools.context import (
     InternalTool,
     InvalidArguments,
     NamesPeople,
+    NeverAStep,
     ToolContext,
     ToolOutcome,
     judged_actor_of,
@@ -872,6 +873,12 @@ class DoInOrder:
                     needs.append(need)
                 decided.append(checked_here)
                 continue
+            if isinstance(step.tool, NeverAStep):
+                # A call that is never a step (an opening that takes the owner's yes, ruling R19):
+                # no yes of the chain, nor the judge's, gives it.
+                why = await step.tool.never_a_step(step.arguments, ctx)
+                if why is not None:
+                    raise InvalidArguments("invalid", f"step {number}: {why}")
             async with ctx.session_factory() as session:
                 if in_chain is not None:
                     _, decision = await decide_in_chain(

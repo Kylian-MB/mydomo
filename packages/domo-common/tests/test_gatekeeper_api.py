@@ -5,17 +5,21 @@ import pytest
 from domo_common.gatekeeper_api import (
     FORM_TEXT_KEYS,
     FORM_TEXT_MAX,
+    BasicLocation,
     Binding,
+    HeaderLocation,
     InjectionLocation,
+    LoginLocation,
     ProviderRoute,
     SecretMetadata,
     SecretRequestCreate,
     SecretRequestView,
+    location_fields,
 )
 from domo_common.meanings import all_keys, max_length, meaning
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
-B = Binding(host="api.example.com", location=InjectionLocation(kind="header", name="x-api-key"))
+B = Binding(host="api.example.com", location=HeaderLocation(kind="header", name="x-api-key"))
 NOW = datetime(2030, 1, 1, tzinfo=UTC)
 
 
@@ -86,7 +90,7 @@ def test_provider_route_rejects_bad_secret_ref():
 
 def test_binding_host_is_normalised_to_lowercase():
     binding = Binding(
-        host="API.Example.COM", location=InjectionLocation(kind="header", name="x-api-key")
+        host="API.Example.COM", location=HeaderLocation(kind="header", name="x-api-key")
     )
     assert binding.host == "api.example.com"
 
@@ -108,12 +112,12 @@ def test_binding_host_is_normalised_to_lowercase():
 )
 def test_binding_rejects_malformed_hosts(host: str):
     with pytest.raises(ValidationError):
-        Binding(host=host, location=InjectionLocation(kind="header", name="x-api-key"))
+        Binding(host=host, location=HeaderLocation(kind="header", name="x-api-key"))
 
 
 @pytest.mark.parametrize("host", ["localhost", "192.168.1.10", "fake-llm", "evil.example.net"])
 def test_binding_accepts_plain_hosts(host: str):
-    location = InjectionLocation(kind="header", name="x-api-key")
+    location = HeaderLocation(kind="header", name="x-api-key")
     assert Binding(host=host, location=location).host == host
 
 
@@ -123,37 +127,61 @@ def test_binding_rejects_out_of_range_ports(port: int):
         Binding(
             host="api.example.com",
             port=port,
-            location=InjectionLocation(kind="header", name="x-api-key"),
+            location=HeaderLocation(kind="header", name="x-api-key"),
         )
 
 
 def test_binding_accepts_a_port():
     binding = Binding(
-        host="localhost", port=8080, location=InjectionLocation(kind="header", name="x-api-key")
+        host="localhost", port=8080, location=HeaderLocation(kind="header", name="x-api-key")
     )
     assert binding.port == 8080
 
 
 def test_header_name_is_normalised_to_lowercase():
-    assert InjectionLocation(kind="header", name="X-API-Key").name == "x-api-key"
+    assert HeaderLocation(kind="header", name="X-API-Key").name == "x-api-key"
     upper = Binding(
-        host="api.example.com", location=InjectionLocation(kind="header", name="Authorization")
+        host="api.example.com", location=HeaderLocation(kind="header", name="Authorization")
     )
     lower = Binding(
-        host="api.example.com", location=InjectionLocation(kind="header", name="authorization")
+        host="api.example.com", location=HeaderLocation(kind="header", name="authorization")
     )
     assert upper == lower
     assert hash(upper) == hash(lower)
 
 
 def test_injection_location_defaults_template_to_value_placeholder():
-    assert InjectionLocation(kind="header", name="authorization").template == "{value}"
+    assert HeaderLocation(kind="header", name="authorization").template == "{value}"
 
 
 @pytest.mark.parametrize("name", ["", "bad name", "bad:name", "bad\r\nname", "café"])
 def test_injection_location_rejects_bad_header_names(name: str):
     with pytest.raises(ValidationError):
-        InjectionLocation(kind="header", name=name)
+        HeaderLocation(kind="header", name=name)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "via",
+        "Via",
+        "host",
+        "content-length",
+        "Transfer-Encoding",
+        "connection",
+        "cookie",
+        "set-cookie",
+    ],
+)
+def test_a_secret_never_goes_in_a_header_the_relay_decides(name: str):
+    # The marker of Domo's tools (Via), the framing and the session's cookies are not a place.
+    with pytest.raises(ValidationError):
+        HeaderLocation(kind="header", name=name)
+
+
+@pytest.mark.parametrize("name", ["authorization", "x-api-key", "x-goog-api-key", "x-token"])
+def test_the_headers_of_keys_and_tokens_stay_places(name: str):
+    assert HeaderLocation(kind="header", name=name).name == name
 
 
 @pytest.mark.parametrize(
@@ -161,17 +189,148 @@ def test_injection_location_rejects_bad_header_names(name: str):
 )
 def test_injection_location_rejects_bad_templates(template: str):
     with pytest.raises(ValidationError):
-        InjectionLocation(kind="header", name="authorization", template=template)
+        HeaderLocation(kind="header", name="authorization", template=template)
 
 
 def test_injection_location_accepts_bearer_template():
-    location = InjectionLocation(kind="header", name="authorization", template="Bearer {value}")
+    location = HeaderLocation(kind="header", name="authorization", template="Bearer {value}")
     assert location.template == "Bearer {value}"
 
 
-def test_injection_location_only_supports_header_in_1a():
+def test_a_header_location_is_a_header():
     with pytest.raises(ValidationError):
-        InjectionLocation(kind="query", name="key")  # type: ignore[arg-type]
+        HeaderLocation(kind="query", name="key")  # type: ignore[arg-type]
+
+
+# --- the places of a secret: a header, Basic, a login body ----------------------------------------
+
+BASIC = Binding(host="device.example.com", location=BasicLocation(kind="basic"))
+LOGIN = Binding(
+    host="site.example.com",
+    location=LoginLocation(
+        kind="login",
+        path="/api/login",
+        encoding="form",
+        user_field="username",
+        password_field="password",
+    ),
+)
+_LOCATION = TypeAdapter(InjectionLocation)
+
+
+def test_a_place_is_read_by_its_kind():
+    assert _LOCATION.validate_python({"kind": "header", "name": "x-api-key"}) == HeaderLocation(
+        kind="header", name="x-api-key"
+    )
+    assert _LOCATION.validate_python({"kind": "basic"}) == BasicLocation(kind="basic")
+    login = {
+        "kind": "login",
+        "path": "/api/login",
+        "encoding": "json",
+        "user_field": "user",
+        "password_field": "pass",
+    }
+    assert isinstance(_LOCATION.validate_python(login), LoginLocation)
+    assert Binding.model_validate(BASIC.model_dump()) == BASIC
+    assert Binding.model_validate_json(LOGIN.model_dump_json()) == LOGIN
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        {"kind": "query", "name": "key"},
+        {"kind": "basic", "name": "authorization"},
+        {"kind": "header"},
+        {"kind": "login", "path": "/login", "encoding": "form", "user_field": "u"},
+    ],
+)
+def test_a_place_has_a_known_kind_and_exactly_its_fields(location: dict[str, Any]):
+    with pytest.raises(ValidationError):
+        _LOCATION.validate_python(location)
+
+
+def _login(**changes: Any) -> dict[str, Any]:
+    return {
+        "kind": "login",
+        "path": "/api/login",
+        "encoding": "form",
+        "user_field": "username",
+        "password_field": "password",
+        **changes,
+    }
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"path": "api/login"},
+        {"path": ""},
+        {"path": "https://site.example.com/login"},
+        {"path": "//evil.example.net/login"},
+        {"path": "/login?next=/"},
+        {"path": "/login#top"},
+        {"path": "/log in"},
+        {"path": "/login\n"},
+        {"path": "/café"},
+        {"encoding": "xml"},
+        {"user_field": ""},
+        {"password_field": ""},
+        {"user_field": "user\nname"},
+        {"user_field": "x" * 129},
+        {"user_field": "same", "password_field": "same"},
+    ],
+)
+def test_a_login_place_is_a_path_of_the_host_and_two_fields(changes: dict[str, Any]):
+    with pytest.raises(ValidationError):
+        _LOCATION.validate_python(_login(**changes))
+
+
+def test_a_login_place_may_be_sent_as_a_form_or_as_json():
+    assert _LOCATION.validate_python(_login(encoding="json", user_field="e-mail address"))
+    assert _LOCATION.validate_python(_login(path="/"))
+
+
+def test_a_secret_is_one_value_by_default():
+    assert SecretRequestCreate(ref="r", purpose="p", bindings=[B]).fields == "value"
+
+
+@pytest.mark.parametrize("binding", [BASIC, LOGIN])
+def test_an_account_place_needs_a_user_and_a_password(binding: Binding):
+    with pytest.raises(ValidationError):
+        SecretRequestCreate(ref="r", purpose="p", bindings=[binding])
+    with pytest.raises(ValidationError):
+        SecretRequestCreate(ref="r", purpose="p", bindings=[binding], fields="value")
+    account = SecretRequestCreate(ref="r", purpose="p", bindings=[binding], fields="user_password")
+    assert account.fields == "user_password"
+
+
+def test_a_header_needs_one_value():
+    with pytest.raises(ValidationError):
+        SecretRequestCreate(ref="r", purpose="p", bindings=[B], fields="user_password")
+
+
+@pytest.mark.parametrize("fields", ["value", "user_password"])
+def test_a_secret_cannot_mix_a_header_and_an_account(fields: Any):
+    with pytest.raises(ValidationError):
+        SecretRequestCreate(ref="r", purpose="p", bindings=[B, BASIC], fields=fields)
+    assert SecretRequestCreate(
+        ref="r", purpose="p", bindings=[BASIC, LOGIN], fields="user_password"
+    )
+
+
+def test_unknown_fields_are_refused():
+    with pytest.raises(ValidationError):
+        SecretRequestCreate(ref="r", purpose="p", bindings=[B], fields="pin")  # type: ignore[arg-type]
+
+
+def test_the_place_says_what_a_secret_is_made_of():
+    assert location_fields(B.location) == "value"
+    assert location_fields(BASIC.location) == "user_password"
+    assert location_fields(LOGIN.location) == "user_password"
+
+
+def test_the_form_names_the_user_and_the_password():
+    assert {"vault.form.user_label", "vault.form.password_label"} <= FORM_TEXT_KEYS
 
 
 def test_secret_request_create_limits_purpose_length():

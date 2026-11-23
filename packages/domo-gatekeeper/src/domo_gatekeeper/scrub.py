@@ -3,14 +3,18 @@
 A provider may echo the key it was given (an error message, a debug header), and the gatekeeper
 must never hand a secret value to the core. ``Scrubber`` masks every secret in a stream of
 bytes, whatever the way the stream is cut into chunks; ``scrub_text`` does the same for a string.
+It is given the parts of the secrets (``vault.secret_parts``): the user and the password of an
+account are masked each on its own, so that one of them echoed alone is masked too.
 
 A secret is masked in its raw form and, when it is at least ``_MIN_ENCODED_LENGTH`` characters
 long, in the forms it commonly takes when echoed: base64 (standard and URL-safe alphabets, with
-and without padding) and percent-encoding. Shorter secrets are masked in their raw form only:
+and without padding), percent-encoding, and the escapes of a JSON string (a quote, a backslash, a
+``\\/``, a letter outside ASCII as ``\\uXXXX``). Shorter secrets are masked in their raw form only:
 their encoded forms are too short to be told apart from ordinary text.
 """
 
 import base64
+import json
 import re
 from collections.abc import Iterable, Sequence
 from urllib.parse import quote
@@ -41,7 +45,24 @@ def _variants(secret: str) -> set[bytes]:
     variants.add(percent)
     # The hex digits of a percent-encoding are case-insensitive.
     variants.add(re.sub(rb"%[0-9A-F]{2}", lambda match: match.group().lower(), percent))
+    variants |= _json_forms(secret)
     return variants
+
+
+def _json_forms(secret: str) -> set[bytes]:
+    """The forms ``secret`` takes inside a JSON string (an error body echoing it): its quote,
+    backslash and control characters escaped, the letters outside ASCII as they are or as
+    ``\\uXXXX`` (hex digits in either case), and ``/`` raw or written ``\\/``."""
+    forms: set[bytes] = set()
+    for ensure_ascii in (True, False):
+        escaped = json.dumps(secret, ensure_ascii=ensure_ascii)[1:-1]
+        for written in (escaped, escaped.replace("/", "\\/")):
+            forms.add(_encode(written))
+            upper = re.sub(
+                r"\\u[0-9a-f]{4}", lambda match: "\\u" + match.group()[2:].upper(), written
+            )
+            forms.add(_encode(upper))
+    return forms
 
 
 class Scrubber:

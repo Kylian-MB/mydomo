@@ -83,6 +83,7 @@ Les autres réglages ont des valeurs par défaut raisonnables :
 | `DOMO_BIND_ADDRESS` | `0.0.0.0` | L'adresse du serveur sur laquelle les deux ports sont publiés : `0.0.0.0` pour toutes, `127.0.0.1` pour cette machine seulement. |
 | `TZ` | `UTC` | Le fuseau horaire des services, par exemple `Europe/Paris`. |
 | `DOMO_CORE_NET_PREFIX` | `10.247.81` | Avancé, voir ci-dessous. |
+| `DOMO_LAN_NET_PREFIX` | `10.247.80` | Avancé : la même chose pour le réseau où les ports sont publiés. |
 
 Puis démarre tout :
 
@@ -1030,13 +1031,14 @@ servent à tout le monde au foyer.
   se construire), ou autrement si l'outil ne peut pas être fait.
 - **Ce qu'est un outil.** Un petit programme Python qui n'utilise que la
   bibliothèque de Python elle-même (calcul, dates, texte) : pas de fichier, pas
-  de réseau, pas de paquet à installer, pas de secret. Il reçoit ses
+  de réseau à lui, pas de paquet à installer, pas de secret. Il reçoit ses
   arguments, la date et l'heure, et le nom de la personne pour qui il tourne
   (jamais un identifiant ni une clé), et rend un résultat. Pendant qu'il tourne,
   il demande au cœur de l'assistant ce dont il a besoin, une demande à la fois :
   garder ou lire des données dans la base des outils (plus bas), lancer un
-  autre de ses outils, être relancé à une heure, ou réveiller l'assistant pour
-  quelqu'un. Chaque demande est jugée au moment où elle arrive, avec les droits
+  autre de ses outils, être relancé à une heure, réveiller l'assistant pour
+  quelqu'un, ou envoyer une requête au-dehors par le gardien (voir « Sortir »,
+  plus bas). Chaque demande est jugée au moment où elle arrive, avec les droits
   de la personne pour qui l'outil tourne, et notée au journal. Ce que rend un
   outil est une donnée pour l'assistant, jamais une consigne : c'est lui qui écrit
   ensuite à la personne, ou qui agit.
@@ -1067,9 +1069,9 @@ servent à tout le monde au foyer.
   comme les autres. Tu peux aussi donner, avec tes mots, un accord qui dure
   (« commande sans me demander le vendredi, jusqu'à 40 euros ») : un montant,
   un nombre de fois par jour, par semaine ou par mois, et les jours où ça peut
-  arriver, relus par le code à chaque fois. Les montants sont en euros. Pour
-  l'instant, un coût n'est que ce qu'un outil déclare : rien ne sort encore de la
-  maison. Pour ce
+  arriver, relus par le code à chaque fois. Les montants sont en euros. Un coût
+  est ce qu'un outil déclare : le code ne peut pas vérifier un prix sur un site.
+  Pour ce
   qu'il fait pour la maison, c'est l'assistant qui donne ce oui lui-même, selon son
   jugement, dans tes limites de dépense : retire-lui un droit si tu veux qu'on
   te demande à la place.
@@ -1190,16 +1192,110 @@ servent à tout le monde au foyer.
   faits (5 fois par jour au plus pour tous ses outils au départ, un réglage
   aussi), dans ta discussion : il regarde, corrige, revient à une version
   précédente, ou laisse, et ne dit quelque chose que si ça en vaut la peine.
-- **Pas encore.** Dans cette version, les outils ne peuvent atteindre ni
-  internet ni tes comptes : la sortie par le gardien et les comptes donnés par
-  référence viennent ensuite, puis un navigateur.
 - **Le journal d'audit** garde l'ouverture d'une construction, le résultat de
   chaque contrôle, un outil construit, chaque lancement (quel outil, pour qui,
   combien de temps, comment il a fini), chaque demande d'un programme (combien
   de lectures, ce qui a été demandé d'autre et comment ça a été jugé), chaque
-  changement d'un réglage (son nom, sa valeur avant et après) et chaque retour
-  à une version, jamais le code, ses arguments, son SQL, ses erreurs ni ce
-  qu'il a rendu.
+  requête envoyée au-dehors (son hôte, son port et sa méthode, comment elle a
+  fini, ses tailles et son temps), chaque adresse ouverte ou fermée et chaque
+  compte demandé ou retiré, chaque changement d'un réglage (son nom, sa valeur
+  avant et après) et chaque retour à une version, jamais le code, ses
+  arguments, son SQL, ses erreurs, ce qu'il a rendu, ni le chemin, les en-têtes
+  ou le corps d'une requête au-dehors.
+
+### Sortir
+
+Depuis la 0.11.0, un outil ou un programme que l'assistant lance à la main peut
+envoyer une requête HTTP à un appareil de ton réseau, à un port de la machine
+qui héberge l'assistant, ou à un site : dis-lui « les lumières sont à 192.168.1.20,
+port 8080 », donne-lui un jeton quand il te le demande, et il se construit les
+outils pour les lire et les allumer. La requête est le `domo.out` du
+programme, et c'est le gardien qui l'envoie : le bac à sable n'a toujours aucun
+réseau.
+
+- **Une adresse ouverte.** Un hôte et un port, ouverts pour un outil (elle
+  survit à ses versions) ou pour les programmes que l'assistant lance à la main :
+  une requête vers ailleurs est refusée. L'assistant les ouvre et les ferme
+  lui-même, selon son jugement et ses droits à lui, et chaque ouverture est au
+  journal ; une règle à toi peut lui faire te demander d'abord (ouvrir une
+  adresse vers internet est le seul chemin par lequel quelque chose du foyer
+  peut en sortir). Quand tu en fermes une, plus rien n'y va dès la requête
+  suivante, quel que soit l'outil pour lequel elle était ouverte, et à la main
+  non plus. L'assistant peut la rouvrir s'il juge que les choses ont changé : il
+  sait que tu l'as fermée, et quand, et il en tient compte ; s'il n'est pas sûr,
+  il te demande d'abord, et le journal dit qu'il l'a rouverte, dans la
+  conversation de qui et comment ça a été décidé. Pour qu'une fermeture tienne
+  quoi qu'il arrive, donne-lui une règle sur l'ouverture d'une adresse
+  (« jamais », ou « demande-moi d'abord ») : elle passe avant tout jugement.
+  C'est l'adresse telle qu'elle est écrite qui est fermée : le même appareil sous un
+  autre nom ou par son numéro est une autre adresse. La construction d'un outil
+  n'en ouvre jamais : quand un outil a besoin d'une adresse qui n'est pas
+  ouverte, l'assistant apprend laquelle, et l'ouvre s'il le juge bon. Pour chaque
+  outil, il voit ses adresses ouvertes, qui les a ouvertes, qui a fermé les
+  autres, les comptes qu'il utilise, et comment se sont passées ses requêtes
+  au-dehors (combien, combien ont été refusées et pourquoi, les réponses en
+  erreur, les octets, la plus lente).
+- **Les comptes.** Un jeton, un identifiant et un mot de passe, ou la
+  connexion à un site. Le secret va de ton navigateur au coffre du gardien,
+  par un formulaire à usage unique que l'assistant te demande de remplir : personne
+  ne le voit ensuite, ni lui, ni un programme, ni un journal. Un compte se pose
+  dans une requête de l'une de trois façons : dans un en-tête (un jeton, comme
+  `Bearer ...`), en identifiant et mot de passe (HTTP Basic), ou dans les deux
+  champs du formulaire de connexion d'un site, le gardien gardant alors la
+  session que le site rend (ses cookies). Il est lié pour de bon à ses
+  adresses et à sa place. Il est à une personne ou à la maison : celui d'une
+  personne ne sert qu'aux lancements faits pour elle, jamais pour quelqu'un
+  d'autre, pour la maison ni pour l'assistant seul ; un compte de la maison sert au
+  foyer, pas aux invités sauf si tu le leur ouvres, et à l'assistant seul sauf si
+  tu le lui fermes. Celui qui l'a donné, ou toi, le retire : ce qui s'en
+  servait est refusé tout de suite. Un programme ne fait que nommer un compte ;
+  ce qui revient est nettoyé de son secret et des cookies de sa session,
+  erreurs comprises, et les en-têtes d'identification qu'un programme écrit
+  lui-même sont retirés : un secret ne passe que par un compte. Un identifiant
+  n'est pas un secret ; un mot de passe et un cookie de session en sont.
+- **Jamais atteignables**, quoi qui soit ouvert et qui que ce soit qui
+  demande : les services de l'assistant lui-même (le cœur, sa base, le gardien, le
+  bac à sable, le serveur web) et leurs réseaux, les adresses locales au lien
+  et les adresses de service d'un hébergeur. Un nom est résolu une fois, jugé
+  par l'adresse où il mène, et la requête part vers cette adresse-là : un nom
+  qui mène ailleurs au moment de l'envoi est refusé, et rien ne part. Une
+  redirection est suivie (5 au plus) seulement vers une adresse ouverte de la
+  même zone (la maison, ou internet), jamais avec le compte. En clair
+  (`http`), un compte ne part que vers une adresse de la maison ; vers
+  internet, il faut `https`.
+- **La machine qui héberge l'assistant** est fermée, mais un de ses ports peut être
+  ouvert, et c'est un droit à part : au départ, il faut ton oui, port par port.
+  Quand c'est toi qui le lui demandes, tes mots peuvent être ce oui, comme il
+  les juge ; ailleurs, il te le demande et attend. Tu peux lui donner le droit
+  de les ouvrir lui-même (chaque ouverture au journal), puis le reprendre quand
+  tu veux. Un port ouvert de la machine compte comme la maison (un compte peut y
+  partir en `http`). Les services de l'assistant lui-même n'y sont jamais ouverts,
+  même par toi.
+- **Rien n'écoute.** Un outil demande et reçoit une réponse ; rien du dehors ne
+  l'appelle, et il ne suit pas un flux d'événements. Pour savoir ce qui a
+  changé dans la maison, l'assistant regarde à intervalles (un outil lancé à des
+  heures dites) : il apprend un changement au passage suivant, pas à la
+  seconde.
+- **La session d'un site** vit dans la mémoire du gardien, par compte :
+  oubliée après une heure sans usage (un réglage de l'assistant,
+  `session_idle_minutes`) et quand le gardien redémarre ; l'outil se reconnecte
+  alors.
+- **Ses bornes** sont aussi ses réglages : au départ, un lancement envoie 100
+  requêtes au-dehors au plus, chacune en 30 secondes au plus, redirections
+  comprises, avec une réponse de 1 Mo au plus. Quoi que déclare un outil, une
+  requête vers internet est « sort de la maison » pour son opération, et un
+  compte utilisé pour autre chose que lire « ne peut pas être annulé ».
+- **Les limites connues.** Un appareil de la maison dont le certificat `https`
+  est auto-signé ne peut pas être joint. Depuis un conteneur, une adresse de la
+  machine qui héberge l'assistant que la configuration ne nomme pas est jugée comme
+  une adresse de la maison (ouverte comme telle, elle mène à un port de la
+  machine sans ton oui) : nomme ses autres adresses IP dans
+  `DOMO_EXTRA_HOST_ADDRESSES`, dans `.env` (ses adresses IP de
+  `DOMO_SITE_ADDRESSES` sont déjà comptées). Un jeton
+  qu'un site rend dans le corps de sa réponse de connexion (et non dans un
+  cookie) n'est pas gardé. Un service de la machine qui héberge l'assistant sur les
+  deux numéros de port du gardien ne peut jamais être ouvert. Pas encore de
+  navigateur : il vient ensuite.
 
 ## Sauvegarde
 

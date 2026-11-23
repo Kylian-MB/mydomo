@@ -1,9 +1,9 @@
 import pytest
-from domo_common.gatekeeper_api import Binding, InjectionLocation, ProviderRoute
+from domo_common.gatekeeper_api import Binding, HeaderLocation, ProviderRoute
 from domo_gatekeeper.errors import BindingMismatchError, InsecureTransportError
 from domo_gatekeeper.providers import ProviderRegistry
 
-B = Binding(host="api.example.com", location=InjectionLocation(kind="header", name="x-api-key"))
+B = Binding(host="api.example.com", location=HeaderLocation(kind="header", name="x-api-key"))
 REF = "provider:p1:api_key"
 
 # Hosts a key may reach over plain http, as (bound host, base URL). IPv6 literals are covered by
@@ -39,9 +39,7 @@ def bound_to(binding: Binding, vault) -> None:
 
 
 def binding_for(host: str, port: int | None = None) -> Binding:
-    return Binding(
-        host=host, port=port, location=InjectionLocation(kind="header", name="x-api-key")
-    )
+    return Binding(host=host, port=port, location=HeaderLocation(kind="header", name="x-api-key"))
 
 
 def test_register_refuses_host_outside_bindings(registry, vault):
@@ -132,7 +130,7 @@ def test_a_binding_with_a_port_requires_that_port(registry, vault):
     pinned = Binding(
         host="api.example.com",
         port=8443,
-        location=InjectionLocation(kind="header", name="x-api-key"),
+        location=HeaderLocation(kind="header", name="x-api-key"),
     )
     bound_to(pinned, vault)
     registry.register(
@@ -168,7 +166,7 @@ def test_the_default_port_of_the_scheme_counts_as_the_port(
 
 def test_any_matching_binding_is_enough(registry, vault):
     other = Binding(
-        host="evil.example.net", location=InjectionLocation(kind="header", name="x-api-key")
+        host="evil.example.net", location=HeaderLocation(kind="header", name="x-api-key")
     )
     vault.put(REF, "real-key", purpose="p", bindings=[other, B])
     registry.register(

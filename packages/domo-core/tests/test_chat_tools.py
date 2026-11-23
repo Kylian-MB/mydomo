@@ -158,6 +158,11 @@ async def test_the_model_only_sees_tools_allowed_for_the_role(guest_chat):
         # And the agreements that last, for themselves (2026-11-18).
         "agreement_keep",
         "agreement_drop",
+        # And the addresses his programs reach, and the accounts they have (step 2, spec 13).
+        "address_open",
+        "address_close",
+        "addresses_look",
+        "accounts_look",
     ]
 
 

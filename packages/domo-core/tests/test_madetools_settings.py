@@ -16,7 +16,7 @@ from uuid import uuid4
 
 import domo_core
 import pytest
-from domo_common.sandbox_api import Machine
+from domo_common.sandbox_api import ANSWER_CEILING_BYTES, Machine
 from domo_core.db import SessionFactory
 from domo_core.madetools import asks, program_actions, settings
 from domo_core.madetools.launch import LaunchDeps
@@ -101,6 +101,12 @@ STARTS = {
     "hand_runs_kept_days": 7,
     "launches_kept_days": 90,
     "trouble_wakes_per_day": 5,
+    # What a program sends out through the gatekeeper (step 2, spec 13.3), and how long a site's
+    # session is kept without use (the house's alone).
+    "out_seconds": 30,
+    "out_bytes": 1_048_576,
+    "out_per_launch": 100,
+    "session_idle_minutes": 60,
 }
 EXPECTED_PER_TOOL = {
     "chain_depth",
@@ -121,6 +127,9 @@ EXPECTED_PER_TOOL = {
     "later_days",
     "wake_bytes",
     "failures_in_a_row",
+    "out_seconds",
+    "out_bytes",
+    "out_per_launch",
 }
 SETTING_CALLS = ("tools_settings", "tool_set")
 
@@ -141,7 +150,9 @@ def test_the_settings_are_these_with_these_starts_and_floors():
     assert set(PER_TOOL) == EXPECTED_PER_TOOL and set(SETTINGS) >= PER_TOOL
     for key, setting in SETTINGS.items():
         assert setting.key == key
-        assert setting.least == (0 if key in ("free_rounds", "trouble_wakes_per_day") else 1), key
+        assert setting.least == (
+            0 if key in ("free_rounds", "trouble_wakes_per_day", "out_per_launch") else 1
+        ), key
         assert setting.says.strip() and setting.says.endswith("."), key
         assert setting.start >= setting.least
 
@@ -180,6 +191,23 @@ def test_no_ceiling_and_the_floor_only_where_smaller_means_nothing():
         "trouble_wakes_per_day": 0,
     }
     assert check({"run_seconds": None}, for_a_tool=True) == {"run_seconds": None}
+
+
+async def test_out_bytes_above_the_channel_s_ceiling_is_kept_as_set(session: AsyncSession):
+    # The cut to the channel's ceiling is made where the bound is used (Task 6), never here.
+    more = ANSWER_CEILING_BYTES + 1
+    assert check({"out_bytes": more}, for_a_tool=True) == {"out_bytes": more}
+    assert (await set_house(session, {"out_bytes": more}))["out_bytes"] == more
+    assert await value(session, "out_bytes") == more
+    tool = await a_tool(session)
+    assert (await set_for_tool(session, tool, {"out_bytes": more * 2}))["out_bytes"] == more * 2
+
+
+def test_the_session_s_idle_time_is_the_house_s_alone():
+    with pytest.raises(InvalidSetting) as refused:
+        check({"session_idle_minutes": 5}, for_a_tool=True)
+    assert refused.value.key == "session_idle_minutes"
+    assert check({"session_idle_minutes": 5}, for_a_tool=False) == {"session_idle_minutes": 5}
 
 
 async def test_the_tool_s_own_wins_then_the_house_s_then_the_start(session: AsyncSession):

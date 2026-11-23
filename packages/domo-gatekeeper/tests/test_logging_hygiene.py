@@ -18,7 +18,7 @@ from collections.abc import AsyncIterator, Iterator
 
 import httpx
 import pytest
-from domo_common.gatekeeper_api import Binding, InjectionLocation, ProviderRoute
+from domo_common.gatekeeper_api import Binding, HeaderLocation, ProviderRoute
 from domo_gatekeeper.__main__ import create_http_client, pin_http_loggers
 from domo_gatekeeper.internal_api import create_internal_app
 from domo_gatekeeper.providers import ProviderRegistry
@@ -76,7 +76,7 @@ async def relayed_app(
     upstream_port: int, vault: Vault, store: SecretRequestStore, registry: ProviderRegistry
 ) -> AsyncIterator[FastAPI]:
     """The internal app, wired to the production http client and a keyed local provider."""
-    local = Binding(host="127.0.0.1", location=InjectionLocation(kind="header", name="x-api-key"))
+    local = Binding(host="127.0.0.1", location=HeaderLocation(kind="header", name="x-api-key"))
     vault.put("provider:local:api_key", KEY, purpose="p", bindings=[local])
     registry.register(
         ProviderRoute(

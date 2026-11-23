@@ -8,8 +8,13 @@ input: ``{"ok": value}`` gives ``value``, ``{"refused": reason, "detail": ...}``
 ``Refused``. One request at a time: a function returns only once its answer came.
 
 ``dry_run`` is true when the run is a trial of the tool (its entry says ``"dry_run": true``).
+
+``out`` sends an HTTP request through the gatekeeper: a text body goes as ``body``, bytes as
+``body_b64`` (base64). What a body may weigh is what one request line holds: a bigger one ends
+the run as a request too big, as any request.
 """
 
+import base64
 import json
 from typing import BinaryIO, cast
 
@@ -97,3 +102,26 @@ def later(at: str, arguments: dict[str, object]) -> object:
 def wake(content: object) -> object:
     """Wakes Domo with ``content``: he reads it as data."""
     return _ask("wake", {"content": content})
+
+
+def out(
+    method: str,
+    url: str,
+    headers: dict[str, str] | None = None,
+    body: str | bytes | None = None,
+    account: str | None = None,
+) -> object:
+    """Sends an HTTP request to an open address, with the account named ``account`` put in it by
+    the gatekeeper: ``{"status", "headers", "body"}``, or ``"body_b64"`` in place of ``"body"``
+    when the answer is not UTF-8 text (``None`` in a dry run: nothing is sent)."""
+    fields: dict[str, object] = {
+        "method": method,
+        "url": url,
+        "headers": {} if headers is None else dict(headers),
+        "account": account,
+    }
+    if isinstance(body, bytes | bytearray):
+        fields["body_b64"] = base64.b64encode(bytes(body)).decode("ascii")
+    elif body is not None:
+        fields["body"] = body
+    return _ask("out", fields)

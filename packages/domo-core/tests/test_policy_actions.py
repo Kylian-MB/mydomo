@@ -19,6 +19,7 @@ from domo_core.household.models import Invitation
 from domo_core.household.service import GUEST_DAYS_DEFAULT, create_invitation, disable
 from domo_core.household.succession import SuccessorEntry, note_death, replace_successors
 from domo_core.notes.models import Note
+from domo_core.outward.models import ServiceAccount, account_ref
 from domo_core.policy.actions import EMPTY_FACTS, DescribedAction
 from domo_core.policy.catalog import ACTION_FACTS, DEFAULT_POLICY, KNOWN_ACTIONS
 from domo_core.policy.roles import ROLES, Actor
@@ -244,6 +245,23 @@ def test_a_fact_never_holds_a_free_text_of_any_length():
         # (self, adult or owner).
         ("program.run", "operation"),
         ("program.run", "approver"),
+        # Going out (step 2): an address by its host, the tool it is for and its zone as written
+        # (house or internet); an account by its name and the kind of its place. Never a path, a
+        # header's template or a value.
+        *(
+            (opening, fact)
+            for opening in ("net.open", "net.open_host")
+            for fact in ("host", "tool", "zone")
+        ),
+        ("net.close", "host"),
+        ("net.close", "tool"),
+        ("net.look", "tool"),
+        ("account.ask", "name"),
+        ("account.ask", "place"),
+        ("account.remove", "name"),
+        ("account.share", "name"),
+        # What a program sends out: the zone of its address as written (house or internet).
+        ("program.out", "zone"),
     }
 
 
@@ -316,6 +334,18 @@ async def scene(add_member, session_factory, live_clock) -> Scene:
         paul = SuccessorEntry(person_id=None, name="Paul", relation=None, access_way=None)
         await replace_successors(writer, [paul], live_clock())
         await note_death(writer, "Paul", live_clock())
+        # An account of Alex's own, and one of the house's (going out, step 2).
+        for name, whose in (("music", alex.id), ("lights", None)):
+            writer.add(
+                ServiceAccount(
+                    name=name,
+                    person_id=whose,
+                    ref=account_ref(uuid.uuid4()),
+                    hosts=[{"host": "192.168.1.20", "port": 8123}],
+                    place={"kind": "basic"},
+                    given_by=alex.id if whose else owner.id,
+                )
+            )
         await writer.commit()
     alexs_key = await add_key(session_factory, alex.id)
     alexs_anthropic_key = await add_key(
@@ -492,6 +522,60 @@ _CALLS: dict[str, Any] = {
     ),
     # The owner's own language, another than the house's: the house's follows.
     "texts.language": ("texts_language", {"language": "es"}, lambda s: {"house_follows": True}),
+    # Going out (step 2): an address of the house for a tool, and on the internet.
+    "net.open": (
+        "address_open",
+        {"host": "api.example.com", "port": 443, "tool": "lights"},
+        lambda s: {
+            "host": "api.example.com",
+            "port": 443,
+            "tool": "lights",
+            "on_host": False,
+            "zone": "internet",
+            "outward": True,
+            # Not closed by the owner: no day.
+            "closed_by_owner": False,
+            "closed_on": None,
+        },
+    ),
+    # A port of the machine that hosts Domo, in the owner's turn: an opening that waits for his
+    # yes is described as an opening, ``net.open``; with Domo's right, ``net.open_host``.
+    "net.close": (
+        "address_close",
+        {"host": "192.168.1.20", "port": 8123, "tool": "lights"},
+        lambda s: {"host": "192.168.1.20", "port": 8123, "tool": "lights"},
+    ),
+    "net.look": ("addresses_look", {"tool": "lights"}, lambda s: {"tool": "lights"}),
+    "account.ask": (
+        "account_ask",
+        {
+            "name": "heating",
+            "for": "house",
+            "hosts": [
+                {"host": "192.168.1.20", "port": 8123},
+                {"host": "api.example.com", "port": 443},
+            ],
+            "place": {"kind": "basic"},
+        },
+        lambda s: {
+            "name": "heating",
+            "place": "basic",
+            "for_house": True,
+            "giver": f"person:{s.owner.id}",
+            "hosts": 2,
+            "outward": True,
+        },
+    ),
+    "account.remove": (
+        "account_remove",
+        {"name": "music", "for": "me"},
+        lambda s: {"name": "music", "for_house": False, "of": f"person:{s.alex.id}"},
+    ),
+    "account.share": (
+        "account_share",
+        {"name": "lights", "guests": True, "domo": False},
+        lambda s: {"name": "lights", "guests": True, "domo": False},
+    ),
 }
 
 
@@ -502,6 +586,7 @@ _CALLERS: dict[str, Any] = {
     "key.share": lambda s: s.alex,
     "spending.limit": lambda s: s.alex,
     "key.admin": lambda s: s.alex,
+    "account.remove": lambda s: s.alex,
 }
 
 
@@ -517,15 +602,25 @@ def _the_kind_is_respected(kind: str, value: object) -> bool:
             return isinstance(value, str) and value.startswith("person:")
         case "role":
             return value in ROLES
+        case "date":
+            return value is None or (isinstance(value, str) and len(value) == len("YYYY-MM-DD"))
     return False
 
 
 # What has facts but no call below: a program's beginning has no tool of the core (its facts are
 # tried in ``test_madetools_yes.py``), nor do the agreements without a tool of Domo that costs
 # (``test_agreements.py``), nor a program run by hand, whose facts need one of its stops
-# (``test_program_run.py``).
+# (``test_program_run.py``), nor a port of the machine that hosts Domo opened under a right of
+# his (``test_outward_tools.py``), nor what a program sends out (``test_madetools_out.py``).
 _DESCRIBED_ELSEWHERE: Final = frozenset(
-    {"program.begin", "agreement.keep", "agreement.drop", "program.run"}
+    {
+        "program.begin",
+        "agreement.keep",
+        "agreement.drop",
+        "program.run",
+        "net.open_host",
+        "program.out",
+    }
 )
 
 

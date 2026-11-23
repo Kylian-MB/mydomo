@@ -9,7 +9,9 @@ rounds one after the other in a task (``run_build``) until it is ``ready``, ``ab
 wait. A round (``build_round``) is one call of a model on the task ``toolmaking``
 (``prompts/toolmaking.md``), with the model picker of the person who opened the build, or of the
 owner when that person left. It is given, as JSON data, the purpose, the examples, the name asked
-(and whether it is taken by another tool), the round it is at, the report of the build's last
+(and whether it is taken by another tool), the addresses open for a tool of that name
+(``open_addresses``, which the reviewer is shown too: a build opens none), the round it is at, the
+report of the build's last
 submission and what the last round came to, for a ``tool_change``, the tool as it is, and, for a
 build that starts from a program Domo ran by hand (``ToolBuild.from_run_id``, while the run is
 kept), that program as its starting point (``start_from``: its code, operations and time). It
@@ -168,6 +170,7 @@ from domo_core.madetools.service import (
 )
 from domo_core.madetools.settings import all_values, own_values, told, wait_for
 from domo_core.madetools.troubles import wake_for_trouble
+from domo_core.outward.service import open_for
 from domo_core.policy.settings import load_policy_settings
 from domo_core.text import is_plain_line
 
@@ -251,7 +254,9 @@ SUBMIT: Final = ToolDefinition(
                 "description": (
                     "What the tool does, by operation name (1 to 30 of a-z, 0-9 and _): "
                     '{"<name>": {"says": "<one plain line>", "risks": [<among costs, '
-                    "irreversible, physical, outward>]}}, 1 to 10 of them."
+                    "irreversible, physical, outward>]}}, 1 to 10 of them. One that goes out "
+                    'also names its accounts ("accounts": [<name>]) and the addresses it sends '
+                    'to ("addresses": [{"host", "port"}]), 10 of each at most.'
                 ),
             },
             "code": {"type": "string", "minLength": 1},
@@ -563,6 +568,10 @@ async def _read_in(
             "examples": build.examples,
             "name": build.name,
             "bounds": {key: values[key] for key in BOUNDS_TOLD},
+            # Where the tool of this name may go out now: Domo opened them, the build opens none.
+            "open_addresses": [
+                address.model_dump(mode="json") for address in await open_for(session, build.name)
+            ],
         }
         if name_taken:
             told_model["name_taken"] = True
@@ -776,6 +785,9 @@ async def _checked(deps: TurnDeps, reading: Reading, given: Submission) -> Check
         if not report.parameters:
             report.imports = form
         return report
+    async with deps.session_factory() as session:
+        # What the reviewer is shown beside the code: the addresses open for the tool now.
+        open_now = await open_for(session, given.name)
     return await check(
         CheckDeps(
             # What answers the dry runs: nobody is woken by them, nothing is handed over.
@@ -800,6 +812,7 @@ async def _checked(deps: TurnDeps, reading: Reading, given: Submission) -> Check
         operations=read_operations(given.operations),
         name=given.name,
         settings=reading.settings,
+        open_addresses=open_now,
     )
 
 

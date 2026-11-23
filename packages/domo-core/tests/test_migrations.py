@@ -69,6 +69,8 @@ ALL_TABLES = {
     "tool_settings",
     "made_tool_launches",
     "tool_trouble_days",
+    "open_addresses",
+    "service_accounts",
 }
 # The tables of iteration 1a: what the database holds one revision before the household.
 TABLES_OF_1A = {

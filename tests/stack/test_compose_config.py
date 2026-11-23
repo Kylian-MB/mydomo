@@ -8,9 +8,14 @@ from typing import Any
 
 import pytest
 
+from tests.e2e.support import GOING_OUT_HOST_DEVICE_PORT as E2E_GOING_OUT_HOST_DEVICE_PORT
+
 from .stack_support import (
     BASE_COMPOSE_FILES,
     FAKE_LLM_COMPOSE_FILES,
+    GOING_OUT_COMPOSE_FILES,
+    GOING_OUT_ENV_FILE,
+    GOING_OUT_HOST_DEVICE_PORT,
     REPO_ROOT,
     TEST_ENV_FILE,
     docker_environment,
@@ -23,7 +28,7 @@ from .test_network import HOST_PROBE_PORT
 pytestmark = pytest.mark.stack
 
 # The env files of the end-to-end tests' stacks (see tests/e2e/conftest.py).
-E2E_ENV_FILES = ("tests/e2e/shared.env", "tests/e2e/fresh.env")
+E2E_ENV_FILES = ("tests/e2e/shared.env", "tests/e2e/fresh.env", "tests/e2e/going_out.env")
 
 
 def resolved(
@@ -118,6 +123,74 @@ def test_the_core_trusts_the_edge_address_on_the_core_network(tmp_path):
     assert config["services"]["core"]["environment"]["DOMO_TRUSTED_PROXIES"] == edge_address
 
 
+@pytest.mark.parametrize(("core", "lan"), [(None, None), ("10.99.7", "10.99.8")])
+def test_the_gatekeeper_is_told_the_core_and_the_lan_networks_are_its_own(tmp_path, core, lan):
+    """A program reaches nothing on the core's network nor on the edge's lan: the gatekeeper is
+    told their subnets, the same ones the networks are made with, rather than guessing them."""
+    custom = tmp_path / "custom.env"
+    lines = [f"DOMO_CORE_NET_PREFIX={core}"] if core else []
+    lines += [f"DOMO_LAN_NET_PREFIX={lan}"] if lan else []
+    custom.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+    config = resolved(custom)
+    core_subnet = config["networks"]["core_net"]["ipam"]["config"][0]["subnet"]
+    lan_subnet = config["networks"]["lan"]["ipam"]["config"][0]["subnet"]
+    assert core_subnet == f"{core or '10.247.81'}.0/24"
+    assert lan_subnet == f"{lan or '10.247.80'}.0/24"
+    own = config["services"]["gatekeeper"]["environment"]["DOMO_OWN_NETWORKS"]
+    assert own == f"{core_subnet},{lan_subnet}"
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        "",
+        "DOMO_HTTPS_PORT=443\nDOMO_HTTP_PORT=80\nDOMO_SITE_ADDRESSES=localhost, 192.168.1.10\n",
+    ],
+)
+def test_the_gatekeeper_is_told_the_edge_ports_and_the_page_addresses(tmp_path, settings):
+    """The edge's published ports are never reachable on the host, and the page's addresses are
+    the host: the gatekeeper has them from the same variables as the edge."""
+    custom = tmp_path / "custom.env"
+    custom.write_text(settings, encoding="utf-8")
+    services = resolved(custom)["services"]
+    edge, gatekeeper = services["edge"]["environment"], services["gatekeeper"]["environment"]
+    ports = f"{edge['DOMO_HTTPS_PORT']},{edge['DOMO_HTTP_PORT']}"
+    assert gatekeeper["DOMO_OWN_PORTS"] == ports
+    assert gatekeeper["DOMO_SITE_ADDRESSES"] == edge["DOMO_SITE_ADDRESSES"]
+    assert ports == ("443,80" if settings else "8443,8080")
+
+
+@pytest.mark.parametrize(
+    ("lan", "core", "extra"),
+    [(None, None, None), ("10.99.8", "10.99.7", None), (None, None, "192.168.1.11, 172.18.0.1")],
+)
+def test_the_gatekeeper_is_told_the_host_address_on_each_network_of_the_file(
+    tmp_path, lan, core, extra
+):
+    """The edge publishes on every address of the host, its address on the edge's own network
+    included: the gatekeeper is told the gateways of the networks with a fixed subnet, then the
+    host's other addresses the person names in .env (``DOMO_EXTRA_HOST_ADDRESSES``: the remedy
+    the README gives; empty by default, an empty item the gatekeeper skips)."""
+    custom = tmp_path / "custom.env"
+    lines = [f"DOMO_LAN_NET_PREFIX={lan}"] if lan else []
+    lines += [f"DOMO_CORE_NET_PREFIX={core}"] if core else []
+    lines += [f"DOMO_EXTRA_HOST_ADDRESSES={extra}"] if extra else []
+    custom.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+    config = resolved(custom)
+    [lan_ipam] = config["networks"]["lan"]["ipam"]["config"]
+    lan_prefix, core_prefix = lan or "10.247.80", core or "10.247.81"
+    assert lan_ipam == {"subnet": f"{lan_prefix}.0/24", "gateway": f"{lan_prefix}.1"}
+    assert config["services"]["gatekeeper"]["environment"]["DOMO_HOST_ADDRESSES"] == (
+        f"{lan_prefix}.1,{core_prefix}.1,{extra or ''}"
+    )
+
+
+def test_the_example_settings_name_the_host_s_other_addresses():
+    """``.env.example`` names the variable of the host's other addresses (I5)."""
+    example = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+    assert "# DOMO_EXTRA_HOST_ADDRESSES=" in example
+
+
 def test_the_test_stack_does_not_claim_the_core_network_of_a_real_instance(tmp_path):
     """Docker refuses a second network whose fixed subnet overlaps another's: with the same
     subnet, the test stack could not start next to a real instance (nor the other way round)."""
@@ -175,24 +248,89 @@ def test_the_test_file_needs_the_key_the_fake_model_expects():
 
 
 def test_the_test_stacks_can_run_side_by_side():
-    """The shared and the fresh stacks of the end-to-end tests run next to the stack of the other
-    stack tests (a session fixture stays up until the end of the run): each one needs its own
-    ports and its own core network, which Docker refuses to overlap."""
-    settings = [read_env_file(REPO_ROOT / name) for name in (TEST_ENV_FILE, *E2E_ENV_FILES)]
+    """The shared, the fresh and the going-out stacks of the end-to-end tests run next to the
+    stacks of the stack tests (a session fixture stays up until the end of the run): each one
+    needs its own ports and its own core network, which Docker refuses to overlap."""
+    env_files = (TEST_ENV_FILE, GOING_OUT_ENV_FILE, *E2E_ENV_FILES)
+    settings = [read_env_file(REPO_ROOT / name) for name in env_files]
     ports = [
         int(value) for env in settings for value in (env["DOMO_HTTPS_PORT"], env["DOMO_HTTP_PORT"])
     ]
     # And the ports other stack tests use on the host for a container of their own.
     ports += [BY_IP_HTTPS_PORT, BY_IP_HTTP_PORT, ECHO_HTTPS_PORT, ECHO_HTTP_PORT, HOST_PROBE_PORT]
+    ports += [GOING_OUT_HOST_DEVICE_PORT, E2E_GOING_OUT_HOST_DEVICE_PORT]
     assert len(set(ports)) == len(ports)
-    networks = [ipaddress.ip_network(f"{env['DOMO_CORE_NET_PREFIX']}.0/24") for env in settings]
+    networks = [
+        ipaddress.ip_network(f"{env[name]}.0/24")
+        for env in settings
+        for name in ("DOMO_CORE_NET_PREFIX", "DOMO_LAN_NET_PREFIX")
+    ]
     for index, network in enumerate(networks):
         assert not any(network.overlaps(other) for other in networks[index + 1 :])
-    # And none of them is the default network of a real instance.
-    default = resolved(REPO_ROOT / ".env.example")["networks"]["core_net"]["ipam"]["config"][0]
+    # And none of them is a default network of a real instance.
+    defaults = resolved(REPO_ROOT / ".env.example")["networks"]
+    for name in ("core_net", "lan"):
+        default = ipaddress.ip_network(defaults[name]["ipam"]["config"][0]["subnet"])
+        assert not any(network.overlaps(default) for network in networks)
+
+
+# --- tests/stack/compose.going-out.yaml: the fakes of going out --------------------------------
+
+GOING_OUT_ENV = {
+    "FAKE_DEVICE_TOKEN": "dt-not-a-real-token",
+    "FAKE_SITE_USER": "alex-test",
+    "FAKE_SITE_PASSWORD": "pw-not-a-real-password",
+    "GOING_OUT_CERTS_DIR": str(REPO_ROOT / "tests" / "fakes" / "fake_site"),
+    "GOING_OUT_CA_BUNDLE": str(REPO_ROOT / "tests" / "fakes" / "fake_site" / "app.py"),
+    "GOING_OUT_HOST_DEVICE_PORT": str(GOING_OUT_HOST_DEVICE_PORT),
+}
+CERTIFI_BUNDLE = "/app/.venv/lib/python3.12/site-packages/certifi/cacert.pem"
+
+
+def going_out_config() -> dict[str, Any]:
+    return resolved(REPO_ROOT / GOING_OUT_ENV_FILE, GOING_OUT_COMPOSE_FILES, GOING_OUT_ENV)
+
+
+def test_the_going_out_file_adds_its_fakes_and_the_tests_authority_alone():
+    """Nothing else of the real stack changes: the gatekeeper only trusts the tests' authority
+    too (its bundle of authorities replaced, read-only)."""
+    base = resolved(REPO_ROOT / GOING_OUT_ENV_FILE)
+    config = going_out_config()
+    services = dict(config["services"])
+    added = {name: services.pop(name) for name in ("device", "device-on-host", "site")}
+    gatekeeper, base_gatekeeper = services.pop("gatekeeper"), base["services"].pop("gatekeeper")
+    assert services == base["services"]
+    [bundle] = [v for v in gatekeeper["volumes"] if v["target"] == CERTIFI_BUNDLE]
+    assert bundle["type"] == "bind" and bundle["read_only"] is True
+    gatekeeper["volumes"] = [v for v in gatekeeper["volumes"] if v is not bundle]
+    assert gatekeeper == base_gatekeeper
+    assert config["volumes"] == base["volumes"]
+    networks = dict(config["networks"])
+    assert set(networks.pop("device_host")) >= {"driver"}
+    assert networks == base["networks"]
+    for name, fake in added.items():
+        assert fake["read_only"] is True and fake["cap_drop"] == ["ALL"], name
+        assert fake["security_opt"] == ["no-new-privileges:true"], name
+        assert fake["user"] == "10001:10001", name
+
+
+def test_the_device_on_another_machine_and_the_site_are_on_the_way_out_alone():
+    services = going_out_config()["services"]
+    for name in ("device", "site"):
+        assert set(services[name]["networks"]) == {"egress"}, name
+        assert not services[name].get("ports"), name
+
+
+def test_the_device_on_the_host_is_reached_through_this_machine_alone():
+    """On a network no service of Domo is on: the gatekeeper reaches it only through the port
+    it is published on."""
+    services = going_out_config()["services"]
+    device = services["device-on-host"]
+    assert set(device["networks"]) == {"device_host"}
     assert not any(
-        network.overlaps(ipaddress.ip_network(default["subnet"])) for network in networks
+        "device_host" in s.get("networks", {}) for n, s in services.items() if n != "device-on-host"
     )
+    assert published(device) == {("127.0.0.1", str(GOING_OUT_HOST_DEVICE_PORT), 8000)}
 
 
 # --- the sandbox ---------------------------------------------------------------------------

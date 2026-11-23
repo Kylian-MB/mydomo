@@ -6,7 +6,7 @@ import httpx
 import pytest
 from domo_common.gatekeeper_api import (
     Binding,
-    InjectionLocation,
+    HeaderLocation,
     ProviderRoute,
     SecretRequestCreate,
 )
@@ -68,7 +68,7 @@ def req() -> SecretRequestCreate:
         bindings=[
             Binding(
                 host="api.example.com",
-                location=InjectionLocation(kind="header", name="x-api-key"),
+                location=HeaderLocation(kind="header", name="x-api-key"),
             )
         ],
     )
@@ -118,7 +118,7 @@ def route_p1(vault: Vault) -> ProviderRoute:
         bindings=[
             Binding(
                 host="api.example.com",
-                location=InjectionLocation(kind="header", name="x-api-key"),
+                location=HeaderLocation(kind="header", name="x-api-key"),
             )
         ],
     )

@@ -55,3 +55,14 @@ def later(at: str, arguments: dict[str, object]) -> object:
 def wake(content: object) -> object:
     """Wakes Domo with ``content``: he reads it as data."""
     raise NotImplementedError(_ONLY_IN_THE_SANDBOX)
+
+
+def out(
+    method: str,
+    url: str,
+    headers: dict[str, str] | None = None,
+    body: str | bytes | None = None,
+    account: str | None = None,
+) -> object:
+    """Sends an HTTP request to an open address, with the account named ``account``."""
+    raise NotImplementedError(_ONLY_IN_THE_SANDBOX)

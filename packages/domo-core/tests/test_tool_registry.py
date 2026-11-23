@@ -158,6 +158,13 @@ MADE_TOOLS = [
     "agreement_keep",
     "agreement_drop",
 ]
+# Going out (step 2, spec 13): Domo opens and closes the addresses his programs reach and looks at
+# them (his own acts, in anyone's turn, a guest's too); an account is asked for, removed, shared
+# and looked at (the person's: asked by the owner, an adult or a child, removed by the owner or an
+# adult, shared by the owner, looked at by everyone).
+ADDRESS_TOOLS = ["address_open", "address_close", "addresses_look"]
+ACCOUNT_TOOLS = ["account_ask", "account_remove", "account_share", "accounts_look"]
+OUTWARD_TOOLS = [*ADDRESS_TOOLS, *ACCOUNT_TOOLS]
 # What every person of the household has of their own: renaming themselves, and leaving the
 # household themselves (spec 5.9; the owner is refused it by the tool, whatever the rights).
 OWN_TOOLS = ["profile_rename", "household_leave"]
@@ -185,6 +192,7 @@ def test_the_registry_knows_its_tools_by_the_name_the_model_uses():
         *DELIVERY_TOOLS,
         *TRUST_TOOLS,
         *MADE_TOOLS,
+        *OUTWARD_TOOLS,
         *CHAIN_TOOLS,
     ]
     for name, tool in TOOLS.items():
@@ -273,6 +281,13 @@ def test_every_tool_is_an_action_of_the_catalog():
         "program.run",
         "agreement.keep",
         "agreement.drop",
+        "net.open",
+        "net.close",
+        "net.look",
+        "account.ask",
+        "account.remove",
+        "account.share",
+        "account.look",
         "chain.run",
         "chain.continue",
     }
@@ -468,6 +483,7 @@ def test_the_registry_cannot_be_changed():
                 *DELIVERY_TOOLS,
                 *TRUST_TOOLS,
                 *MADE_TOOLS,
+                *OUTWARD_TOOLS,
                 *CHAIN_TOOLS,
             ],
         ),
@@ -495,6 +511,10 @@ def test_the_registry_cannot_be_changed():
                 *DELIVERY_TOOLS,
                 *TRUST_TOOLS,
                 *MADE_TOOLS,
+                *ADDRESS_TOOLS,
+                "account_ask",
+                "account_remove",
+                "accounts_look",
                 *CHAIN_TOOLS,
             ],
         ),
@@ -517,6 +537,10 @@ def test_the_registry_cannot_be_changed():
                 *DELIVERY_TOOLS,
                 *TRUST_TOOLS,
                 *MADE_TOOLS,
+                *ADDRESS_TOOLS,
+                "account_ask",
+                "account_remove",
+                "accounts_look",
                 *CHAIN_TOOLS,
             ],
         ),
@@ -535,6 +559,8 @@ def test_the_registry_cannot_be_changed():
                 *DELIVERY_TOOLS,
                 *TRUST_TOOLS,
                 *MADE_TOOLS,
+                *ADDRESS_TOOLS,
+                "accounts_look",
             ],
         ),
     ],
@@ -602,6 +628,10 @@ def test_a_person_is_shown_the_tools_of_their_own_rights():  # spec 5.9
         *DELIVERY_TOOLS,
         *TRUST_TOOLS,
         *MADE_TOOLS,
+        *ADDRESS_TOOLS,
+        "account_ask",
+        "account_remove",
+        "accounts_look",
         *CHAIN_TOOLS,
     ]
     assert "household_invite" not in names(
@@ -633,6 +663,8 @@ def test_a_right_of_a_role_shows_or_hides_a_tool_to_the_whole_role():
         *DELIVERY_TOOLS,
         *TRUST_TOOLS,
         *MADE_TOOLS,
+        *ADDRESS_TOOLS,
+        "accounts_look",
     ]
     assert "household_remove" in names(
         tools_for("child", TOOLS, DEFAULT_POLICY, person_id=uuid.uuid4(), rights=rights)

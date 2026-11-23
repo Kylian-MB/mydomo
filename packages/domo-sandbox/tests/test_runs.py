@@ -140,7 +140,10 @@ async def test_every_function_of_the_module_is_one_request(client: httpx.AsyncCl
         '    domo.act("tool.launch_when", {"x": 1})\n'
         '    domo.tool("weather", {"city": "Lyon"})\n'
         '    domo.later("2026-11-19T08:00:00+00:00", {"again": True})\n'
-        '    return domo.wake({"says": "done"})\n'
+        '    domo.wake({"says": "done"})\n'
+        '    domo.out("GET", "http://192.168.1.20:8123/api")\n'
+        '    domo.out("POST", "http://192.168.1.20:8123/x", {"a": "1"}, "é", account="lights")\n'
+        '    return domo.out("PUT", "http://192.168.1.20:8123/y", body=b"\\xff\\x00")\n'
     )
     run = await open_run(client, code, entry={})
     asks: list[object] = []
@@ -156,8 +159,48 @@ async def test_every_function_of_the_module_is_one_request(client: httpx.AsyncCl
         {"do": "tool", "name": "weather", "arguments": {"city": "Lyon"}},
         {"do": "later", "at": "2026-11-19T08:00:00+00:00", "arguments": {"again": True}},
         {"do": "wake", "content": {"says": "done"}},
+        {
+            "do": "out",
+            "method": "GET",
+            "url": "http://192.168.1.20:8123/api",
+            "headers": {},
+            "account": None,
+        },
+        {
+            "do": "out",
+            "method": "POST",
+            "url": "http://192.168.1.20:8123/x",
+            "headers": {"a": "1"},
+            "account": "lights",
+            "body": "é",
+        },
+        # Bytes go in base64.
+        {
+            "do": "out",
+            "method": "PUT",
+            "url": "http://192.168.1.20:8123/y",
+            "headers": {},
+            "account": None,
+            "body_b64": "/wA=",
+        },
     ]
-    assert event["result"]["output"] == 7  # type: ignore[index]
+    assert event["result"]["output"] == 10  # type: ignore[index]
+
+
+async def test_a_body_out_bigger_than_a_request_ends_the_run_as_any_request_too_big(
+    client: httpx.AsyncClient,
+):
+    # The frame of a request is not raised for a body: it is what one request holds.
+    code = (
+        "import domo\n\n"
+        "def run(entry):\n"
+        '    return domo.out("POST", "http://192.168.1.20:8123/x", body="x" * 70_000)\n'
+    )
+    run = await open_run(client, code, entry={})
+    end = await post(client, f"/runs/{run}/next", {})
+    assert end["kind"] == "end"
+    assert end["result"]["status"] == "error"  # type: ignore[index]
+    assert end["result"]["note"] == "A request of the tool is bigger than allowed."  # type: ignore[index]
 
 
 async def test_a_live_run_gives_its_asks_then_its_end():

@@ -66,6 +66,17 @@ LINE_FACTS: Final[Mapping[str, Mapping[str, tuple[str, FactKind]]]] = {
     "auth.password_changed": {"count": ("revoked_sessions", "count")},
     "provider.added": {"host": ("host", "text"), "count": ("models", "count")},
     "key.started": {"host": ("host", "text")},
+    # The address a tool of Domo's sent a request to: its host alone, never a path. A request
+    # refused before or instead of being sent has its own line (``LINE_WHEN``), with its code.
+    "madetool.out_done": {"host": ("host", "text")},
+    "madetool.out_refused": {"host": ("host", "text"), "code": ("refused", "text")},
+    # Going out (step 2): an address by its host, an account by its name; never a path, a value
+    # nor a form's link.
+    "outward.address_opened": {"host": ("host", "text")},
+    "outward.address_closed": {"host": ("host", "text")},
+    "outward.account_asked": {"name": ("name", "text")},
+    "outward.account_removed": {"name": ("name", "text")},
+    "outward.account_shared": {"name": ("name", "text")},
     "key.added": {"host": ("host", "text"), "count": ("models", "count")},
     "chat.turn": {"model": ("model", "text"), "cost": ("cost_usd", "usd")},
     "catalog.refreshed": {"count": ("models", "count")},
@@ -117,6 +128,13 @@ LINE_FACTS: Final[Mapping[str, Mapping[str, tuple[str, FactKind]]]] = {
     # About whom, and how many facts: never what a fact says.
     "trust.looked": {"name": ("about", "person"), "count": ("count", "count")},
     "trust.corrected": {"name": ("about", "person")},
+}
+
+# A kind of line said otherwise when one of its details is a text: that detail, and the line said
+# then (``audit.line.<line>``, its facts in ``LINE_FACTS``). A request out that was refused was
+# never sent: it never reads "sent".
+LINE_WHEN: Final[Mapping[str, tuple[str, str]]] = {
+    "madetool.out_done": ("refused", "madetool.out_refused"),
 }
 
 _PERSON_PREFIX: Final = "person:"
@@ -218,9 +236,15 @@ class _Reader:
         facts: dict[str, str] = {}
         if has_meaning(key):
             details = _details(raw)
+            said = action
+            if action in LINE_WHEN:
+                detail, other = LINE_WHEN[action]
+                value = details.get(detail)
+                if isinstance(value, str) and value.strip():
+                    said, key = other, f"audit.line.{other}"
             facts = {
                 hole: self.fact(details, detail, kind)
-                for hole, (detail, kind) in LINE_FACTS.get(action, {}).items()
+                for hole, (detail, kind) in LINE_FACTS.get(said, {}).items()
             }
         else:
             key = "audit.line.other"

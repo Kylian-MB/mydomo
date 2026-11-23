@@ -13,12 +13,22 @@ shows the gatekeeper's fixed texts, in the language the browser prefers, English
 for a request the gatekeeper does not know (a link expired, used, or that never was) shows a sign
 without words: Domo's page, around the form, says what it is about. Each address the secret
 will be sent to is shown by the gatekeeper itself, never by a text: a symbol, the host in bold, the
-header in code, without words.
+place in code (the header, Basic, or the login request), without words.
+
+A secret of one value has one password field; an account (Basic, a login body) has a user field
+and a password field, both required, which the vault keeps as one string.
 """
 
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol
 
+from domo_common.gatekeeper_api import (
+    BasicLocation,
+    HeaderLocation,
+    InjectionLocation,
+    LoginLocation,
+    SecretFields,
+)
 from domo_common.i18n import negotiate_language, t
 from domo_common.meanings import SIGN
 from domo_common.text_rules import HOLE
@@ -26,6 +36,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse
 from jinja2 import Environment, PackageLoader, StrictUndefined
+from starlette.datastructures import FormData
 
 from domo_gatekeeper.errors import (
     BindingMismatchError,
@@ -33,11 +44,12 @@ from domo_gatekeeper.errors import (
     RequestNotPendingError,
 )
 from domo_gatekeeper.secret_requests import FORM_PATH_PREFIX, PendingRequest, SecretRequestStore
-from domo_gatekeeper.vault import Vault
+from domo_gatekeeper.vault import Vault, join_account
 
 MAX_VALUE_LENGTH = 8192
-# 8192 characters of 4-byte UTF-8, each percent-encoded as 3 characters per byte, fits in 100 KiB.
-MAX_BODY_BYTES = 128 * 1024
+# 8192 characters of 4-byte UTF-8, each percent-encoded as 3 characters per byte, is 96 KiB: the
+# two values of an account fit in 256 KiB.
+MAX_BODY_BYTES = 256 * 1024
 
 SECURITY_HEADERS = {
     "Cache-Control": "no-store",
@@ -111,11 +123,23 @@ def _notice(
     return _render(request, "secret_notice.html", pending, status_code, message_key=message_key)
 
 
+def _place(location: InjectionLocation) -> str:
+    """Where the secret goes in a request, as code and without words: the header, ``Basic``, or
+    the login request."""
+    match location:
+        case HeaderLocation():
+            return location.name
+        case BasicLocation():
+            return "authorization: Basic"
+        case LoginLocation():
+            return f"POST {location.path}"
+
+
 def _form(request: Request, pending: PendingRequest, error_key: str | None = None) -> Response:
     destinations = [
         {
             "host": f"{b.host}:{b.port}" if b.port is not None else b.host,
-            "header": b.location.name,
+            "place": _place(b.location),
         }
         for b in pending.bindings
     ]
@@ -126,9 +150,27 @@ def _form(request: Request, pending: PendingRequest, error_key: str | None = Non
         400 if error_key else 200,
         purpose=pending.purpose,
         destinations=destinations,
+        fields=pending.fields,
         max_length=MAX_VALUE_LENGTH,
         error_key=error_key,
     )
+
+
+def _text_field(form: FormData, name: str) -> str:
+    """The text of a field of the form; anything but text (a missing field, a file upload)
+    counts as empty."""
+    field = form.get(name)
+    return field if isinstance(field, str) else ""
+
+
+def _submitted_value(form: FormData, fields: SecretFields) -> str | None:
+    """The one string the vault keeps for what was typed, or ``None`` when a value is empty or
+    too long."""
+    names = ("value",) if fields == "value" else ("user", "password")
+    values = [_text_field(form, name) for name in names]
+    if not all(1 <= len(value) <= MAX_VALUE_LENGTH for value in values):
+        return None
+    return values[0] if fields == "value" else join_account(values[0], values[1])
 
 
 async def _pending_of(store: SecretRequestStore, request: Request) -> PendingRequest | None:
@@ -186,10 +228,8 @@ def create_public_app(store: SecretRequestStore, vault: Vault) -> FastAPI:
         if pending is None:
             return _notice(request, 404, "vault.unavailable", None)
         async with request.form() as form:
-            field = form.get("value")
-        # Anything but text (a missing field, a file upload) counts as an empty value.
-        value = field if isinstance(field, str) else ""
-        if not 1 <= len(value) <= MAX_VALUE_LENGTH:
+            value = _submitted_value(form, pending.fields)
+        if value is None:
             return _form(request, pending, "vault.form.error.length")
         try:
             await run_in_threadpool(store.fulfil, token, value, vault)

@@ -206,6 +206,54 @@ async def test_each_audit_line_is_said_in_domo_words(
     )
 
 
+async def test_a_request_out_reads_as_sent_only_when_it_was(client, owner_account, session):
+    # A refused request was never sent: its own line, with its code (I3).
+    await log_in(client)
+    actor = f"person:{owner_account.person_id}"
+    out = {"tool": "lights", "host": "192.168.1.20", "port": 8080, "method": "GET"}
+    sent = await append_audit(
+        session,
+        actor=actor,
+        action="madetool.out_done",
+        details={**out, "status": 200, "refused": None},
+    )
+    refused = await append_audit(
+        session,
+        actor=actor,
+        action="madetool.out_done",
+        details={**out, "status": None, "refused": "closed_address"},
+    )
+    nameless = await append_audit(
+        session,
+        actor=actor,
+        action="madetool.out_done",
+        details={**out, "host": None, "status": None, "refused": "closed_address"},
+    )
+    lines = lines_of((await client.get("/audit")).text)
+    assert lines[sent.id] == t(
+        "audit.line.madetool.out_done", "en", who="Owner", when=in_words(sent.ts), host=out["host"]
+    )
+    assert lines[refused.id] == t(
+        "audit.line.madetool.out_refused",
+        "en",
+        who="Owner",
+        when=in_words(refused.ts),
+        host=out["host"],
+        code="closed_address",
+    )
+    assert lines[nameless.id] == t(
+        "audit.line.madetool.out_refused",
+        "en",
+        who="Owner",
+        when=in_words(nameless.ts),
+        host=SIGN,
+        code="closed_address",
+    )
+    await reads_in(session, owner_account.person_id, "fr")
+    french = lines_of((await client.get("/audit")).text)
+    assert "refus" in french[refused.id] and "envoyé" not in french[refused.id]
+
+
 async def test_an_unknown_action_has_the_general_line(client, owner_account, session):
     await log_in(client)
     entry = await append_audit(
@@ -326,16 +374,20 @@ def test_every_audited_action_has_its_line():
     assert len(actions) > 50
     missing = sorted(action for action in actions if not has_meaning(f"audit.line.{action}"))
     assert missing == []
+    # A kind of line said otherwise when one of its details is set (``LINE_WHEN``): of an
+    # audited action, with a line of its own.
+    variants = {line for _, line in audit_routes.LINE_WHEN.values()}
+    assert set(audit_routes.LINE_WHEN) <= actions and not variants & actions
     # And every line says who did it (or why not), when, and the facts the page puts in.
-    for action in actions:
+    for action in actions | variants:
         facts = set(audit_routes.LINE_FACTS.get(action, {}))
         assert "when" in holes(f"audit.line.{action}"), action
         assert holes(f"audit.line.{action}") - {"who"} == {"when"} | facts, action
-    assert set(audit_routes.LINE_FACTS) <= actions
+    assert set(audit_routes.LINE_FACTS) <= actions | variants
     assert holes("audit.line.other") == {"who", "when"}
     # And no line is left for an action the code no longer audits.
     lines = {key for key in all_keys() if key.startswith("audit.line.")}
-    assert lines == {f"audit.line.{action}" for action in actions} | {"audit.line.other"}
+    assert lines == {f"audit.line.{action}" for action in actions | variants} | {"audit.line.other"}
 
 
 async def test_a_hole_the_page_cannot_fill_shows_a_sign(client, owner_account, session):

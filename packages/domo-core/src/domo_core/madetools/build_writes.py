@@ -32,6 +32,11 @@ yes would run what nobody agreed to).
 It is audited (``YES_WITHDRAWN``: the tool, the operations, how many of each; never an argument),
 written in the ``madetool.built`` entry, and kept as the build's outcome (``withdrawn_outcome``),
 which Domo reads with the tool (``tool_look``) to tell whom it concerns.
+
+A version that passes and whose operations name addresses not open for its tool opens none of them
+(spec 13.10: only an act of Domo's in a turn, or the owner's, opens an address): the build's
+outcome says which (``missing_outcome``), for him to open those he judges right, and the
+``madetool.built`` entry how many (``missing_addresses``), never which.
 """
 
 import json
@@ -63,6 +68,7 @@ from domo_core.madetools.models import (
 from domo_core.madetools.risks import (
     RISK_WORDS,
     Operation,
+    addresses_named,
     kept_operations,
     operations_of,
     read_operations,
@@ -76,6 +82,7 @@ from domo_core.madetools.settings import (
     write_for_tool_from_build,
 )
 from domo_core.madetools.troubles import Trouble
+from domo_core.outward.service import closed_by_the_owner, open_for
 from domo_core.policy.catalog import NO_RISK, OpenKind, PolicyTables, Risks
 from domo_core.policy.open_catalog import add_kind, replace_kind
 from domo_core.policy.rights import load_rights
@@ -455,6 +462,10 @@ async def settle(
             # two never wait on each other.
             tool, made = await _made(session, build, reading, given, version, now, deps.policy)
             kept = made.pop("kept", None)
+            missing = await missing_addresses(session, tool.name, tool.operations)
+            if missing:
+                # Their number alone: the addresses are in the outcome, Domo's to read.
+                made["missing_addresses"] = len(missing)
             await append_audit(session, actor="system", action=CHECKED, details=checked)
             build.state = "ready"
             build.name = given.name
@@ -462,13 +473,21 @@ async def settle(
             build.refused_in_a_row = 0
             build.not_before = None
             withdrawn = made.get("withdrawn")
-            if isinstance(withdrawn, dict):
-                build.outcome = withdrawn_outcome(withdrawn)
-            if isinstance(kept, str):
-                # The settings the owner keeps from him come first: they are what the tool runs by.
-                build.outcome = (kept if build.outcome is None else f"{kept}; {build.outcome}")[
-                    :MAX_OUTCOME
-                ]
+            # What was withdrawn comes first and whole: only the outcome tells Domo to tell
+            # whom it concerns. Then the settings the owner keeps from him (what the tool runs
+            # by); the addresses it lacks take the room left, said short: tool_look lists them.
+            closed = {
+                address for address in missing if await closed_by_the_owner(session, *address)
+            }
+            said = outcome_of(
+                withdrawn_outcome(withdrawn) if isinstance(withdrawn, dict) else None,
+                kept if isinstance(kept, str) else None,
+                tool.name,
+                missing,
+                closed,
+            )
+            if said:
+                build.outcome = said
             await append_audit(
                 session,
                 actor="system",
@@ -505,6 +524,98 @@ def withdrawn_outcome(withdrawn: JsonObject) -> str:
         "concerns, and ask again if needed"
     )
     return said[:MAX_OUTCOME]
+
+
+async def missing_addresses(
+    session: AsyncSession, name: str, operations: object
+) -> list[tuple[str, int]]:
+    """The addresses the ``operations`` kept on the tool ``name`` name (``risks.addresses_named``)
+    that are not open for it now (``outward.service.open_for``), in order. Nothing is opened: an
+    address opens by an act of Domo's, in a turn (spec 13.10)."""
+    open_now = {(address.host, address.port) for address in await open_for(session, name)}
+    named = addresses_named(operations_of(operations))
+    return [address for address in named if address not in open_now]
+
+
+def _address_text(address: tuple[str, int]) -> str:
+    host, port = address
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+
+
+def _fitted(head: str, groups: list[tuple[str, list[tuple[str, int]]]], room: int) -> str:
+    """``head``, then each group's prefix and as many of its addresses as ``room`` holds (``...``
+    when some are left out): the whole of it ``room`` characters at most (nothing when there is
+    no room)."""
+    if room <= 0:
+        return ""
+    text = head[:room]
+    for prefix, addresses in groups:
+        named = 0
+        for address in addresses:
+            piece = f"{prefix if named == 0 else ','} {_address_text(address)}"
+            if len(text) + len(piece) > room:
+                break
+            text += piece
+            named += 1
+        if 0 < named < len(addresses) and len(text) + len(", ...") <= room:
+            text += ", ..."
+    return text
+
+
+def outcome_of(
+    withdrawn: str | None,
+    kept: str | None,
+    name: str,
+    missing: list[tuple[str, int]],
+    closed_by_owner: set[tuple[str, int]],
+) -> str:
+    """What a build that made its tool keeps as its outcome (``""``: nothing to say), never more
+    than ``MAX_OUTCOME``: what was withdrawn first and whole (only the outcome tells Domo to tell
+    whom it concerns), then the settings the owner keeps from him (what the tool runs by), then the
+    addresses the tool lacks in the room left, said short (``missing_outcome``), or not at all
+    when none is left (``tool_look`` lists them all)."""
+    said = "; ".join(part for part in (withdrawn, kept) if part)[:MAX_OUTCOME]
+    if not missing:
+        return said
+    room = MAX_OUTCOME - (len(said) + len("; ") if said else 0)
+    lacking = missing_outcome(name, missing, closed_by_owner, room) if room > 0 else ""
+    if not lacking:
+        return said
+    return f"{said}; {lacking}" if said else lacking
+
+
+def missing_outcome(
+    name: str,
+    missing: list[tuple[str, int]],
+    closed_by_owner: set[tuple[str, int]],
+    room: int = MAX_OUTCOME,
+) -> str:
+    """What a build keeps as its outcome, for Domo, when its tool names addresses not open for
+    it: how many, which (those the owner closed first: reopening one is Domo's judgement,
+    weighing that closing, ruling R24), and that opening the others is his act; ``room``
+    characters at most, said shorter when the room is short (``tool_look`` lists them all). One
+    plain line."""
+    count = len(missing)
+    owners = [address for address in missing if address in closed_by_owner]
+    others = [address for address in missing if address not in closed_by_owner]
+    plural = "es" if count > 1 else ""
+    whole = _fitted(
+        f"built; {count} address{plural} its operations name {'are' if count > 1 else 'is'} "
+        f"not open for it, and nothing opened them (tool_look lists them)",
+        [
+            ("; the owner closed (reopen only if things changed, your judgement):", owners),
+            (f"; open those you judge right with address_open (tool: {name}):", others),
+        ],
+        MAX_OUTCOME,
+    )
+    complete = all(_address_text(address) in whole for address in missing)
+    if complete and len(whole) <= room:
+        return whole
+    return _fitted(
+        f"{count} address{plural} not open (tool_look)",
+        [("; owner closed:", owners), (";", others)],
+        room,
+    )
 
 
 async def _withdrawn(

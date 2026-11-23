@@ -1,0 +1,77 @@
+# For the tests of going out only: a third compose file, added to compose.yaml by the stack tests
+# (tests/stack/test_going_out.py), and with compose.test.yaml by the end-to-end story
+# (tests/e2e/test_going_out.py). Never use it to run a real instance.
+#
+# Its paths are relative to the repository root (the directory of compose.yaml, the first file).
+# The tests give it, through the environment:
+#   FAKE_DEVICE_TOKEN           the token both devices accept (the tests put it in the vault)
+#   FAKE_SITE_USER, _PASSWORD   the account the site accepts (the same)
+#   GOING_OUT_CERTS_DIR         the site's certificate and key, made by the tests' own authority
+#   GOING_OUT_CA_BUNDLE         the usual authorities plus the tests' own, for the gatekeeper
+#   GOING_OUT_HOST_DEVICE_PORT  the port of this machine the second device is published on
+#
+# Two installations of a device:
+#   device          a device on another machine of the house: on the egress network, the way out
+#                   of the gatekeeper, as the fake model of compose.test.yaml.
+#   device-on-host  a device on the machine that hosts the assistant: on a network of its own, which no
+#                   service of the assistant is on, and published on a port of this machine; the
+#                   gatekeeper reaches it only as the host (host.docker.internal).
+# And a site, on the egress network too, over HTTPS with a certificate of the tests' authority.
+#
+# The one change to a service of compose.yaml: the gatekeeper trusts the tests' authority. Its
+# requests out trust the usual authorities and nothing from the environment (out.py,
+# create_out_ssl_context): the bundle it reads them from is replaced by one with the tests'
+# authority added.
+
+x-fake: &fake
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  user: "10001:10001"
+  restart: unless-stopped
+
+services:
+  gatekeeper:
+    volumes:
+      - ${GOING_OUT_CA_BUNDLE:?set GOING_OUT_CA_BUNDLE}:/app/.venv/lib/python3.12/site-packages/certifi/cacert.pem:ro
+
+  device:
+    <<: *fake
+    build:
+      context: tests/fakes/fake_device
+    environment:
+      FAKE_DEVICE_TOKEN: ${FAKE_DEVICE_TOKEN:?set FAKE_DEVICE_TOKEN}
+      TZ: ${TZ:-UTC}
+    networks:
+      - egress
+
+  device-on-host:
+    <<: *fake
+    build:
+      context: tests/fakes/fake_device
+    environment:
+      FAKE_DEVICE_TOKEN: ${FAKE_DEVICE_TOKEN:?set FAKE_DEVICE_TOKEN}
+      TZ: ${TZ:-UTC}
+    ports:
+      - "${GOING_OUT_HOST_DEVICE_BIND:-127.0.0.1}:${GOING_OUT_HOST_DEVICE_PORT:?set GOING_OUT_HOST_DEVICE_PORT}:8000"
+    networks:
+      - device_host
+
+  site:
+    <<: *fake
+    build:
+      context: tests/fakes/fake_site
+    environment:
+      FAKE_SITE_USER: ${FAKE_SITE_USER:?set FAKE_SITE_USER}
+      FAKE_SITE_PASSWORD: ${FAKE_SITE_PASSWORD:?set FAKE_SITE_PASSWORD}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ${GOING_OUT_CERTS_DIR:?set GOING_OUT_CERTS_DIR}:/certs:ro
+    networks:
+      - egress
+
+networks:
+  device_host:
+    driver: bridge

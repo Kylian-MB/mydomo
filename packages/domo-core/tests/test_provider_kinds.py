@@ -3,7 +3,7 @@
 import dataclasses
 
 import pytest
-from domo_common.gatekeeper_api import Binding, InjectionLocation
+from domo_common.gatekeeper_api import Binding, HeaderLocation
 from domo_core.llm.provider_kinds import PROVIDER_KINDS, ProviderKindSpec
 from domo_core.llm.types import ModelCallError
 
@@ -32,7 +32,7 @@ def test_each_kind_has_its_address_and_the_place_of_its_key(
 ):
     spec = PROVIDER_KINDS[kind]
     assert spec.default_base_url == base_url
-    assert spec.key_location == InjectionLocation(kind="header", name=header, template=template)
+    assert spec.key_location == HeaderLocation(kind="header", name=header, template=template)
     assert spec.key_required is required
 
 

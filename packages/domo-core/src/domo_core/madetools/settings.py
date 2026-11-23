@@ -173,6 +173,30 @@ _ALL: Final = (
         0,
         "How many times a day you are woken because a tool was set aside or a build abandoned.",
     ),
+    # Going out (step 2, spec 13.3): what one request a program sends through the gatekeeper may
+    # take, and how many one launch sends; how long a site's session is kept unused.
+    Setting(
+        "out_seconds",
+        30,
+        1,
+        "How many seconds one request a program sends out may take in all, redirects included.",
+    ),
+    Setting(
+        "out_bytes",
+        1_048_576,
+        1,
+        "How many bytes the answer to one request a program sends out may weigh; a heavier one "
+        "is refused, and so is one past the channel's own ceiling.",
+    ),
+    Setting(
+        "out_per_launch", 100, 0, "How many requests one launch may send out; the next is refused."
+    ),
+    Setting(
+        "session_idle_minutes",
+        60,
+        1,
+        "How many minutes a site's session is kept without being used before it is forgotten.",
+    ),
 )
 
 SETTINGS: Final[Mapping[str, Setting]] = MappingProxyType({s.key: s for s in _ALL})
@@ -197,6 +221,9 @@ PER_TOOL: Final[frozenset[str]] = frozenset(
         "later_days",
         "wake_bytes",
         "failures_in_a_row",
+        "out_seconds",
+        "out_bytes",
+        "out_per_launch",
     }
 )
 

@@ -10,16 +10,14 @@ from domo_common import meanings
 from domo_common.gatekeeper_api import (
     FORM_TEXT_KEYS,
     Binding,
-    InjectionLocation,
+    HeaderLocation,
     SecretRequestCreate,
 )
 from domo_common.i18n import template
 from domo_common.meanings import SIGN
 from domo_core.texts.checks import HEAD_MAX_LENGTH, check_head, check_text
 
-BINDING = Binding(
-    host="api.example.com", location=InjectionLocation(kind="header", name="x-api-key")
-)
+BINDING = Binding(host="api.example.com", location=HeaderLocation(kind="header", name="x-api-key"))
 
 # A button whose meaning is short: its longest text is 2 * 11 + 40 = 62 characters.
 BUTTON = "test.button"

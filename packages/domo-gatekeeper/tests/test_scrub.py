@@ -1,9 +1,12 @@
 import base64
+import json
 import re
 from urllib.parse import quote
 
 import pytest
+from domo_common.gatekeeper_api import BasicLocation, Binding, LoginLocation
 from domo_gatekeeper.scrub import MASK, Scrubber, scrub_text
+from domo_gatekeeper.vault import join_account, secret_parts
 
 SECRET = "sk-test-0123456789"  # gitleaks:allow (a fake value for the tests)
 
@@ -155,6 +158,115 @@ def test_the_output_does_not_depend_on_how_the_stream_is_chunked(size):
     assert SECRET.encode() not in expected
     assert expected.count(b"[REDACTED]") == 6
     assert scrub_in_chunks(secrets, data, size) == expected
+
+
+# --- an account: each of its values is masked on its own --------------------------------------
+
+USER = "house-user-01"
+PASSWORD = "s3cr3t-pass/word"  # gitleaks:allow (a fake value for the tests)
+ENCODINGS = {
+    "clear": lambda text: text,
+    "base64": lambda text: base64.b64encode(text.encode()).decode(),
+    "base64-urlsafe-unpadded": lambda text: (
+        base64.urlsafe_b64encode(text.encode()).decode().rstrip("=")
+    ),
+    "percent": lambda text: quote(text, safe=""),
+}
+
+
+ACCOUNT = join_account(USER, PASSWORD)
+
+
+@pytest.fixture
+def account_scrubber() -> Scrubber:
+    """The scrubber of the answer to a request that carried the account: every part of it."""
+    return Scrubber(secret_parts(ACCOUNT))
+
+
+@pytest.fixture
+def everywhere_scrubber(vault) -> Scrubber:
+    """The scrubber of every answer, as a relay builds it: from ``vault.values()``."""
+    login = Binding(
+        host="site.example.com",
+        location=LoginLocation(
+            kind="login",
+            path="/login",
+            encoding="form",
+            user_field="username",
+            password_field="password",
+        ),
+    )
+    vault.put("account:site", ACCOUNT, purpose="p", bindings=[login])
+    return Scrubber(vault.values())
+
+
+@pytest.mark.parametrize("encoding", ENCODINGS)
+@pytest.mark.parametrize("part", [USER, PASSWORD], ids=["user", "password"])
+def test_each_value_of_an_account_is_masked_alone(account_scrubber, part, encoding):
+    shown = ENCODINGS[encoding](part)
+    out = account_scrubber.feed(f'{{"echo": "{shown}"}}'.encode()) + account_scrubber.flush()
+    assert out == b'{"echo": "[REDACTED]"}'
+
+
+@pytest.mark.parametrize("encoding", ENCODINGS)
+def test_every_answer_is_masked_of_the_password_but_not_of_the_user(everywhere_scrubber, encoding):
+    out = everywhere_scrubber.feed(
+        f"{ENCODINGS[encoding](USER)} {ENCODINGS[encoding](PASSWORD)}".encode()
+    )
+    out += everywhere_scrubber.flush()
+    assert out == f"{ENCODINGS[encoding](USER)} [REDACTED]".encode()
+
+
+@pytest.mark.parametrize("scrubber", ["account_scrubber", "everywhere_scrubber"])
+@pytest.mark.parametrize("encoding", ["base64", "base64-urlsafe-unpadded"])
+def test_an_echoed_basic_header_is_masked(request, scrubber, encoding):
+    # What Basic sends: the two values joined by a colon, in base64.
+    masking: Scrubber = request.getfixturevalue(scrubber)
+    shown = ENCODINGS[encoding](f"{USER}:{PASSWORD}")
+    out = masking.feed(f"authorization: Basic {shown}".encode()) + masking.flush()
+    assert out == b"authorization: Basic [REDACTED]"
+
+
+def test_an_echoed_login_body_is_masked(account_scrubber):
+    body = f"username={quote(USER, safe='')}&password={quote(PASSWORD, safe='')}"
+    out = account_scrubber.feed(body.encode()) + account_scrubber.flush()
+    assert out == b"username=[REDACTED]&password=[REDACTED]"
+
+
+# --- a secret echoed inside JSON, with its escapes ---------------------------------------------
+
+# A password holding a quote, a backslash, a slash and an accented letter: JSON writes each of them
+# otherwise than raw.
+ESCAPED = 'pa"ss\\wo/rd-é1'  # gitleaks:allow (a fake value for the tests)
+JSON_FORMS = {
+    "ascii": json.dumps(ESCAPED)[1:-1],
+    "ascii-upper-hex": json.dumps(ESCAPED)[1:-1].replace("\\u00e9", "\\u00E9"),
+    "unicode": json.dumps(ESCAPED, ensure_ascii=False)[1:-1],
+    "ascii-slash": json.dumps(ESCAPED)[1:-1].replace("/", "\\/"),
+    "unicode-slash": json.dumps(ESCAPED, ensure_ascii=False)[1:-1].replace("/", "\\/"),
+}
+
+
+@pytest.mark.parametrize("form", JSON_FORMS)
+def test_a_secret_echoed_in_a_json_string_with_its_escapes_is_masked(form):
+    shown = JSON_FORMS[form]
+    assert shown != ESCAPED
+    body = f'{{"error": "bad password {shown}"}}'
+    assert scrub_text(body, [ESCAPED]) == '{"error": "bad password [REDACTED]"}'
+
+
+@pytest.mark.parametrize("form", ["ascii", "unicode-slash"])
+def test_every_answer_is_masked_of_a_json_escaped_password(vault, form):
+    # The set masked in every answer (``vault.values()``) knows the escaped forms too.
+    vault.put(
+        "account:device",
+        join_account(USER, ESCAPED),
+        purpose="p",
+        bindings=[Binding(host="device.lan", location=BasicLocation(kind="basic"))],
+    )
+    masking = Scrubber(vault.values())
+    out = masking.feed(f'{{"echo": "{JSON_FORMS[form]}"}}'.encode()) + masking.flush()
+    assert out == b'{"echo": "[REDACTED]"}'
 
 
 def test_matches_split_at_every_possible_position_are_masked():

@@ -244,9 +244,9 @@ _TOOLS_NO_JUDGE: Final = (
 )
 # Ruling R22: the socle stays out of Domo's reach (spec 5.1).
 _CLOSED_TO_DOMO: Final = (
-    "secrets and keys, spending limits and who may do what are not opened to the assistant himself "
-    "for "
-    "now: only taken from him"
+    "secrets, keys and accounts, spending limits and who may do what are not opened to the "
+    "assistant "
+    "himself for now: only taken from him"
 )
 _ASK_WHAT_IT_CARRIES: Final = (
     "nothing is asked for an action that carries others (taking a chain up again, changing a "

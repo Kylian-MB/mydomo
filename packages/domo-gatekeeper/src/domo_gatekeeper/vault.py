@@ -7,6 +7,15 @@ makes ``reveal`` fail.
 Refs, purposes and bindings are stored in clear: they are metadata, and the core is allowed to
 see them. A value never appears in an exception message, a log line or a ``repr``.
 
+A secret is one string. An account (a user and a password, for Basic or a login body) is the JSON
+``{"user": ..., "password": ...}`` (``join_account``), under the same encryption and associated
+data; ``secret_parts`` gives what must be scrubbed of a secret, each value of an account apart.
+A user name is not a secret: ``values()``, which every answer is scrubbed of, gives the password
+and the pair Basic sends, never a user alone (a common word like ``admin`` would be masked
+everywhere); ``secret_parts`` still gives the user, for the answer of a request that carried that
+account only. A secret of one value (for a header) whose text has the shape of an account is
+refused: it would be read back as an account and scrubbed by its parts, not as the whole value.
+
 Every operation opens its own short-lived SQLite connection, so a ``Vault`` can be shared by
 the threads of a web server without any locking of its own.
 """
@@ -15,7 +24,7 @@ import json
 import os
 import re
 import sqlite3
-from collections.abc import Generator, Iterable, Sequence
+from collections.abc import Generator, Iterable, Mapping, Sequence
 from contextlib import closing, contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,7 +32,15 @@ from typing import Any, cast
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from domo_common.gatekeeper_api import REF_PATTERN, Binding, InjectionLocation, SecretMetadata
+from domo_common.gatekeeper_api import (
+    REF_PATTERN,
+    BasicLocation,
+    Binding,
+    InjectionLocation,
+    SecretFields,
+    SecretMetadata,
+    location_fields,
+)
 from pydantic import TypeAdapter
 
 from domo_gatekeeper.errors import (
@@ -60,22 +77,38 @@ _SECRET_COLUMNS = "ref, bindings_json, nonce, ciphertext"
 
 
 # Format of the associated data, version 1. It is a storage format: changing it makes every
-# stored secret undecryptable. It is built from an explicit list of fields (never from a model
-# dump), so adding fields or validators to the API models cannot alter it; anything that
-# changes what it covers needs a new version prefix (and a migration).
+# stored secret undecryptable. It is built from an explicit list of fields per kind of place
+# (``_LOCATION_FIELDS``, never from a model dump), so adding fields or validators to the API
+# models cannot alter it; anything that changes what it covers needs a new version prefix (and a
+# migration). A new kind of place adds its own entry and leaves the others' bytes as they are.
 _AAD_PREFIX = b"domo-vault-aad/v1\n"
 
+# The fields of each kind of place that the associated data covers.
+_LOCATION_FIELDS: dict[str, tuple[str, ...]] = {
+    "header": ("kind", "name", "template"),
+    "basic": ("kind",),
+    "login": ("kind", "path", "encoding", "user_field", "password_field"),
+}
 
-def _canonical_binding(host: str, port: int | None, kind: str, name: str, template: str) -> str:
+_LOCATION: TypeAdapter[InjectionLocation] = TypeAdapter(InjectionLocation)
+
+
+def _covered_location(location: Mapping[str, Any]) -> dict[str, Any]:
+    """The fields of a place the associated data covers; ``LookupError`` for an unknown kind."""
+    return {name: location[name] for name in _LOCATION_FIELDS[location["kind"]]}
+
+
+def _canonical_binding(host: str, port: int | None, location: Mapping[str, Any]) -> str:
     return json.dumps(
-        {
-            "host": host,
-            "port": port,
-            "location": {"kind": kind, "name": name, "template": template},
-        },
+        {"host": host, "port": port, "location": _covered_location(location)},
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def _location_of(binding: Binding) -> dict[str, Any]:
+    location = binding.location
+    return {name: getattr(location, name) for name in _LOCATION_FIELDS[location.kind]}
 
 
 def _build_associated_data(ref: str, canonical_bindings: Iterable[str]) -> bytes:
@@ -87,13 +120,7 @@ def _build_associated_data(ref: str, canonical_bindings: Iterable[str]) -> bytes
 def _associated_data(ref: str, bindings: Iterable[Binding]) -> bytes:
     """The associated data for a secret about to be stored."""
     return _build_associated_data(
-        ref,
-        (
-            _canonical_binding(
-                b.host, b.port, b.location.kind, b.location.name, b.location.template
-            )
-            for b in bindings
-        ),
+        ref, (_canonical_binding(b.host, b.port, _location_of(b)) for b in bindings)
     )
 
 
@@ -106,16 +133,7 @@ def _stored_associated_data(ref: str, bindings_json: str) -> bytes:
     entries: Any = json.loads(bindings_json)
     return _build_associated_data(
         ref,
-        (
-            _canonical_binding(
-                entry["host"],
-                entry["port"],
-                entry["location"]["kind"],
-                entry["location"]["name"],
-                entry["location"]["template"],
-            )
-            for entry in entries
-        ),
+        (_canonical_binding(entry["host"], entry["port"], entry["location"]) for entry in entries),
     )
 
 
@@ -131,11 +149,7 @@ def _stored_bindings(bindings_json: str) -> list[Binding]:
             Binding(
                 host=entry["host"],
                 port=entry["port"],
-                location=InjectionLocation(
-                    kind=entry["location"]["kind"],
-                    name=entry["location"]["name"],
-                    template=entry["location"]["template"],
-                ),
+                location=_LOCATION.validate_python(_covered_location(entry["location"])),
             )
             for entry in entries
         )
@@ -165,6 +179,80 @@ def _encode_value(value: str) -> bytes:
     except UnicodeEncodeError:
         pass
     raise InvalidSecretValueError("A secret value must be valid Unicode text.")
+
+
+_ACCOUNT_KEYS = frozenset({"user", "password"})
+
+
+def join_account(user: str, password: str) -> str:
+    """The one string the vault keeps for an account: ``{"user": ..., "password": ...}``.
+
+    Non-ASCII stays as it is, so that a text that is not valid Unicode is refused when the vault
+    encodes it, as for a single value."""
+    return json.dumps(
+        {"user": user, "password": password}, ensure_ascii=False, separators=(",", ":")
+    )
+
+
+def split_account(value: str) -> tuple[str, str] | None:
+    """The user and the password of a stored account; ``None`` when ``value`` is not one."""
+    if not value.startswith("{"):
+        return None
+    try:
+        data: Any = json.loads(value)
+    except (ValueError, RecursionError):
+        # Nothing of the error is kept: it carries the text it read.
+        data = None
+    if not isinstance(data, dict):
+        return None
+    account = cast(dict[Any, Any], data)
+    if frozenset(account) != _ACCOUNT_KEYS:
+        return None
+    user, password = account["user"], account["password"]
+    if not isinstance(user, str) or not isinstance(password, str):
+        return None
+    return user, password
+
+
+def secret_parts(value: str) -> tuple[str, ...]:
+    """The values to scrub for a stored secret: the value itself, or the user and the password of
+    an account each on its own, and both joined as Basic sends them (``user:password``), so that
+    an echoed header is masked in its base64 form too."""
+    account = split_account(value)
+    if account is None:
+        return (value,)
+    user, password = account
+    return (user, password, f"{user}:{password}")
+
+
+def _scrubbed_everywhere(value: str) -> tuple[str, ...]:
+    """The parts of a secret that every answer is scrubbed of: all but the user of an account."""
+    account = split_account(value)
+    if account is None:
+        return (value,)
+    user, password = account
+    return (password, f"{user}:{password}")
+
+
+def _fields_of(bindings: Sequence[Binding]) -> SecretFields:
+    """What a secret with these places is made of; ``ValueError`` when they disagree."""
+    fields: set[SecretFields] = {location_fields(binding.location) for binding in bindings}
+    if len(fields) != 1:
+        raise ValueError("The bindings of a secret must all take one value, or all an account.")
+    return fields.pop()
+
+
+def _check_shape(value: str, bindings: Sequence[Binding]) -> None:
+    """Refuse a value that is not what its places take, without saying anything of it."""
+    account = split_account(value)
+    if _fields_of(bindings) == "value":
+        if account is not None:
+            raise InvalidSecretValueError("A single value must not have the shape of an account.")
+        return
+    if account is None or not all(account):
+        raise InvalidSecretValueError("An account needs a user and a password.")
+    if ":" in account[0] and any(isinstance(b.location, BasicLocation) for b in bindings):
+        raise InvalidSecretValueError("The user of an account sent as Basic has no colon.")
 
 
 def _now() -> str:
@@ -267,6 +355,7 @@ class Vault:
         unique = list(dict.fromkeys(bindings))
         if not unique:
             raise ValueError("A secret needs at least one binding.")
+        _check_shape(value, unique)
 
         nonce = os.urandom(NONCE_SIZE)
         ciphertext = self._aead.encrypt(nonce, plaintext, _associated_data(ref, unique))
@@ -337,10 +426,15 @@ class Vault:
         return [_to_metadata(cast(_MetadataRow, row)) for row in rows]
 
     def values(self) -> list[str]:
-        """Every plaintext in the vault, so responses can be scrubbed of them."""
+        """What every answer is scrubbed of: each single value, and of each account its password
+        and its ``user:password`` pair, never its user alone (see the module docstring)."""
         with self._connection() as conn:
             rows = conn.execute(f"SELECT {_SECRET_COLUMNS} FROM secrets ORDER BY ref").fetchall()
-        return [self._decrypt(cast(_SecretRow, row)) for row in rows]
+        return [
+            part
+            for row in rows
+            for part in _scrubbed_everywhere(self._decrypt(cast(_SecretRow, row)))
+        ]
 
     def mark_used(self, ref: str) -> None:
         with self._connection() as conn:

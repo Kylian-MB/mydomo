@@ -61,7 +61,7 @@ IDLE_SECONDS: Final = 60
 ALIVE_EVERY_SECONDS: Final = 20
 # The module a program imports, and its functions: each one is a request to the core.
 PROGRAM_MODULE: Final = "domo"
-PROGRAM_FUNCTIONS: Final = ("begin", "read", "write", "act", "tool", "later", "wake")
+PROGRAM_FUNCTIONS: Final = ("begin", "read", "write", "act", "tool", "later", "wake", "out")
 
 # How a run ended: ``killed`` only when the sandbox tried to end it and could not;
 # ``ended_by_machine`` when the program died of a signal the sandbox did not send (the kernel's
@@ -74,7 +74,8 @@ class RunRequest(BaseModel):
     megabyte, one byte) and no ceiling (see ``DEFAULT_SECONDS``).
 
     ``answer_bytes``: what one answer of the core the program reads may weigh, as JSON (the
-    launch's ``result_bytes``); the core refuses a heavier one itself, naming the setting.
+    larger of the launch's ``result_bytes`` and ``out_bytes``); the core refuses a heavier one
+    itself, naming the setting.
     ``wait_for_a_place``: when false and every place is taken, the run is refused at once (409,
     ``RunRefused`` ``busy``) instead of waiting for one.
     """

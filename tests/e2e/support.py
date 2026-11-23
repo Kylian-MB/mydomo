@@ -10,7 +10,9 @@ each step of a chain leaves behind its own button (``show_link``), and what a pa
 virtual authenticator, and the keys of the stack's certificate authority). And for the scenarios
 of the models (``test_models.py``), on an instance of their own: its first launch, finished from a
 fixture (``finish_the_first_launch``), and someone the owner invites and who joins at once
-(``invite_and_join``).
+(``invite_and_join``). And for the story of going out (``test_going_out.py``): its stack's names,
+and how a person gives an account in its one-time form (``account_form_link``,
+``give_the_account``).
 
 They are here, and not in ``conftest.py``, so that the test module and the fixtures can both
 import them (the rule of ``tests/stack/stack_support.py``, which the stack tests follow).
@@ -515,6 +517,45 @@ def authority_key_hashes(stack: StackInfo) -> list[str]:
         key = certificate.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
         hashes.append(base64.b64encode(hashlib.sha256(key).digest()).decode())
     return hashes
+
+
+# --- going out (test_going_out.py) ----------------------------------------------------------------
+
+# The stack of the story of going out (conftest.py's ``going_out_stack_with_fake_llm``): its
+# project, its env file, the port of this machine its device on the host is published on (apart
+# from the stack tests' ``GOING_OUT_HOST_DEVICE_PORT``), and the name its site is reached by (and
+# its certificate made for).
+GOING_OUT_PROJECT = "domo-e2e-out"
+GOING_OUT_ENV_FILE = "tests/e2e/going_out.env"
+GOING_OUT_HOST_DEVICE_PORT = 18997
+GOING_OUT_SITE = "site"
+
+
+def account_form_link(reply: Locator) -> str:
+    """The link to the one-time form of an account a reply shows once, on its card (the
+    gatekeeper's own page, under the stack's address)."""
+    link = reply.locator(".action-card a.action-link")
+    expect(link).to_have_attribute("href", re.compile(r"^https://localhost:\d+/.+"))
+    href = link.get_attribute("href")
+    assert href is not None
+    return href
+
+
+def give_the_account(page: Page, link: str, fields: Mapping[str, str]) -> str:
+    """The person whose ``page`` this is opens the form of ``link`` in a tab of their own browser,
+    types the account (``fields``: ``value``, or ``user`` and ``password``) and sends it, as they
+    would: from their browser to the vault, never through the conversation. Returns the words of
+    the page that came back (no field any more), and closes the tab."""
+    tab = page.context.new_page()
+    try:
+        tab.goto(link)
+        for name, value in fields.items():
+            tab.fill(f"form [name={name}]", value)
+        tab.click("form button[type=submit]")
+        expect(tab.locator("form")).to_have_count(0, timeout=EXPECT_TIMEOUT_MS)
+        return tab.locator("body").inner_text()
+    finally:
+        tab.close()
 
 
 class VirtualAuthenticator:

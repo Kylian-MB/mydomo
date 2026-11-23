@@ -125,6 +125,7 @@ def test_the_risks_of_the_code_are_these_and_no_other():
     irreversible = {
         "household.transfer_ownership",
         "key.remove",
+        "account.remove",
         "memory.forget",
         "note.withdraw",
         "successors.note_death",
@@ -192,11 +193,22 @@ PERMISSIONS = {
     "policy.update",
     "models.set_level",
 }
+# Going out (spec 13.5, 13.10): removing and sharing an account are never his; a port of the
+# machine that hosts him is not his by default.
+ACCOUNT_SECRETS = {"account.remove", "account.share"}
 
 
 def test_domo_starts_with_every_right_but_the_owners_own_and_the_socle_s():
     assert DEFAULT_POLICY.domo == KNOWN_ACTIONS - OWNER_ONLY_ACTIONS - DOMO_NOT_BY_DEFAULT
-    assert SECRETS | {"spending.limit"} | PERMISSIONS | {"texts.for_someone"} == DOMO_NOT_BY_DEFAULT
+    assert (
+        SECRETS
+        | {"spending.limit"}
+        | PERMISSIONS
+        | {"texts.for_someone"}
+        | ACCOUNT_SECRETS
+        | {"net.open_host"}
+        == DOMO_NOT_BY_DEFAULT
+    )
     assert PERMISSION_TYPES == PERMISSIONS
     assert "models.step_up" in DEFAULT_POLICY.domo and "policy.update" not in DEFAULT_POLICY.domo
 

@@ -50,6 +50,14 @@ BASE_COMPOSE_FILES: tuple[str, ...] = ("compose.yaml",)
 # accepts is passed to Compose through this variable.
 FAKE_LLM_COMPOSE_FILES: tuple[str, ...] = (*BASE_COMPOSE_FILES, "compose.test.yaml")
 FAKE_LLM_KEY_VARIABLE = "FAKE_LLM_EXPECTED_KEY"
+# The tests of going out add a device twice (on another machine, and on a port of this one) and a
+# site with a login (see tests/stack/compose.going-out.yaml), in a stack of their own.
+GOING_OUT_FAKES = "tests/stack/compose.going-out.yaml"
+GOING_OUT_COMPOSE_FILES: tuple[str, ...] = (*BASE_COMPOSE_FILES, GOING_OUT_FAKES)
+GOING_OUT_ENV_FILE = "tests/stack/going_out.env"
+GOING_OUT_PROJECT = "domo-test-out"
+# The port of this machine the device on the host is published on.
+GOING_OUT_HOST_DEVICE_PORT = 18996
 PROJECT = "domo-test"
 MIN_DOCKER_MAJOR = 28
 
@@ -290,3 +298,138 @@ def running_stack_with_fake_llm(*, project: str, env_file: str) -> Iterator[Stac
         env_file=env_file,
     ) as info:
         yield info
+
+
+# --- going out --------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class GoingOutSecrets:
+    """What the fakes of going out accept, new for each run: the devices' token and the site's
+    account. The tests type them into the vault's forms; nothing else of Domo is given them."""
+
+    device_token: str
+    site_user: str
+    site_password: str
+
+
+def write_test_authority(directory: Path, site_name: str) -> tuple[Path, Path]:
+    """A certificate authority of the tests' own, and a certificate it signs for ``site_name``:
+    ``site.crt`` and ``site.key`` in ``directory`` (mounted into the fake site), and
+    ``ca-bundle.pem`` beside it, the usual authorities (``certifi``) plus this one (mounted into
+    the gatekeeper). Returns the certificates' directory and the bundle."""
+    import datetime
+
+    import certifi
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
+    now = datetime.datetime.now(datetime.UTC)
+    ca_key = ec.generate_private_key(ec.SECP256R1())
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Going out tests authority")])
+    ca_ski = x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key())
+    ca = (
+        x509.CertificateBuilder()
+        .subject_name(ca_name)
+        .issuer_name(ca_name)
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=5))
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(ca_ski, critical=False)
+        .sign(ca_key, hashes.SHA256())
+    )
+    site_key = ec.generate_private_key(ec.SECP256R1())
+    site = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, site_name)]))
+        .issuer_name(ca_name)
+        .public_key(site_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=5))
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName(site_name)]), critical=False)
+        .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(ca_ski), critical=False
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+    certs = directory / "certs"
+    certs.mkdir(parents=True, exist_ok=True)
+    (certs / "site.crt").write_bytes(site.public_bytes(serialization.Encoding.PEM))
+    (certs / "site.key").write_bytes(
+        site_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    bundle = directory / "ca-bundle.pem"
+    usual = Path(certifi.where()).read_bytes()
+    bundle.write_bytes(usual.rstrip(b"\n") + b"\n" + ca.public_bytes(serialization.Encoding.PEM))
+    return certs, bundle
+
+
+@contextmanager
+def running_stack_going_out(
+    directory: Path,
+    site_name: str,
+    *,
+    files: Sequence[str] = GOING_OUT_COMPOSE_FILES,
+    project: str = GOING_OUT_PROJECT,
+    env_file: str = GOING_OUT_ENV_FILE,
+    host_device_port: int = GOING_OUT_HOST_DEVICE_PORT,
+    extra_env: Mapping[str, str] | None = None,
+) -> Iterator[GoingOutStack]:
+    """``running_stack`` with the fakes of going out (``compose.going-out.yaml``), in a stack of
+    its own (``going_out.env``), with new ``GoingOutSecrets`` (``StackInfo.going_out``) and the
+    tests' own authority written in ``directory``. The end-to-end tests run the same fakes in a
+    stack of theirs, with the fake model: other ``files`` (``GOING_OUT_FAKES`` among them), another
+    ``project``, ``env_file`` and ``host_device_port``, and ``extra_env`` (the fake model's key)."""
+    certs, bundle = write_test_authority(directory, site_name)
+    given = GoingOutSecrets(
+        device_token="dt-" + secrets.token_hex(16),
+        site_user="alex-" + secrets.token_hex(4),
+        site_password="pw-" + secrets.token_hex(16),
+    )
+    with running_stack(
+        files=files,
+        extra_env={
+            **(extra_env or {}),
+            "FAKE_DEVICE_TOKEN": given.device_token,
+            "FAKE_SITE_USER": given.site_user,
+            "FAKE_SITE_PASSWORD": given.site_password,
+            "GOING_OUT_CERTS_DIR": str(certs),
+            "GOING_OUT_CA_BUNDLE": str(bundle),
+            "GOING_OUT_HOST_DEVICE_PORT": str(host_device_port),
+        },
+        project=project,
+        env_file=env_file,
+    ) as info:
+        yield GoingOutStack(**vars(info), going_out=given)
+
+
+@dataclass(frozen=True)
+class GoingOutStack(StackInfo):
+    """The stack of going out, with what its fakes accept."""
+
+    going_out: GoingOutSecrets | None = None

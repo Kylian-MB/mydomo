@@ -9,6 +9,10 @@ The form path embeds an unguessable token. Only its SHA-256 hash is stored, so t
 cannot be used to open a form, and the token is returned once, by ``create``. A request is
 pending until it is fulfilled, superseded by a newer request for the same ref, or expired.
 
+A secret is one value or an account (a user and a password): which one follows from the places it
+is bound to (``PendingRequest.fields``), so the store keeps nothing more for it. For an account,
+the form joins the two values into the one string the vault keeps (``vault.join_account``).
+
 A request keeps the texts of its form (``language``, ``texts``): those the core sent, in the
 words of the one who gives the secret, or none during the installation, when the form shows the
 gatekeeper's fixed texts (``public_app``).
@@ -29,7 +33,13 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, cast
 
-from domo_common.gatekeeper_api import Binding, SecretRequestCreate, SecretRequestView
+from domo_common.gatekeeper_api import (
+    Binding,
+    SecretFields,
+    SecretRequestCreate,
+    SecretRequestView,
+    location_fields,
+)
 from pydantic import TypeAdapter
 
 from domo_gatekeeper.errors import BindingMismatchError, RequestNotPendingError
@@ -82,6 +92,12 @@ class PendingRequest:
     bindings: list[Binding]
     language: str | None = None
     texts: Mapping[str, str] | None = None
+
+    @property
+    def fields(self) -> SecretFields:
+        """What the secret is made of, and so which fields its form has: the one its places
+        take (all of them take the same, as ``SecretRequestCreate`` checks)."""
+        return location_fields(self.bindings[0].location)
 
 
 def _hash_token(token: str) -> str:

@@ -366,6 +366,8 @@ def test_the_rules_are_changed_by_the_owner_alone():
                 "successors.undo_death",
                 # The level of a model decides which models may judge a yes.
                 "models.set_level",
+                # Who a house account serves besides the household (ruling P2).
+                "account.share",
             }
         )
         == OWNER_ONLY_ACTIONS

@@ -315,8 +315,8 @@ def made_tool_deps(deps: TurnDeps) -> LaunchDeps:
     """What a launch of a tool Domo made needs of the application (``madetools.launch``), with
     what wakes him for someone when a tool asks it: a turn in their conversation
     (``tool_wakes.tool_wake_turn``, whether it ran; on his own for the house), which
-    ``madetools.handover`` runs in a task of ``deps.wakes``; and the tools' database its program
-    reads and writes."""
+    ``madetools.handover`` runs in a task of ``deps.wakes``; the tools' database its program
+    reads and writes; and the gatekeeper its requests out go through."""
 
     async def wake(person_id: uuid.UUID, wakes: Sequence[ToolWake], *, on_his_own: bool) -> bool:
         # Imported here, not at the top: the turns Domo starts are prepared with this module.
@@ -332,6 +332,7 @@ def made_tool_deps(deps: TurnDeps) -> LaunchDeps:
         wakes=deps.wakes,
         waker=wake,
         tools_base=deps.tools_base,
+        gatekeeper=deps.gatekeeper,
     )
 
 

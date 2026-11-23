@@ -74,6 +74,18 @@ PROGRAM_TYPES = {
 }
 # The agreements that last, a guest's too, for themselves (2026-11-18): judged and shown.
 AGREEMENT_ACTIONS = {"agreement.keep", "agreement.drop"}
+# Going out (step 2, spec 13.3 to 13.5). What a program sends out: everyone's, a guest's too, never
+# shown, and not one of the program's own types (it is judged by the rights of whom it runs for).
+PROGRAM_OUT = {"program.out"}
+# Domo's acts on the addresses and the accounts, his on his own.
+OUTWARD_ACTIONS = {"net.open", "net.close", "net.look", "account.ask", "account.look"}
+# Of them, never shown: closing an address and looking (ruling R8). Opening one and asking for an
+# account are shown, so that the owner may write "ask me first" on them (spec 13.10).
+SILENT_OUTWARD_ACTIONS = {"net.close", "net.look", "account.look"}
+# What a child has of them: asking for an account of their own, seeing theirs and removing it
+# (spec 13.4: whoever gave it); a guest only sees theirs.
+CHILD_OUTWARD_ACTIONS = {"account.ask", "account.look", "account.remove"}
+GUEST_OUTWARD_ACTIONS = {"account.look"}
 # What the owner and the adults may do by default: entrust a device to Domo (a child or a guest
 # only by a right), and invite someone, give the link of their invitation again or cancel it (the
 # owner's trial of 0.9.1: "Domo judges").
@@ -82,7 +94,7 @@ INVITING_ACTIONS = {
     "household.invite_again",
     "household.cancel_invitation",
 }
-ADULT_ACTIONS = {"device.entrust", *INVITING_ACTIONS}
+ADULT_ACTIONS = {"device.entrust", *INVITING_ACTIONS, *OUTWARD_ACTIONS, "account.remove"}
 # What every member of the household (the owner, adults and children) may do.
 MEMBER_ACTIONS = {
     "household.list",
@@ -132,7 +144,9 @@ MEMBER_ACTIONS = {
     *TRUST_ACTIONS,
     *TOOL_ACTIONS,
     *PROGRAM_TYPES,
+    *PROGRAM_OUT,
     *AGREEMENT_ACTIONS,
+    *CHILD_OUTWARD_ACTIONS,
 }
 # What everyone has of their own texts, a guest too: the texts they read, their writing note and
 # their language (spec 4.7).
@@ -158,6 +172,10 @@ OWNER_ACTIONS = {
     # The version of a language (the visitors' texts): the owner's by default, given like any
     # right.
     "texts.language_version",
+    # A port of the machine that hosts Domo (spec 13.10): the owner's by default, and it can be
+    # given. A house account opened to guests or closed to Domo alone: the owner's alone.
+    "net.open_host",
+    "account.share",
 }
 # What nobody may do by default, the owner neither: changing someone else's texts, writing note or
 # language (spec 4.7, socle 8). Only a right opens it.
@@ -166,7 +184,7 @@ NOBODYS_ACTIONS = {"texts.for_someone"}
 
 def test_catalog_matches_the_plan_table():
     assert KNOWN_ACTIONS == MEMBER_ACTIONS | ADULT_ACTIONS | OWNER_ACTIONS | NOBODYS_ACTIONS
-    assert len(KNOWN_ACTIONS) == 86
+    assert len(KNOWN_ACTIONS) == 95
 
 
 def test_handing_the_owners_role_over_is_the_owners_alone_and_judged():
@@ -278,7 +296,9 @@ def test_who_may_use_what_matches_the_plan_table():
             *TRUST_ACTIONS,
             *TOOL_ACTIONS,
             *PROGRAM_TYPES,
+            *PROGRAM_OUT,
             *AGREEMENT_ACTIONS,
+            *GUEST_OUTWARD_ACTIONS,
         },
     } == ALLOWED_ACTIONS
 
@@ -512,6 +532,9 @@ def test_what_changes_nothing_passes_without_the_judge():
         "tool.find",
         # Checking one runs its examples as dry runs, which keep nothing.
         "tool.check",
+        # Looking at the open addresses and at the accounts.
+        "net.look",
+        "account.look",
     } == CHANGES_NOTHING
     assert {"confirmation.amend", "chain.continue"} == JUDGED_WITHIN
     assert needs_the_judge("household.invite") is True
@@ -532,6 +555,8 @@ def test_domo_memory_and_plans_are_never_shown_whatever_came_of_them():  # spec 
         | TRUST_ACTIONS
         | TOOL_ACTIONS
         | PROGRAM_TYPES
+        | SILENT_OUTWARD_ACTIONS
+        | PROGRAM_OUT
     )
     assert all(is_silent(action_type) for action_type in SILENT_ACTIONS)
     for action_type in KNOWN_ACTIONS - SILENT_ACTIONS:
@@ -699,3 +724,59 @@ def test_each_person_changes_their_own_texts_and_nobody_someone_elses():
     for role in ("owner", "adult", "child"):
         assert action in ALLOWED_ACTIONS[role]
     assert action not in ALLOWED_ACTIONS["guest"]
+
+
+# --- going out (step 2, spec 13.3 to 13.5) -------------------------------------------------------
+
+
+def test_who_goes_out_and_handles_accounts_by_default():
+    from domo_core.policy.catalog import (
+        CLOSED_TO_DOMO,
+        DOMO_ACTIONS,
+        PROGRAM_TYPES,
+        is_silent,
+    )
+
+    every_outward = OUTWARD_ACTIONS | {"net.open_host", "account.remove", "account.share"}
+    # Domo, on his own: his acts on the addresses and the accounts, not the host machine's
+    # ports (the owner may give them to him), never removing nor sharing an account.
+    assert every_outward & DOMO_ACTIONS == OUTWARD_ACTIONS
+    assert "net.open_host" not in CLOSED_TO_DOMO
+    assert {"account.remove", "account.share"} <= CLOSED_TO_DOMO
+    # The owner has them all; an adult all but the host machine's ports and sharing an account.
+    assert every_outward <= ALLOWED_ACTIONS["owner"]
+    assert every_outward & ALLOWED_ACTIONS["adult"] == every_outward - {
+        "net.open_host",
+        "account.share",
+    }
+    # A child asks for an account of their own, sees it and removes it; a guest only sees theirs.
+    assert every_outward & ALLOWED_ACTIONS["child"] == {
+        "account.ask",
+        "account.look",
+        "account.remove",
+    }
+    assert every_outward & ALLOWED_ACTIONS["guest"] == {"account.look"}
+    # What a program sends out is everyone's by default, never shown, never a judge's question,
+    # and not one of the program's own types: it is weighed by the rights of whom it runs for.
+    for role in ROLES:
+        assert "program.out" in ALLOWED_ACTIONS[role], role
+    assert "program.out" not in PROGRAM_TYPES and "program.out" in DOMO_ACTIONS
+    assert not needs_the_judge("program.out")
+    # Closing an address and looking are never shown; looking changes nothing. Opening an address,
+    # a port of the host machine, asking for an account, removing one and sharing one are shown
+    # and judged (ruling R8).
+    for action_type in SILENT_OUTWARD_ACTIONS:
+        assert is_silent(action_type) and not needs_the_judge(action_type), action_type
+    assert {"net.look", "account.look"} <= CHANGES_NOTHING
+    for action_type in (
+        "net.open",
+        "account.ask",
+        "net.open_host",
+        "account.remove",
+        "account.share",
+    ):
+        assert not is_silent(action_type), action_type
+        assert needs_the_judge(action_type), action_type
+    # Sharing a house account is the owner's alone, whatever a right says.
+    assert {action for action in every_outward if action in OWNER_ONLY_ACTIONS} == {"account.share"}
+    assert not every_outward & ADULT_AGREES_FOR_A_CHILD

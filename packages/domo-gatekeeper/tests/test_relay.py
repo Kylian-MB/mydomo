@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import gzip
 import logging
 import sqlite3
@@ -9,7 +10,13 @@ from pathlib import Path
 import anyio
 import httpx
 import pytest
-from domo_common.gatekeeper_api import Binding, InjectionLocation, ProviderRoute
+from domo_common.gatekeeper_api import (
+    BasicLocation,
+    Binding,
+    HeaderLocation,
+    LoginLocation,
+    ProviderRoute,
+)
 from domo_gatekeeper.errors import (
     BindingMismatchError,
     InsecureTransportError,
@@ -20,17 +27,17 @@ from domo_gatekeeper.errors import (
     VaultDecryptError,
 )
 from domo_gatekeeper.relay import _DECODED_ENCODINGS, RelayResponse, relay
-from domo_gatekeeper.vault import Vault
+from domo_gatekeeper.vault import Vault, join_account
 from httpx._decoders import SUPPORTED_DECODERS
 from pydantic import TypeAdapter
 
-B = Binding(host="api.example.com", location=InjectionLocation(kind="header", name="x-api-key"))
+B = Binding(host="api.example.com", location=HeaderLocation(kind="header", name="x-api-key"))
 B_AUTH = Binding(
     host="api.example.com",
-    location=InjectionLocation(kind="header", name="authorization", template="Bearer {value}"),
+    location=HeaderLocation(kind="header", name="authorization", template="Bearer {value}"),
 )
 OTHER_HOST = Binding(
-    host="evil.example.net", location=InjectionLocation(kind="header", name="x-other")
+    host="evil.example.net", location=HeaderLocation(kind="header", name="x-other")
 )
 REF = "provider:p1:api_key"
 URL = "https://api.example.com/v1/messages"
@@ -174,6 +181,41 @@ async def test_bindings_for_other_destinations_are_not_injected(respx_mock, vaul
     await call(route, vault, http_client)
     sent = upstream.calls.last.request
     assert sent.headers["x-api-key"] == "real-key" and "x-other" not in sent.headers
+
+
+async def test_an_account_is_never_placed_by_the_providers_relay(respx_mock, vault, http_client):
+    basic = Binding(host="api.example.com", location=BasicLocation(kind="basic"))
+    vault.put(REF, join_account("house-user", "s3cr3t-password"), purpose="p", bindings=[basic])
+    route = ProviderRoute(id="p1", base_url="https://api.example.com", secret_ref=REF)
+    upstream = respx_mock.post(URL).respond(200)
+    with pytest.raises(BindingMismatchError):
+        await call(route, vault, http_client)
+    assert not upstream.called
+
+
+async def test_a_provider_answer_keeps_a_user_name_but_not_a_password(
+    respx_mock, vault, http_client, route_p1
+):
+    # A user name is not a secret: a common word in a model's answer stays as it is.
+    login = Binding(
+        host="site.example.com",
+        location=LoginLocation(
+            kind="login",
+            path="/login",
+            encoding="form",
+            user_field="username",
+            password_field="password",
+        ),
+    )
+    vault.put(
+        "account:site", join_account("admin", "s3cr3t-password"), purpose="p", bindings=[login]
+    )
+    basic = base64.b64encode(b"admin:s3cr3t-password").decode()
+    respx_mock.post(URL).respond(
+        200, text=f"Sign in as admin, the admin account. s3cr3t-password Basic {basic}"
+    )
+    resp = await call(route_p1, vault, http_client)
+    assert await read(resp) == (b"Sign in as admin, the admin account. [REDACTED] Basic [REDACTED]")
 
 
 async def test_the_caller_cannot_pick_the_value_of_the_injected_header(
@@ -361,9 +403,7 @@ PUBLIC_HTTP_ROUTES = [
 
 
 def binding_for(host: str, port: int | None = None) -> Binding:
-    return Binding(
-        host=host, port=port, location=InjectionLocation(kind="header", name="x-api-key")
-    )
+    return Binding(host=host, port=port, location=HeaderLocation(kind="header", name="x-api-key"))
 
 
 @pytest.mark.respx(assert_all_called=False)
@@ -419,7 +459,7 @@ async def test_the_key_is_never_sent_to_a_host_outside_the_bindings(respx_mock, 
 
 
 PINNED_TO_443 = Binding(
-    host="api.example.com", port=443, location=InjectionLocation(kind="header", name="x-api-key")
+    host="api.example.com", port=443, location=HeaderLocation(kind="header", name="x-api-key")
 )
 
 

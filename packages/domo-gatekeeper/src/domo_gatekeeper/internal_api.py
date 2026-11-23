@@ -8,7 +8,8 @@ token only. Everything but ``/internal/health`` is closed to a caller without th
 check is a middleware, so it covers unknown paths too and runs before any body is read.
 
 Errors are small JSON bodies, ``{"error": "<code>"}``: they carry no secret, no header value and
-no echo of the request, so the core can map them and nothing leaks through them.
+no echo of the request, so the core can map them and nothing leaks through them. The requests of
+programs (``/internal/out``, see ``out``) are refused the same way, as ``{"code": "<code>"}``.
 """
 
 import hmac
@@ -20,6 +21,8 @@ from urllib.parse import unquote
 
 import httpx
 from domo_common.gatekeeper_api import (
+    OutRefusalCode,
+    OutRequest,
     ProviderRoute,
     SecretMetadata,
     SecretRequestCreate,
@@ -29,17 +32,20 @@ from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import ValidationError
 
 from domo_gatekeeper.errors import (
     BindingMismatchError,
     InsecureTransportError,
     InvalidRelayPath,
     InvalidSecretValueError,
+    OutRefused,
     UnknownProviderError,
     UpstreamError,
     UpstreamTimeoutError,
     VaultDecryptError,
 )
+from domo_gatekeeper.out import ProgramRelay
 from domo_gatekeeper.providers import ProviderRegistry
 from domo_gatekeeper.relay import relay
 from domo_gatekeeper.secret_requests import SecretRequestStore
@@ -65,6 +71,23 @@ _RELAY_ERRORS: tuple[tuple[type[Exception], int, str], ...] = (
     (VaultDecryptError, 500, "vault_error"),
     (InvalidSecretValueError, 500, "secret_unusable"),
 )
+
+OUT_PATH = "/internal/out"
+# The HTTP status of each refusal of a program's request (its body is ``{"code": ...}``).
+_OUT_STATUSES: dict[OutRefusalCode, int] = {
+    "closed_address": 403,
+    "never_reachable": 403,
+    "host_not_opened": 403,
+    "needs_https": 403,
+    "account_not_for_address": 403,
+    "account_not_found": 404,
+    "bad_redirect": 502,
+    "too_big": 502,
+    "too_slow": 504,
+    "unreachable": 502,
+    "bad_request": 400,
+    "zone_changed": 403,
+}
 
 # RFC 9110 "token": what a header name is made of.
 _HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
@@ -194,6 +217,10 @@ def _forwardable(name: str, value: str) -> bool:
     )
 
 
+def _out_refusal(code: OutRefusalCode) -> Response:
+    return JSONResponse({"code": code}, status_code=_OUT_STATUSES[code])
+
+
 def create_internal_app(
     *,
     vault: Vault,
@@ -201,7 +228,10 @@ def create_internal_app(
     providers: ProviderRegistry,
     http_client: httpx.AsyncClient,
     core_token: str,
+    out_relay: ProgramRelay | None = None,
 ) -> FastAPI:
+    """The internal app; ``out_relay`` serves the requests of programs (``OUT_PATH``), which
+    the app does not have without it."""
     if not core_token:
         raise ValueError("The core token must not be empty.")
     # No API docs or schema: nothing here is for browsing.
@@ -307,5 +337,21 @@ def create_internal_app(
         released.add_task(result.aclose)
         response.background = released
         return response
+
+    if out_relay is not None:
+        program_relay = out_relay
+
+        @app.post(OUT_PATH)
+        async def send_for_a_program(request: Request) -> Response:
+            # Read and checked here, not by FastAPI: whatever is wrong with it is "bad_request".
+            try:
+                ask = OutRequest.model_validate_json(await _read_body(request))
+            except (_ApiError, ValidationError):
+                return _out_refusal("bad_request")
+            try:
+                answer = await program_relay.send(ask)
+            except OutRefused as refused:
+                return _out_refusal(refused.code)
+            return JSONResponse(answer.model_dump(mode="json"))
 
     return app

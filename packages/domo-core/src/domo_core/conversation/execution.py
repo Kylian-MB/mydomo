@@ -134,6 +134,7 @@ from domo_core.policy.barrier import (
 )
 from domo_core.policy.catalog import (
     CHANGES_NOTHING,
+    JUDGED_ON_THE_TURN_S_WORDS,
     JUDGED_WITHIN,
     is_made,
     is_silent,
@@ -151,6 +152,7 @@ from domo_core.texts.view import REFERENCE
 # here.
 from domo_core.tools.context import (
     AsksItsYes,
+    AsksWhomItsYes,
     BoundsItsOwnSteps,
     InternalTool,
     InvalidArguments,
@@ -371,12 +373,14 @@ async def _store_waiting(
     chain_basis: ChainBasis | None = None,
     judged: Judgement | None = None,
     actor: Actor | None = None,
+    domo_asks: bool = False,
 ) -> ActionRecord | None:
     """Store the request that waits for a yes, the waiting action that shows it, and the audit
     (the judge's verdict when it was asked, ``judged``, then the barrier's ``decision``, under
     ``actor``, who the call was judged as: ``store_action``), last, in one transaction. The
     request waits in the person's conversation (``ctx.actor`` is its requester there); one made in
-    a turn on his own is Domo's (``Confirmation.by_domo``), judged again and run as his.
+    a turn on his own is Domo's (``Confirmation.by_domo``), judged again and run as his, and
+    so is one a call of his says is his own (``domo_asks``: ``WaitsForAYes.domo_asks``).
     Returns the record with its ``confirmation_id`` and, in what the model reads, how the yes
     can be given (``answer_with``, from what the request asks: ``how_to_answer``); or
     ``None`` when nothing could be stored (then no request exists).
@@ -403,7 +407,10 @@ async def _store_waiting(
                     now=ctx.clock(),
                     question=question,
                     chain_basis=chain_basis,
-                    by_domo=ctx.on_his_own,
+                    by_domo=ctx.on_his_own or domo_asks,
+                    # His request, shown to its approver in the approver's own conversation: this
+                    # reply shows it to them, and their next words may answer it (R17).
+                    shown_to_approver=reply_id if domo_asks else None,
                     # The ``allow`` written below in his name counts it in his history already.
                     counted_for_domo=isinstance(decision, Allow)
                     and writes_for_domo(judged_as, action),
@@ -564,6 +571,20 @@ def _words_of_plans(ctx: ToolContext) -> tuple[str, ...] | None:
     if not ctx.due_plans:
         return None
     return tuple(plan.their_words for plan in ctx.due_plans if plan.their_words)
+
+
+def judges_the_words_of(ctx: ToolContext, action: DescribedAction, actor: Actor) -> Actor:
+    """Whose case the yes-judge reads for ``action``, judged as ``actor`` (ruling R18): for an act
+    of Domo's of ``JUDGED_ON_THE_TURN_S_WORDS`` in a person's turn, the person's (their words,
+    their requests), since it is what they asked for; any other, and every call of a turn he acts
+    in on his own, ``actor``'s. Only the judge's case: the barrier and the audit keep ``actor``."""
+    if (
+        actor.subject == "domo"
+        and not ctx.on_his_own
+        and action.action_type in JUDGED_ON_THE_TURN_S_WORDS
+    ):
+        return ctx.actor
+    return actor
 
 
 async def consult_the_judge(
@@ -876,6 +897,7 @@ async def _waits(
     *,
     approver_at_least: Approver = "self",
     actor: Actor | None = None,
+    domo_asks: bool = False,
 ) -> ActionRecord:
     """The call stored as a request that waits (``_store_waiting``): for the agreement the barrier
     asks (``decision``), else for the person's own yes, asking what ``asked`` says (a plain yes of
@@ -922,11 +944,28 @@ async def _waits(
         chain_basis=None if plan is None else plan.basis,
         judged=judged,
         actor=actor,
+        domo_asks=domo_asks,
     )
     if waiting is not None:
         return waiting
     # No request exists: nobody may be told that a yes is awaited.
     return failed_record(tool_name, action.action_type)
+
+
+async def _whose_yes(
+    tool: InternalTool, arguments: JsonObject, ctx: ToolContext
+) -> Approver | None:
+    """Whose yes a request of this call waits for, when it is not the person's own
+    (``AsksWhomItsYes``); ``None`` for any other tool, or when it cannot be read (logged: the
+    request then waits for the usual yes)."""
+    if not isinstance(tool, AsksWhomItsYes):
+        return None
+    try:
+        with anyio.fail_after(_CHECK_SECONDS):
+            return await tool.whose_yes(arguments, ctx)
+    except Exception as error:
+        logger.error("Whose yes a call waits for could not be read (%s)", type(error).__name__)
+        return None
 
 
 async def _waits_for_a_yes(
@@ -1058,6 +1097,7 @@ async def handle_tool_call(
             None,
             approver_at_least=waiting_for.approver,
             actor=actor,
+            domo_asks=waiting_for.domo_asks,
         )
         if record.status == "waiting":
             return record
@@ -1068,7 +1108,7 @@ async def handle_tool_call(
         never_ask = decision.never_ask if plan is None else plan.never_ask
         judgement = await consult_the_judge(
             ctx,
-            actor=actor,
+            actor=judges_the_words_of(ctx, action, actor),
             action=action,
             says=(
                 describe_for_people(action, arguments, REFERENCE)
@@ -1150,6 +1190,7 @@ async def handle_tool_call(
         else:
             record = await execute_allowed(tool, tool_name, action.action_type, arguments, ctx)
     else:
+        whose = None if plan is not None else await _whose_yes(tool, arguments, ctx)
         record = await _waits(
             ctx,
             reply_id,
@@ -1161,6 +1202,8 @@ async def handle_tool_call(
             plan,
             judgement,
             actor=actor,
+            approver_at_least=whose or "self",
+            domo_asks=whose is not None,
         )
         if record.status == "waiting":
             return record

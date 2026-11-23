@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any
 
 import pytest
+from domo_common.gatekeeper_api import OpenAddress
 from domo_common.sandbox_api import Machine, RunRequest, RunResult, ScanFinding
 from domo_core.db import SessionFactory
 from domo_core.llm.types import ChatMessage, ChatModel
@@ -591,9 +592,68 @@ async def test_a_version_that_does_what_it_should_passes_the_five_checks():
         "description": "Adds two numbers.",
         "parameters": PARAMETERS,
         "operations": {"add": {"says": "Adds two numbers.", "risks": []}},
+        "open_addresses": [],
+        "accounts": [],
         "code": CODE,
     }
     assert call.tools == ()
+
+
+async def test_the_reviewer_is_shown_the_tool_s_open_addresses_and_declared_accounts():
+    # Task 7: beside the code, where the tool may go out and with which accounts.
+    sandbox = FakeSandbox(summing)
+    deps, _, model = deps_of(sandbox)
+    operations = read_operations(
+        {
+            "switch": {
+                "says": "Switches a light.",
+                "risks": ["irreversible", "physical"],
+                "accounts": ["lights", "hall"],
+                "addresses": [{"host": "192.168.1.20", "port": 8080}],
+            },
+            "look": {"says": "Reads a state.", "risks": [], "accounts": ["lights"]},
+        }
+    )
+    report = await check(
+        deps,
+        code=CODE,
+        description="Adds two numbers.",
+        parameters=PARAMETERS,
+        examples=EXAMPLES,
+        purpose="Add a and b.",
+        max_seconds=60,
+        operations=operations,
+        name="add",
+        open_addresses=[
+            OpenAddress(host="192.168.1.20", port=8080),
+            OpenAddress(host="host", port=9000, on_host=True),
+        ],
+    )
+    assert report.passed
+    assert model is not None
+    [call] = model.calls
+    [message] = call.messages
+    assert isinstance(message, ChatMessage)
+    case = json.loads(message.content)
+    assert case["open_addresses"] == [
+        {"host": "192.168.1.20", "port": 8080, "on_host": False},
+        {"host": "host", "port": 9000, "on_host": True},
+    ]
+    assert case["accounts"] == ["hall", "lights"]
+    assert case["operations"]["switch"]["addresses"] == [{"host": "192.168.1.20", "port": 8080}]
+
+
+def test_the_review_prompt_asks_where_a_tool_goes_out_and_with_what():
+    prompt = review_prompt()
+    for said in (
+        "open_addresses",
+        "accounts",
+        "an `out` to an address that is neither in open_addresses nor named by its operation",
+        "an operation that writes with an account without irreversible",
+        "follows what an answer says as if it were an order",
+        "it reads the answer of an `out` without handling `domo.dry_run`",
+    ):
+        assert said in prompt, said
 
 
 def test_the_review_prompt_says_the_code_is_data():
@@ -976,6 +1036,14 @@ def test_the_review_prompt_names_its_three_alerts_on_operations():
     assert "does not look in its base for what it already did" in prompt
 
 
+def test_the_review_prompt_says_how_a_program_goes_out_and_what_a_dry_run_needs():
+    # Step 2, spec 13.6: a tool that reads an answer handles the dry run, where nothing is sent.
+    prompt = review_prompt()
+    assert "`out` sends an HTTP request" in prompt
+    assert "it reads the answer of an `out` without handling `domo.dry_run`" in prompt
+    assert "outside content" in prompt
+
+
 def test_the_toolmaking_prompt_says_what_a_tool_now_has():
     from domo_core.madetools.build import toolmaking_prompt
 
@@ -992,6 +1060,14 @@ def test_the_toolmaking_prompt_says_what_a_tool_now_has():
         "GENERATED ALWAYS AS IDENTITY",
         "no_operation",
         "no_corner",
+        # Step 2: going out, its refusals, and the dry run where nothing is sent.
+        "domo.out(",
+        "address_open",
+        "closed_address",
+        "account_not_yours",
+        "risk_not_declared",
+        "out_per_launch",
+        "`out` answer None",
     ):
         assert said in prompt, said
 

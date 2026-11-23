@@ -3,6 +3,8 @@
 Messages carry refs, paths and other metadata only: never a secret value or key material.
 """
 
+from domo_common.gatekeeper_api import OutRefusalCode
+
 
 class GatekeeperError(Exception):
     """Base class of every gatekeeper-specific error."""
@@ -71,3 +73,12 @@ class UpstreamError(GatekeeperError):
 
 class UpstreamTimeoutError(UpstreamError):
     """A provider did not answer in time."""
+
+
+class OutRefused(GatekeeperError):
+    """A program's request was refused, or failed: its code (``OutRefusalCode``) and nothing
+    else, never the text of the error behind it."""
+
+    def __init__(self, code: OutRefusalCode) -> None:
+        super().__init__(code)
+        self.code: OutRefusalCode = code

@@ -8,13 +8,16 @@ import httpx
 import pytest
 from domo_common.gatekeeper_api import (
     FORM_TEXT_KEYS,
+    BasicLocation,
     Binding,
-    InjectionLocation,
+    HeaderLocation,
+    LoginLocation,
     SecretRequestCreate,
 )
 from domo_common.i18n import t
 from domo_common.meanings import SIGN
 from domo_gatekeeper.public_app import MAX_VALUE_LENGTH, create_public_app
+from domo_gatekeeper.vault import join_account
 from markupsafe import escape
 
 EXPECTED_CSP = "default-src 'self'; frame-ancestors 'self'; form-action 'self'"
@@ -139,12 +142,12 @@ async def test_form_lists_every_destination_with_its_port_and_header(public_clie
         bindings=[
             Binding(
                 host="api.example.com",
-                location=InjectionLocation(kind="header", name="x-api-key"),
+                location=HeaderLocation(kind="header", name="x-api-key"),
             ),
             Binding(
                 host="192.168.1.10",
                 port=8443,
-                location=InjectionLocation(
+                location=HeaderLocation(
                     kind="header", name="authorization", template="Bearer {value}"
                 ),
             ),
@@ -163,7 +166,7 @@ async def test_untrusted_text_is_html_escaped(public_client, store, vault):
         bindings=[
             Binding(
                 host="api.example.com",
-                location=InjectionLocation(kind="header", name="x-api-key"),
+                location=HeaderLocation(kind="header", name="x-api-key"),
             )
         ],
     )
@@ -302,7 +305,7 @@ async def test_conflicting_bindings_found_at_submission_are_a_409(
     public_client, store, vault, req, form_path
 ):
     other = Binding(
-        host="evil.example.net", location=InjectionLocation(kind="header", name="x-api-key")
+        host="evil.example.net", location=HeaderLocation(kind="header", name="x-api-key")
     )
     vault.put(req.ref, "existing", purpose="p", bindings=[other])
     r = await public_client.post(form_path, data={"value": "sk-test-123"})
@@ -398,7 +401,7 @@ async def test_the_form_shows_only_the_texts_it_was_sent(public_client, written_
 async def test_the_pages_of_a_request_say_its_texts(public_client, store, vault, req):
     path = store.create(written(req), vault).form_path
     other = Binding(
-        host="evil.example.net", location=InjectionLocation(kind="header", name="x-api-key")
+        host="evil.example.net", location=HeaderLocation(kind="header", name="x-api-key")
     )
     too_large = await public_client.post(path, content=b"value=" + b"a" * 300_000, headers=FORM)
     assert too_large.status_code == 413
@@ -423,12 +426,12 @@ async def test_each_address_is_shown_by_the_gatekeeper(public_client, store, vau
         bindings=[
             Binding(
                 host="api.example.com",
-                location=InjectionLocation(kind="header", name="x-api-key"),
+                location=HeaderLocation(kind="header", name="x-api-key"),
             ),
             Binding(
                 host="192.168.1.10",
                 port=8443,
-                location=InjectionLocation(
+                location=HeaderLocation(
                     kind="header", name="authorization", template="Bearer {value}"
                 ),
             ),
@@ -456,6 +459,133 @@ async def test_without_texts_the_form_keeps_its_fixed_texts(public_client, form_
         form_path, data={"value": "sk-test-123"}, headers={"accept-language": lang}
     )
     assert set(shown(saved.text)) == {t("vault.saved.title", lang), t("vault.saved.message", lang)}
+
+
+# --- an account: a user and a password --------------------------------------------------------
+
+BASIC = Binding(host="192.168.1.20", port=8080, location=BasicLocation(kind="basic"))
+LOGIN = Binding(
+    host="site.example.com",
+    location=LoginLocation(
+        kind="login",
+        path="/api/login",
+        encoding="json",
+        user_field="username",
+        password_field="password",
+    ),
+)
+ACCOUNT_KEYS = (
+    "vault.form.title",
+    "vault.form.purpose",
+    "vault.form.destinations",
+    "vault.form.privacy",
+    "vault.form.user_label",
+    "vault.form.password_label",
+    "vault.form.submit",
+)
+
+
+@pytest.fixture
+def account_req() -> SecretRequestCreate:
+    return SecretRequestCreate(
+        ref="account:house",
+        purpose="The account of the house",
+        bindings=[BASIC, LOGIN],
+        fields="user_password",
+    )
+
+
+@pytest.fixture
+def account_path(store, vault, account_req) -> str:
+    path = store.create(account_req, vault).form_path
+    assert path is not None
+    return path
+
+
+async def test_an_account_form_has_a_user_field_and_a_password_field(public_client, account_path):
+    html = (await public_client.get(account_path)).text
+    assert re.search(r'<input[^>]*\bname="user"[^>]*\btype="text"', html)
+    assert re.search(r'<input[^>]*\bname="password"[^>]*\btype="password"', html)
+    assert not re.search(r'<input[^>]*\bname="value"', html)
+    assert "<script" not in html.lower()
+
+
+async def test_an_account_form_stores_both_values(public_client, account_path, vault, account_req):
+    r = await public_client.post(
+        account_path, data={"user": "house-user", "password": "s3cr3t-password"}
+    )
+    assert r.status_code == 200
+    assert "house-user" not in r.text and "s3cr3t-password" not in r.text
+    assert vault.reveal(account_req.ref) == join_account("house-user", "s3cr3t-password")
+    meta = vault.metadata(account_req.ref)
+    assert meta is not None and set(meta.bindings) == {BASIC, LOGIN}
+    assert_hardened(r)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"user": "house-user"},
+        {"password": "s3cr3t-password"},
+        {"user": "", "password": "s3cr3t-password"},
+        {"user": "house-user", "password": ""},
+        {"user": "house-user", "password": "p" * (MAX_VALUE_LENGTH + 1)},
+        {"user": "u" * (MAX_VALUE_LENGTH + 1), "password": "s3cr3t-password"},
+        {"value": "s3cr3t-password"},
+    ],
+)
+async def test_an_account_needs_both_values(public_client, account_path, store, vault, data):
+    r = await public_client.post(account_path, data=data)
+    assert r.status_code == 400 and 'role="alert"' in r.text
+    assert "s3cr3t-password" not in r.text and "house-user" not in r.text
+    assert store.pending_by_token(token_of(account_path)) is not None
+    assert vault.list_metadata() == []
+
+
+async def test_a_basic_user_with_a_colon_is_refused_in_the_form(public_client, account_path, store):
+    r = await public_client.post(account_path, data={"user": "a:b", "password": "pw-123456"})
+    assert r.status_code == 400 and "pw-123456" not in r.text
+    assert store.pending_by_token(token_of(account_path)) is not None
+
+
+async def test_both_values_of_the_longest_length_are_accepted(
+    public_client, account_path, vault, account_req
+):
+    user, password = "€" * MAX_VALUE_LENGTH, "\U0001f511" * MAX_VALUE_LENGTH
+    r = await public_client.post(account_path, data={"user": user, "password": password})
+    assert r.status_code == 200
+    assert vault.reveal(account_req.ref) == join_account(user, password)
+
+
+async def test_an_account_form_shows_only_the_texts_it_was_sent(
+    public_client, store, vault, account_req
+):
+    path = store.create(written(account_req), vault).form_path
+    form = await public_client.get(path)
+    places = {LOCK, "192.168.1.20:8080", "authorization: Basic", "site.example.com"}
+    places |= {"POST /api/login"}
+    sent = {WRITTEN[key] for key in ACCOUNT_KEYS} | {account_req.purpose}
+    assert set(shown(form.text)) == sent | places
+
+
+@pytest.mark.parametrize("lang", ["en", "fr"])
+async def test_without_texts_an_account_form_keeps_its_fixed_texts(
+    public_client, account_path, account_req, lang
+):
+    form = await public_client.get(account_path, headers={"accept-language": lang})
+    fixed = {t(key, lang) for key in ACCOUNT_KEYS} | {account_req.purpose}
+    places = {LOCK, "192.168.1.20:8080", "authorization: Basic", "site.example.com"}
+    places |= {"POST /api/login"}
+    assert set(shown(form.text)) == fixed | places
+
+
+async def test_each_place_of_an_account_is_shown_without_words(public_client, account_path):
+    html = (await public_client.get(account_path)).text
+    addresses = [shown(item) for item in re.findall(r"<li>(.*?)</li>", html, re.DOTALL)]
+    assert addresses == [
+        [LOCK, "192.168.1.20:8080", "authorization: Basic"],
+        [LOCK, "site.example.com", "POST /api/login"],
+    ]
 
 
 async def test_an_unknown_token_shows_a_sign(public_client):

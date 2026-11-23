@@ -25,7 +25,10 @@ the first that fails ending them (the most costly come last; the report keeps wh
    starts; the build reads them and gives them, ``settings``);
 5. the review, by another call of a model (the task ``tool_review``, never under ``medium``,
    ``prompts/tool_review.md``): it is given the purpose, the description, the parameters, the
-   operations and their risks, and the code as data, and answers ``fine: <reason>`` or
+   operations and their risks (with the accounts and addresses each one names), the addresses open
+   for the tool now (``open_addresses``: host, port, whether a port of the machine that hosts
+   Domo), the accounts its operations name (``accounts``), and the code, as data, and answers
+   ``fine: <reason>`` or
    ``alert: <reason>``; anything else is an alert. No model, a call that fails or takes too long:
    ``unavailable``.
 
@@ -47,6 +50,7 @@ from importlib import resources
 from typing import Final, Literal, Protocol, cast
 
 import anyio
+from domo_common.gatekeeper_api import OpenAddress
 from domo_common.sandbox_api import ANSWER_CEILING_BYTES, JsonObject, RunRequest, ScanFinding
 from pydantic import JsonValue
 
@@ -56,7 +60,7 @@ from domo_core.llm.types import ChatChunk, ChatMessage, ChatModel, ModelCallErro
 from domo_core.madetools.imports import forbidden, secret_literals
 from domo_core.madetools.launch import HOUSE, LaunchDeps, NotAResult, not_here, result_of
 from domo_core.madetools.means import Chain, LaunchScope, Means, too_many_requests
-from domo_core.madetools.risks import Operation, kept_operations
+from domo_core.madetools.risks import Operation, accounts_named, kept_operations
 from domo_core.madetools.schema import same_json, unsupported
 from domo_core.madetools.settings import starts, wait_for
 from domo_core.memory.service import refuses_secret_shapes
@@ -382,6 +386,7 @@ async def _review(
     description: str,
     parameters: object,
     operations: Mapping[str, Operation],
+    open_addresses: Sequence[OpenAddress],
     seconds: int,
 ) -> tuple[Review, str]:
     """The review of a code by another call of a model (see the module docstring), ``seconds`` at
@@ -394,6 +399,8 @@ async def _review(
         "description": description,
         "parameters": parameters,
         "operations": kept_operations(operations),
+        "open_addresses": [address.model_dump(mode="json") for address in open_addresses],
+        "accounts": list(accounts_named(operations)),
         "code": code,
     }
     pieces: list[str] = []
@@ -426,9 +433,11 @@ async def check(
     operations: Mapping[str, Operation] | None = None,
     name: str | None = None,
     settings: Mapping[str, int] | None = None,
+    open_addresses: Sequence[OpenAddress] = (),
 ) -> CheckReport:
     """The five checks of a version (see the module docstring), in order, the first that fails
-    ending them. ``purpose`` is what the tool must do (for the reviewer), ``max_seconds`` the time
+    ending them. ``purpose`` is what the tool must do (for the reviewer), ``open_addresses`` the
+    addresses open for the tool now (for the reviewer: nothing is opened), ``max_seconds`` the time
     of a launch of the tool (a dry run takes ``dry_run_seconds`` at most; ``None``: the
     ``run_seconds`` of ``settings``), ``operations`` those the tool declares (a ``begin`` of any
     other is refused, as it would be when it runs), ``name`` the tool's (a dry run that launches it
@@ -473,6 +482,7 @@ async def check(
         description=description,
         parameters=parameters,
         operations=declared,
+        open_addresses=open_addresses,
         seconds=bounds["review_seconds"],
     )
     return report

@@ -434,10 +434,14 @@ def judged_actor_of(tool: InternalTool, ctx: ToolContext) -> Actor:
 @dataclass(frozen=True)
 class WaitsForAYes:
     """What a call that carries a yes waits for (``AsksItsYes``): whose yes (``approver``) and what
-    it asks, who asked it and why (``asked``)."""
+    it asks, who asked it and why (``asked``). ``domo_asks``: the request is Domo's own, waiting
+    for ``approver`` in the person's conversation (``Confirmation.by_domo``, ruling R17: an
+    opening of his that takes the owner's yes, in the owner's own turn), so that the owner answers
+    it there, by the button or in words, as the approver of a request he did not make himself."""
 
     approver: Approver
     asked: Asked
+    domo_asks: bool = False
 
 
 @runtime_checkable
@@ -450,6 +454,27 @@ class AsksItsYes(Protocol):
         """What the call waits for, when it carries a yes; ``None`` for any other call. Reads
         only; ``InvalidArguments`` when the yes it names cannot be given."""
         ...
+
+
+@runtime_checkable
+class AsksWhomItsYes(Protocol):
+    """A tool whose call, when a yes is asked before it (by the yes-judge or a rule of the owner),
+    may wait for someone else's yes than the person's own (ruling R24: reopening an address the
+    owner closed, in anyone's turn but his, waits for his yes as Domo's request)."""
+
+    async def whose_yes(self, arguments: JsonObject, ctx: ToolContext) -> Approver | None:
+        """Whose yes such a request waits for, as Domo's own (``WaitsForAYes.domo_asks``);
+        ``None`` for the usual. Reads only."""
+        ...
+
+
+@runtime_checkable
+class NeverAStep(Protocol):
+    """A tool some of whose calls are never a step of a chain (ruling R19): ``never_a_step`` says
+    why, for such a call (``None`` for any other). A chain is refused when it is planned with such
+    a step, and the tool refuses it again when a step runs (``ToolContext.in_a_chain``)."""
+
+    async def never_a_step(self, arguments: JsonObject, ctx: ToolContext) -> str | None: ...
 
 
 @runtime_checkable

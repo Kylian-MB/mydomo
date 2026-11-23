@@ -14,6 +14,12 @@ Two stacks, started from ``compose.yaml`` plus ``compose.test.yaml`` (see
   stack is up, so it has a project of its own (``domo-e2e-fresh``) and its own ports and
   internal network (``fresh.env``). Neither collides with ``domo-test`` of the stack tests, whose
   session fixture stays up until the end of the run.
+* ``going_out_stack_with_fake_llm``, for one module (``test_going_out.py``): a new instance with the
+  fake model and the fakes of going out of the stack tests (``tests/stack/compose.going-out.yaml``:
+  a device, the same device on a port of this machine, a site with a login), with what they accept
+  new for the run (``GoingOutStack.going_out``). A project of its own (``domo-e2e-out``), with the
+  ports and networks of ``going_out.env``, and the device's port on this machine
+  (``support.GOING_OUT_HOST_DEVICE_PORT``) apart from the stack tests' one.
 
 Then ``completed_setup`` (the shared instance has its owner and its model: the first launch is
 done in a browser if no test has done it yet) and ``logged_in_chat_page`` (the owner, signed in,
@@ -29,15 +35,34 @@ shares a conftest with its own directory, so the two fixtures of the fake-model 
 defined in this file, on top of ``running_stack_with_fake_llm``.
 """
 
+import secrets
 from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
 from playwright.sync_api import Browser, Page
 
-from tests.stack.stack_support import StackInfo, running_stack_with_fake_llm
+from tests.stack.stack_support import (
+    FAKE_LLM_COMPOSE_FILES,
+    FAKE_LLM_KEY_VARIABLE,
+    GOING_OUT_FAKES,
+    GoingOutStack,
+    StackInfo,
+    running_stack_going_out,
+    running_stack_with_fake_llm,
+)
 
-from .support import Household, authority_key_hashes, complete_setup, log_in, setup_stage
+from .support import (
+    GOING_OUT_ENV_FILE,
+    GOING_OUT_HOST_DEVICE_PORT,
+    GOING_OUT_PROJECT,
+    GOING_OUT_SITE,
+    Household,
+    authority_key_hashes,
+    complete_setup,
+    log_in,
+    setup_stage,
+)
 
 SHARED_PROJECT = "domo-e2e"
 SHARED_ENV_FILE = "tests/e2e/shared.env"
@@ -64,6 +89,27 @@ def stack_with_fake_llm() -> Iterator[StackInfo]:
 @pytest.fixture
 def fresh_stack_with_fake_llm() -> Iterator[StackInfo]:
     with running_stack_with_fake_llm(project=FRESH_PROJECT, env_file=FRESH_ENV_FILE) as info:
+        yield info
+
+
+@pytest.fixture(scope="module")
+def going_out_stack_with_fake_llm(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[GoingOutStack]:
+    """A new instance with the fake model and the fakes of going out of the stack tests (a device
+    on another machine, the same device on a port of this machine, a site with a login:
+    ``tests/stack/compose.going-out.yaml``, with what they accept new for the run), for one module,
+    taken down with its volumes at its end. A project of its own (``going_out.env``)."""
+    key = "sk-test-" + secrets.token_hex(16)
+    with running_stack_going_out(
+        tmp_path_factory.mktemp("going-out"),
+        GOING_OUT_SITE,
+        files=(*FAKE_LLM_COMPOSE_FILES, GOING_OUT_FAKES),
+        project=GOING_OUT_PROJECT,
+        env_file=GOING_OUT_ENV_FILE,
+        host_device_port=GOING_OUT_HOST_DEVICE_PORT,
+        extra_env={FAKE_LLM_KEY_VARIABLE: key},
+    ) as info:
         yield info
 
 

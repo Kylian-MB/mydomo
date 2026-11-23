@@ -33,44 +33,64 @@
 	}
 }
 
+# A request sent by one of my tools: the gatekeeper's relay for programs marks every request it
+# sends, redirects included, with "Via: 1.1 domo-out", and a program cannot take it off. My own
+# page is closed to my tools whatever address leads to it (a name of the house, an address of the
+# machine, a port forwarded to it): it is refused here, before anything else is served. Imported
+# first in a "route", whose directives run in the order written.
+(closed_to_my_tools) {
+	@from_my_tools header Via *domo-out*
+	respond @from_my_tools 403
+}
+
 # Plain HTTP only redirects to the page, on the HTTPS port, for whatever name or address the
 # browser used (as Caddy's own redirects do).
 http:// {
-	redir https://{host}:{$DOMO_HTTPS_PORT:8443}{uri} 308
+	route {
+		import closed_to_my_tools
+		redir https://{host}:{$DOMO_HTTPS_PORT:8443}{uri} 308
+	}
 }
 
 {$DOMO_SITE_ADDRESSES:localhost} {
 	tls internal
 
-	# The root certificate of the local authority, for devices to trust the page. Only this exact
-	# path, rewritten to one fixed file: nothing else of the authority's directory is served.
-	handle /ca.crt {
-		root * /data/caddy/pki/authorities/local
-		rewrite * /root.crt
-		header Content-Type application/x-x509-ca-cert
-		file_server
-	}
+	# Caddy sorts the directives of a site by their kind, and "handle" comes before "respond": in
+	# a "route", they run in the order written, so the refusal of my tools comes first.
+	route {
+		import closed_to_my_tools
 
-	# The vault form, served by the gatekeeper itself. Its bodies are small: the same limit as the
-	# gatekeeper's own (128 KiB, enough for the longest value it accepts, percent-encoded), so a
-	# bigger one never reaches it. The form needs no cookie, and the browser's cookies for this
-	# site include the core's session: they are dropped on the way.
-	handle /vault/* {
-		request_body {
-			max_size 128KiB
+		# The root certificate of the local authority, for devices to trust the page. Only this
+		# exact path, rewritten to one fixed file: nothing else of the authority's directory is
+		# served.
+		handle /ca.crt {
+			root * /data/caddy/pki/authorities/local
+			rewrite * /root.crt
+			header Content-Type application/x-x509-ca-cert
+			file_server
 		}
-		reverse_proxy gatekeeper:8082 {
-			header_up -Cookie
-		}
-	}
 
-	# Everything else: the core. The Host header goes through unchanged (Caddy's default), which
-	# the core's Origin check relies on; Caddy sets X-Forwarded-For and X-Forwarded-Proto, and
-	# replaces whatever the client sent in them.
-	handle {
-		request_body {
-			max_size 1MB
+		# The vault form, served by the gatekeeper itself. Its bodies are small: the same limit as
+		# the gatekeeper's own (256 KiB, enough for the two longest values of an account,
+		# percent-encoded), so a bigger one never reaches it. The form needs no cookie, and the
+		# browser's cookies for this site include the core's session: they are dropped on the way.
+		handle /vault/* {
+			request_body {
+				max_size 256KiB
+			}
+			reverse_proxy gatekeeper:8082 {
+				header_up -Cookie
+			}
 		}
-		reverse_proxy core:8000
+
+		# Everything else: the core. The Host header goes through unchanged (Caddy's default),
+		# which the core's Origin check relies on; Caddy sets X-Forwarded-For and
+		# X-Forwarded-Proto, and replaces whatever the client sent in them.
+		handle {
+			request_body {
+				max_size 1MB
+			}
+			reverse_proxy core:8000
+		}
 	}
 }

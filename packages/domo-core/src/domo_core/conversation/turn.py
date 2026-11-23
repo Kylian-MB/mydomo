@@ -1204,7 +1204,9 @@ class Turn:
         paused until someone's arrival. A yes that does not give what the request asks is an answer
         all the same: this turn's reply presents the request again (to the approver, for someone
         else's), and Domo is told that the yes was not enough. Someone else's request that the
-        words decided wakes Domo in the conversation of the one who asked (``_wake``)."""
+        words decided wakes Domo in the conversation of the one who asked (``_wake``), but a
+        request of Domo's own waiting in this very conversation, which this reply tells
+        (``_told_here``)."""
         answer = self._p.answer
         last_reply = answer.last_reply_id
         if last_reply is None:
@@ -1238,7 +1240,7 @@ class Turn:
         outcome, record = await self._decide_and_record(
             request, approve=reading.verdict == "approve", via=reading.source
         )
-        if as_approver:
+        if as_approver and not self._told_here(request):
             # The one who asked is woken, as after a button.
             self._wake(request.id, outcome, record)
         if outcome in ("needs_explicit", "needs_proof"):
@@ -1313,6 +1315,14 @@ class Turn:
         except Exception as error:
             logger.error("What was just decided could not be read (%s)", type(error).__name__)
             return None
+
+    def _told_here(self, request: Confirmation) -> bool:
+        """Whether the decision of ``request`` in this turn is told by this turn's reply alone: a
+        request Domo asked himself (``Confirmation.by_domo``), waiting in this very
+        conversation, the one of the person who answered it. Its asker is Domo answering them
+        here: nobody else is to be woken for it (fix round 4 of step 2's Task 5). A request of
+        someone else, or one decided from elsewhere, still wakes Domo where it was asked."""
+        return request.by_domo and request.conversation_id == self._ctx.conversation_id
 
     def _wake(
         self,

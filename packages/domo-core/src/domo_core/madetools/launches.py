@@ -15,23 +15,27 @@ of the audit log too (its lines are metadata).
 launches, how many failed, how long they usually take and the longest, how many ran without a turn
 of a model, the last errors and the last reasons, and the launches of each day; and what the tool
 cost to make: the tokens and the cost of the model calls of its builds (``model_calls.tool_id``,
-``build_id``).
+``build_id``); and the requests it sent out (``out_figures``), read from their audit lines, which
+hold metadata alone (no table of their own: a request out is audited already).
 ``latest`` gives its latest launches. Nothing here writes but ``record``; the upkeep forgets the
 traces older than ``launches_kept_days`` (``madetools.upkeep.forget_launches``)."""
 
+import json
 import math
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Final, cast
+from typing import Any, Final, cast
 from zoneinfo import ZoneInfo
 
 from domo_common.sandbox_api import JsonObject
 from pydantic import JsonValue
-from sqlalchemy import func, or_, select
+from sqlalchemy import ColumnElement, Numeric, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domo_core.audit.log import details_as_text
+from domo_core.audit.models import AuditEntry
 from domo_core.llm.spending_models import ModelCall
 from domo_core.madetools.models import (
     ERROR_KEPT,
@@ -43,6 +47,7 @@ from domo_core.madetools.models import (
     ToolBuild,
 )
 from domo_core.madetools.settings import held
+from domo_core.outward.literal import is_a_host
 from domo_core.plans.schedule import as_local
 from domo_core.policy.settings import load_policy_settings
 
@@ -50,6 +55,9 @@ from domo_core.policy.settings import load_policy_settings
 ERRORS_TOLD: Final = 5
 # The ends of a launch that are failures of the tool: the failure that set it aside too.
 _FAILED: Final = ("failed", "set_aside")
+# The second audit line of a request out, as ``madetools.means`` writes it (``means.OUT_DONE``:
+# named here again, as ``means`` reaches this module through ``launch``).
+_OUT_DONE: Final = "madetool.out_done"
 
 
 def _kept_error(error: str | None) -> str | None:
@@ -128,7 +136,8 @@ async def figures(
     their ``last`` time, ``reasons``, the same of why the core or the sandbox ended them (each with
     its ``setting`` and ``value`` when one did), and ``per_day``, the launches of each of the last
     ``days`` days before ``now`` on the household's clock); and ``build``, what its builds cost:
-    the tokens in and out and the cost in dollars of the model calls made for it."""
+    the tokens in and out and the cost in dollars of the model calls made for it; and ``out``, the
+    requests it sent out (``out_figures``)."""
     now = datetime.now(UTC) if now is None else now
     zone = (await load_policy_settings(session)).time_zone
     numbers = {version.id: n for n, version in enumerate(await versions_of(session, tool), 1)}
@@ -169,6 +178,95 @@ async def figures(
     return {
         "per_version": cast(list[JsonValue], ordered),
         "build": await _build_cost(session, tool),
+        "out": await out_figures(session, tool, zone),
+    }
+
+
+def _number(details: Any, key: str) -> ColumnElement[Any]:
+    """The number ``key`` of an audit line's details, ``NULL`` when it is no number (a line kept by
+    hand is read without failing the whole reading)."""
+    field = details[key]
+    return case((func.jsonb_typeof(field) == "number", field.astext.cast(Numeric)), else_=None)
+
+
+async def out_figures(session: AsyncSession, tool: MadeTool, zone: ZoneInfo | None) -> JsonObject:
+    """The requests ``tool`` sent out since it was made (``requests``), read from the second audit
+    line of each (``madetool.out_done``, ``madetools.means``: no table of their own): how many were
+    refused, by code (``refused``), how many were answered with an error status, by status
+    (``error_statuses``, 400 and over), the bytes sent and read (``bytes_out``, ``bytes_in``), and
+    the slowest (``slowest``: its host, port, method, status or refusal, milliseconds and time;
+    ``None`` when none was sent). Metadata alone: never a path, a header or a body."""
+    details = AuditEntry.details
+    # Its lines, their figures read once: what is grouped below is a column, never an expression
+    # whose parameters the database would see twice.
+    lines = (
+        select(
+            AuditEntry.id.label("id"),
+            AuditEntry.ts.label("ts"),
+            details_as_text(),
+            details["refused"].astext.label("refused"),
+            _number(details, "status").label("status"),
+            _number(details, "bytes_out").label("bytes_out"),
+            _number(details, "bytes_in").label("bytes_in"),
+            _number(details, "ms").label("ms"),
+        )
+        .where(
+            AuditEntry.action == _OUT_DONE,
+            details["tool"].astext == tool.name,
+            AuditEntry.ts >= tool.created_at,
+        )
+        .subquery()
+    )
+    totals = (
+        await session.execute(
+            select(
+                func.count(),
+                func.coalesce(func.sum(lines.c.bytes_out), 0),
+                func.coalesce(func.sum(lines.c.bytes_in), 0),
+            )
+        )
+    ).one()
+    by_code = await session.execute(
+        select(lines.c.refused, func.count())
+        .where(lines.c.refused.is_not(None))
+        .group_by(lines.c.refused)
+    )
+    by_status = await session.execute(
+        select(lines.c.status, func.count())
+        .where(lines.c.refused.is_(None), lines.c.status >= 400)
+        .group_by(lines.c.status)
+    )
+    slowest = (
+        await session.execute(
+            select(lines.c.details, lines.c.ts)
+            .where(lines.c.ms.is_not(None))
+            .order_by(lines.c.ms.desc(), lines.c.id.desc())
+            .limit(1)
+        )
+    ).first()
+    return {
+        "requests": int(totals[0]),
+        "refused": {str(code): count for code, count in sorted(by_code.all())},
+        "error_statuses": {str(int(code)): count for code, count in sorted(by_status.all())},
+        "bytes_out": int(totals[1]),
+        "bytes_in": int(totals[2]),
+        "slowest": None if slowest is None else _slowest(slowest[0], slowest[1], zone),
+    }
+
+
+def _slowest(details_text: str, at: datetime, zone: ZoneInfo | None) -> JsonObject:
+    """The slowest request out, as ``out_figures`` tells it, from its audit line."""
+    try:
+        read: object = json.loads(details_text)
+    except ValueError:
+        read = None
+    line = cast(dict[str, JsonValue], read) if isinstance(read, dict) else {}
+    host = line.get("host")
+    return {
+        **{key: line.get(key) for key in ("port", "method", "status", "refused", "ms")},
+        # Only ever a valid host name or address, never text a program wrote (a line kept so).
+        "host": host if isinstance(host, str) and is_a_host(host) else None,
+        "at": as_local(at, zone),
     }
 
 

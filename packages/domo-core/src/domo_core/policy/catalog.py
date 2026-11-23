@@ -128,6 +128,18 @@ socle's secrets, spending limits, who may do what and what is nobody's (``DOMO_N
 ``DOMO_ACTIONS``, in ``PolicyTables.domo``). The owner's rights narrow it, or open to him
 what is nobody's; secrets, spending limits and who may do what stay closed to him for now
 (``CLOSED_TO_DOMO``, ruling R22).
+
+Going out (step 2, spec 13.3 to 13.5, 2026-11-22): opening and closing an address, asking for an
+account and looking at either are Domo's acts (``OUTWARD_ACTIONS``), his on his own; closing and
+looking are never shown (``SILENT_OUTWARD_ACTIONS``), opening and asking are, so that the owner may
+have himself asked first (spec 13.10). The owner and the adults have them too, a child asks for
+an account of their own, sees theirs and removes theirs, a guest only sees theirs. Removing an
+account is every member's (whoever gave it, or the owner: "their own" is the tools'), never
+Domo's; sharing a house account (``account.share``) is the owner's alone (``OWNER_ONLY_ACTIONS``).
+A port of the machine that hosts Domo (``net.open_host``)
+is the owner's by default, and a right of the owner may give it to Domo. What a program sends
+out (``program.out``) is everyone's by default, never shown, and judged by the rights of whom its
+launch runs for.
 """
 
 from collections.abc import Mapping
@@ -281,6 +293,20 @@ _KNOWN: Final[tuple[str, ...]] = (
     "program.later",
     "program.wake",
     "program.run",
+    # Going out (step 2, spec 13.3 to 13.5): an address Domo opens or closes for a tool, a port
+    # of the machine that hosts him (a right apart, the owner's by default), his look at what is
+    # open; an account he asks someone for, one removed, his look at them, and a house account the
+    # owner opens to guests or closes to Domo alone. And what a program sends out through the
+    # gatekeeper, judged with the rights of whom it runs for.
+    "net.open",
+    "net.close",
+    "net.open_host",
+    "net.look",
+    "account.ask",
+    "account.remove",
+    "account.look",
+    "account.share",
+    "program.out",
     # The agreements that last (2026-11-18, spec 5.3): an operation of one of Domo's tools that
     # passes without a yes, within its bounds, for the person who keeps it (or the house, by the
     # owner); and withdrawing one. Everyone's, a guest's too, for themselves; judged and shown.
@@ -356,16 +382,49 @@ PROGRAM_TYPES: Final = frozenset(
 # What a running program's requests are judged on (``madetools.means``): there the owner's limit
 # (with what was spent), his "always ask" and an approver are read, without a model
 # (``policy.program``, spec 5.3, 5.8). A program run by hand (``program.run``) is Domo's act.
-PROGRAM_REQUESTS: Final = PROGRAM_TYPES - {PROGRAM_RUN}
+# What a program sends out through the gatekeeper is one of them (step 2, spec 13.10), but not one
+# of ``PROGRAM_TYPES``, which every launch has whatever the rights say: going out is judged by the
+# rights of whom the launch runs for, like any of their actions. It is everyone's by default, a
+# guest's too, and never shown.
+PROGRAM_OUT: Final = "program.out"
+PROGRAM_REQUESTS: Final = (PROGRAM_TYPES - {PROGRAM_RUN}) | {PROGRAM_OUT}
 # The code's types a program may do itself (``act``): only giving a tool a time to launch at.
 # Every other type of the code speaks to a person, touches the socle or is Domo's own mind.
 PROGRAM_ACTIONS: Final[frozenset[str]] = frozenset({"tool.launch_when"})
 # The agreements that last: everyone keeps and withdraws their own (the tools' own guard says
 # whose; one for the house is the owner's).
 AGREEMENT_ACTIONS: Final = frozenset({"agreement.keep", "agreement.drop"})
+# Going out (step 2, spec 13.3 to 13.5). Domo's own acts on the addresses and the accounts, like
+# his acts on his tools: opening and closing an address, his look at what is open, asking someone
+# for an account and his look at the accounts. He has them on his own by default; looking changes
+# nothing. Opening an address towards the internet "leaves the house"
+# (``outward.literal``, computed at the call from the address).
+OUTWARD_ACTIONS: Final = frozenset(
+    {"net.open", "net.close", "net.look", "account.ask", "account.look"}
+)
+OUTWARD_READ_ACTIONS: Final = frozenset({"net.look", "account.look"})
+# Of them, what is never shown: closing an address and looking (ruling R8). Opening an address and
+# asking for an account are shown and judged: the owner may write "ask me first" on them (spec
+# 13.10), which a rule on a type never shown could not say.
+SILENT_OUTWARD_ACTIONS: Final = OUTWARD_READ_ACTIONS | {"net.close"}
+# Opening a port of the machine that hosts Domo is a right apart (spec 13.10): the owner's by
+# default, and not Domo's; but the owner may give it to him (2026-11-22), so it is not closed to
+# him (``CLOSED_TO_DOMO``).
+NET_OPEN_HOST: Final = "net.open_host"
+# What an account handles beyond asking for one: removing it (whoever gave it, or the owner: the
+# tools' own guard), and the owner opening a house account to guests or closing it to Domo alone
+# (``account.share``, the owner's by default). Never Domo's (spec 13.5: on his own he neither
+# creates, replaces nor removes an account).
+_ACCOUNT_SECRET_TYPES: Final = frozenset({"account.remove", "account.share"})
+# What the owner and the adults have of going out: everything but a port of the machine that hosts
+# Domo and sharing a house account. A child asks for an account of their own, sees it and
+# removes it (spec 13.4: whoever gave it); a guest only sees theirs.
+_ADULT_OUTWARD_ACTIONS: Final = (OUTWARD_ACTIONS | _ACCOUNT_SECRET_TYPES) - {"account.share"}
+_CHILD_OUTWARD_ACTIONS: Final = frozenset({"account.ask", "account.look", "account.remove"})
+_GUEST_OUTWARD_ACTIONS: Final = frozenset({"account.look"})
 # What everyone has, whatever their role: their own texts, the notes left for them, their devices,
 # Domo's memory, his plans, his look at what reached them, what he notes of a person's word,
-# his own tools and what their programs ask.
+# his own tools, what their programs ask and what they send out.
 _EVERYONES_ACTIONS: Final = (
     _OWN_TEXT_ACTIONS
     | _RECEIVED_NOTE_ACTIONS
@@ -377,6 +436,7 @@ _EVERYONES_ACTIONS: Final = (
     | TRUST_ACTIONS
     | TOOL_ACTIONS
     | PROGRAM_TYPES
+    | {PROGRAM_OUT}
     | AGREEMENT_ACTIONS
 )
 
@@ -386,7 +446,8 @@ _EVERYONES_ACTIONS: Final = (
 # chain, and the rest of their own chain that stopped), leaving the household themselves,
 # Domo's choices of models with a step up for the rest of a request, their own keys, their own
 # texts, and Domo's choices on writing. ("Own" and "in this conversation" are enforced by the
-# tools themselves.) And what is everyone's: their own texts, and the notes left for them.
+# tools themselves.) And what is everyone's: their own texts, and the notes left for them. And
+# asking for an account of their own, and seeing theirs.
 _MEMBER_ACTIONS = _EVERYONES_ACTIONS | frozenset(
     {
         "household.list",
@@ -414,6 +475,7 @@ _MEMBER_ACTIONS = _EVERYONES_ACTIONS | frozenset(
         "spending.show",
         "models.refresh",
         "writing.choose",
+        *_CHILD_OUTWARD_ACTIONS,
     }
 )
 
@@ -421,8 +483,9 @@ _MEMBER_ACTIONS = _EVERYONES_ACTIONS | frozenset(
 # give the link of an invitation they made again, or cancel it (the owner's trial of 0.9.1: "Domo
 # judges"; whose invitation it is, is the tools' own guard, ``tools.household_admin``). Domo
 # sends an adult's invitation to the owner first when he judges it deserves it (``owner_first``,
-# read by the catalog's limit of inviting).
-_ADULT_ACTIONS: Final = frozenset(
+# read by the catalog's limit of inviting). And going out, but a port of the machine that hosts
+# Domo and sharing a house account (``_ADULT_OUTWARD_ACTIONS``).
+_ADULT_ACTIONS: Final = _ADULT_OUTWARD_ACTIONS | frozenset(
     {
         "device.entrust",
         "household.invite",
@@ -440,9 +503,10 @@ _ALLOWED_ACTIONS: dict[Role, frozenset[str]] = {
     "child": _MEMBER_ACTIONS,
     # A guest may only rename themselves, leave early, have Domo take a stronger model for the
     # rest of a request, bring a key of their own (add it, give it again, remove it, limit it), ask
-    # what they cost, change their own texts, writing note and language, and hear the notes left
-    # for them.
+    # what they cost, change their own texts, writing note and language, hear the notes left for
+    # them, and see their own accounts.
     "guest": _EVERYONES_ACTIONS
+    | _GUEST_OUTWARD_ACTIONS
     | frozenset(
         {
             "profile.rename",
@@ -556,6 +620,54 @@ _FACTS: dict[str, dict[str, FactType]] = {
         "for_house": "boolean",
     },
     "agreement.drop": {"for_house": "boolean"},
+    # Going out (step 2, spec 13.3, 13.10): an address by its host and port, the tool it is
+    # opened for (``None``: a program run by hand), whether it is a port of the machine that hosts
+    # Domo, its zone as written (``outward.literal.literal_zone``: ``house`` or ``internet``) and
+    # whether opening it leaves the house (``outward.literal.open_risks``); whether the owner
+    # closed it and on which day (``closed_by_owner``, ``closed_on``: what a reopening is weighed
+    # against, ruling R24; a rule of his may read them). Never a path.
+    "net.open": {
+        "host": "text",
+        "port": "number",
+        "tool": "text",
+        "on_host": "boolean",
+        "zone": "text",
+        "outward": "boolean",
+        "closed_by_owner": "boolean",
+        "closed_on": "date",
+    },
+    "net.open_host": {
+        "host": "text",
+        "port": "number",
+        "tool": "text",
+        "on_host": "boolean",
+        "zone": "text",
+        "outward": "boolean",
+        "closed_by_owner": "boolean",
+        "closed_on": "date",
+    },
+    "net.close": {"host": "text", "port": "number", "tool": "text"},
+    "net.look": {"tool": "text"},
+    # An account by its name, the kind of its place (``header``, ``basic``, ``login``), whether it
+    # is the house's, who gives it, how many hosts it is bound to and whether one of them is on
+    # the internet. Never a value, a header's template, a path or a form's link.
+    "account.ask": {
+        "name": "text",
+        "place": "text",
+        "for_house": "boolean",
+        "giver": "person",
+        "hosts": "number",
+        "outward": "boolean",
+    },
+    "account.remove": {"name": "text", "for_house": "boolean", "of": "person"},
+    # What a program sends out (spec 13.3, 13.6): the zone of its address as written
+    # (``outward.literal.literal_zone``: ``house`` or ``internet``), whether it does more than read
+    # (a method other than GET or HEAD) and whether it names an account. Never a host, a path, a
+    # header, a body nor the account's name: they are the program's.
+    "program.out": {"zone": "text", "writes": "boolean", "with_account": "boolean"},
+    # A house account opened to guests or closed to them (``guests``), opened to Domo on his
+    # own or closed to him (``domo``): ``None`` for what the call leaves as it is.
+    "account.share": {"name": "text", "guests": "boolean", "domo": "boolean"},
 }
 
 # What no table can give to anyone else than the owner: changing the rules (the rights, and the
@@ -573,6 +685,9 @@ OWNER_ONLY_ACTIONS: frozenset[str] = frozenset(
         "successors.note_death",
         "successors.undo_death",
         "models.set_level",
+        # Opening a house account to guests, or closing it to Domo alone (ruling P2): it moves
+        # who may use what the house was given, and no right gives it to anyone else.
+        "account.share",
     }
 )
 
@@ -608,6 +723,7 @@ CHANGES_NOTHING: frozenset[str] = frozenset(
         *DELIVERY_ACTIONS,
         *TRUST_ACTIONS,
         *TOOL_READ_ACTIONS,
+        *OUTWARD_READ_ACTIONS,
     }
 )
 
@@ -623,6 +739,8 @@ SILENT_ACTIONS: Final[frozenset[str]] = (
     | TRUST_ACTIONS
     | TOOL_ACTIONS
     | PROGRAM_TYPES
+    | SILENT_OUTWARD_ACTIONS
+    | {PROGRAM_OUT}
 )
 
 
@@ -678,6 +796,14 @@ def rights_type(action_type: str) -> str:
     that follows no other."""
     return RIGHTS_OF.get(action_type, action_type)
 
+
+# Domo's acts whose yes-judge reads the words of the person's turn they are made in (ruling
+# R18): opening an address, a port of the host, and asking for an account are what the person
+# asked for, so the judge weighs them on what they said; the right stays Domo's own (the
+# barrier's actor). On his own, they are judged on his case alone.
+JUDGED_ON_THE_TURN_S_WORDS: Final[frozenset[str]] = frozenset(
+    {"net.open", "net.open_host", "account.ask"}
+)
 
 # What carries other actions: they are judged inside, step by step, not as such.
 JUDGED_WITHIN: frozenset[str] = frozenset({"confirmation.amend", "chain.continue"})
@@ -819,11 +945,13 @@ class Risks:
 NO_RISK: Final = Risks()
 
 # What cannot be undone among the code's types: handing the owner's role over, removing a key,
-# forgetting a memory, taking a note back and telling a successor's death.
+# forgetting a memory, taking a note back and telling a successor's death; and removing an account
+# (one given again is another account, spec 13.4).
 _IRREVERSIBLE: Final = frozenset(
     {
         "household.transfer_ownership",
         "key.remove",
+        "account.remove",
         "memory.forget",
         "note.withdraw",
         "successors.note_death",
@@ -899,14 +1027,22 @@ _SECRET_TYPES: Final = frozenset(
 # for Domo opens to him, as a right opens ``texts.for_someone`` to a person; the rest the rights
 # writer never opens to him for now (``CLOSED_TO_DOMO``); the owner's own
 # (``OWNER_ONLY_ACTIONS``) stay the owner's whatever any right says.
+# Going out adds removing and sharing an account (secrets), and a port of the machine that hosts
+# him (the owner's by default).
 DOMO_NOT_BY_DEFAULT: Final[frozenset[str]] = (
-    _SECRET_TYPES | {"spending.limit"} | PERMISSION_TYPES | _NOBODYS_ACTIONS
+    _SECRET_TYPES
+    | {"spending.limit"}
+    | PERMISSION_TYPES
+    | _NOBODYS_ACTIONS
+    | _ACCOUNT_SECRET_TYPES
+    | {NET_OPEN_HOST}
 )
 # What no right the rights writer writes opens to Domo himself, for now (ruling R22, spec 5.1:
-# the socle): secrets and keys, spending limits, and who may do what. Opened, they would act on the
-# owner's keys and in his name, which nothing designs yet (step 2: accounts by reference). The
-# owner may still take one from him.
-CLOSED_TO_DOMO: Final[frozenset[str]] = DOMO_NOT_BY_DEFAULT - _NOBODYS_ACTIONS
+# the socle): secrets, keys and accounts, spending limits, and who may do what. Opened, they would
+# act on the owner's keys and in his name. A port of the machine that hosts him is not among them:
+# the owner may give him that right (2026-11-22, spec 13.10). The owner may still take any of them
+# from him.
+CLOSED_TO_DOMO: Final[frozenset[str]] = DOMO_NOT_BY_DEFAULT - _NOBODYS_ACTIONS - {NET_OPEN_HOST}
 
 # What Domo may do on his own, for the house (the owner, 2026-11-18: he may do everything and
 # judges himself whether it is right): every type of the code but the owner's own and what he does

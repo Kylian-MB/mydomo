@@ -281,3 +281,112 @@ Une demande que l'assistant a faite de lui-même et qui attend le oui de quelqu'
 - Les réglages sont lus et changés par deux appels, l'un pour la maison, l'autre pour un outil ; le nombre de places du bac à sable se change sans redémarrer.
 - « Moins de tokens » se mesure par ce qui est enregistré : le coût de construction d'un outil et le nombre de ses lancements faits sans tour de modèle. Le cœur ne calcule pas une économie ; l'assistant en juge.
 - La trace des lancements est gardée 90 jours au départ (réglage de l'assistant).
+
+## 13. Ajout du 2026-11-22 : l'étape 2, « Sortir et les comptes »
+
+**État : à valider par le propriétaire.**
+
+L'étape 1 est fusionnée (0.10.0). Le propriétaire a dit le 2026-11-22 :
+
+- « Je ferai les essais une fois que les outils comme HA etc. pourront être ajoutés à l'assistant, je le mettrai en prod chez moi pour le tester. »
+- À la question « tu lui donnes l'adresse et le jeton et il construit ses outils lui-même, ou tu veux des outils déjà prêts ? » : « L'assistant construit tout. »
+
+Cet ajout précise l'étape 2 de la partie 8 ; les parties 5.2, 5.3 et 5.8 restent vraies. Il l'emporte sur la ligne « Les trois étapes sortent ensemble, en 0.10.0 » (parties 8 et 11) et sur la première ligne de 12.6 (R22).
+
+### 13.1 Ce qui doit marcher à la fin
+
+Dans une maison où l'assistant vient d'être installé et ne connaît rien :
+
+1. Le propriétaire dit, avec ses mots, qu'il a Home Assistant à telle adresse.
+2. L'assistant ouvre cette adresse et lui demande un jeton : le propriétaire le donne dans le formulaire à usage unique du gardien. L'assistant ne le voit jamais.
+3. L'assistant essaie à la main (un programme lancé une fois) : il lit ce que Home Assistant sait faire.
+4. Il se construit ses outils (allumer, éteindre, lire un état) et s'en sert ensuite sans tour de modèle : pour une personne, pour la maison, à une heure dite.
+5. Le propriétaire ferme une adresse ou retire un compte : plus rien ne sort vers elle, tout de suite.
+
+Le même scénario doit marcher que Home Assistant tourne sur une autre machine de la maison ou sur celle qui héberge l'assistant (13.10).
+
+Rien dans le code ne nomme Home Assistant. Le même chemin sert à un autre appareil du réseau et à un site qui se pilote par des requêtes.
+
+### 13.2 Approches
+
+- **A. Un relais général.** Le programme écrit sa requête (méthode, adresse, en-têtes, corps) ; le gardien la fait si l'adresse est ouverte, et y met le compte nommé. Aucun code par service. **Choisie** : c'est la seule où « L'assistant construit tout » est vrai, et c'est celle de la partie 5.2.
+- **B. Un connecteur déclaré par service**, sur le modèle des fournisseurs de modèles (une adresse de base et des chemins fixés à l'avance). Plus étroit, donc plus simple à garder sûr ; mais chaque service nouveau demande une déclaration, et un site qui change casse le connecteur. Écartée : l'assistant ne peut pas s'en servir pour ce qu'on n'a pas prévu.
+- **C. Des outils Home Assistant livrés avec l'application.** Marche le premier jour sans rien construire ; mais c'est du code écrit pour un seul service, que l'assistant n'a pas fait et qui vieillit avec Home Assistant. Écartée par le propriétaire (« L'assistant construit tout »).
+
+### 13.3 Sortir
+
+Le module `domo` gagne une fonction : une requête HTTP ou HTTPS vers une adresse, avec sa méthode, ses en-têtes, son corps, et au besoin le nom d'un compte. Le programme reçoit le code de retour, les en-têtes et le corps. C'est le gardien qui fait la requête ; le bac à sable reste sans réseau.
+
+- **Adresse ouverte.** Un hôte et un port, pour un outil ou pour un programme lancé à la main. Ouvrir et fermer sont deux actions de l'assistant, jugées avec ses droits propres et écrites au journal. Le propriétaire ferme une adresse ou interdit à l'assistant d'en ouvrir. Une adresse ouverte pour un outil ne l'est pas pour un autre.
+- **Jamais atteignables**, quelle que soit la liste : les services de l'assistant, la machine qui l'héberge, les adresses de service d'un hébergeur. Le gardien résout le nom une fois, juge l'adresse obtenue, et se connecte à cette adresse-là : un nom qui change de cible entre le contrôle et la connexion n'ouvre rien.
+- **Redirection** : suivie seulement vers une adresse ouverte, et jamais avec un compte.
+- **Sans chiffrement (http)** : un compte ne part en clair que vers une adresse privée de la maison. La règle se lit sur l'adresse obtenue après résolution du nom, pas sur la forme du nom : `http://192.168.x.x:8123` et `http://homeassistant.local:8123` sont donc tous deux utilisables si le nom mène dans la maison. Vers internet, un compte demande https. (Aujourd'hui `cleartext_allowed` juge la forme du nom et laisse passer la machine et les services de l'assistant : pour les programmes, c'est la règle « jamais atteignables » qui passe d'abord.)
+- **Bornes** : le temps d'une requête, la taille de la réponse, le nombre de requêtes d'un lancement sont des réglages de l'assistant (partie 12), avec un plafond du code pour la taille, comme pour une réponse d'outil (8 Mo).
+- **Ce qui revient** est du contenu extérieur : jamais lu comme une consigne, par le programme comme par l'assistant.
+- **Au journal** : l'hôte, le port, la méthode, le code de retour, la taille, l'outil, l'opération, pour qui. Jamais le chemin, les en-têtes, le corps.
+
+Le réseau de la maison est atteint depuis Docker Desktop : vérifié le 2026-11-22 (un conteneur joint la box). Un nom en `.local` peut ne pas se résoudre depuis un conteneur ; l'assistant se sert alors de l'adresse en chiffres.
+
+### 13.4 Les comptes
+
+Un compte est un secret du coffre, lié à ses adresses et à l'endroit où il se pose dans la requête. Le lien ne change jamais après coup, comme aujourd'hui.
+
+- **Trois façons de le poser** : dans un en-tête (un jeton, « Bearer … »), en identifiant et mot de passe d'en-tête (Basic), ou dans un champ du corps d'une requête de connexion. Dans ce dernier cas le gardien garde les cookies que le site rend, et les remet aux requêtes suivantes faites avec ce compte : c'est la session.
+- **Qui le donne** : la personne, dans le formulaire à usage unique, quand l'assistant le lui demande. L'assistant décrit le compte (son nom, ses adresses, où il se pose) ; la personne voit cette description avant de taper.
+- **À qui il est** : à une personne ou à la maison (5.8). Il ne sert que dans un lancement fait pour quelqu'un qui y a droit.
+- **Jamais vu** : le programme nomme le compte, rien de plus. Le gardien masque la valeur du secret et les cookies de session dans tout ce qui revient, erreurs comprises.
+- **Retirer** : celui qui l'a donné, ou le propriétaire. Ce qui s'en servait reçoit un refus. Le coffre ne sait pas effacer aujourd'hui : c'est le cœur qui refuse dès le retrait, comme pour une clé de fournisseur retirée. Un compte donné de nouveau avec d'autres adresses est un autre compte.
+
+### 13.5 L'assistant seul et les comptes (R22 revu)
+
+L'assistant ne voit toujours aucun secret, et rien ne lui ouvre le coffre. Ce qui change : **un compte de la maison sert aussi aux lancements que l'assistant fait pour la maison**, seul, sans qu'une personne l'ait demandé. Sans cela il ne pourrait ni allumer une lumière de lui-même ni suivre l'état de la maison.
+
+- C'est ouvert au départ ; le propriétaire peut le fermer, pour un compte ou pour tous.
+- Seul, l'assistant ne se sert jamais du compte d'une personne.
+- Seul, il peut demander un compte à quelqu'un (ouvrir le formulaire pour lui) ; il ne peut ni en créer, ni en remplacer, ni en retirer un.
+- Les limites de dépense restent du socle. Une opération qui coûte, pour la maison, suit 5.8 : un accord qui dure, ou l'assistant est réveillé et juge.
+
+### 13.6 Les risques que le code impose
+
+Comme en 5.3 : sortir hors du réseau de la maison est « sort de la maison » ; se servir d'un compte dans une requête qui n'est pas une lecture (autre que GET ou HEAD) est « ne peut pas être défait ». L'assistant écrit les autres pour chaque opération, et le relecteur les vérifie.
+
+Dans un essai à blanc, rien ne sort : la demande de sortie est vérifiée dans sa forme et rend une réponse vide, comme une action du catalogue à l'étape 1 (et non comme une écriture en base, qui est faite puis défaite). Un outil qui lit la réponse d'un service prévoit donc le cas de l'essai (`domo.dry_run`) ; le relecteur le vérifie.
+
+### 13.7 Ce qui n'est pas dans cette étape
+
+- **Écouter.** Un outil demande et reçoit une réponse ; il ne reste pas à l'écoute d'un flux d'événements, et rien de l'extérieur ne l'appelle. Pour savoir ce qui a changé dans la maison, l'assistant regarde à intervalles (un outil relancé à une heure dite). Ce que ça coûte : il apprend un changement au prochain passage, pas à la seconde. Écouter viendra avec le chantier E (la maison).
+- Un jeton rendu dans le corps d'une réponse de connexion (et non dans un cookie) : pas gardé par le gardien dans cette étape.
+- Le navigateur (étape 3), les paquets Python, la recherche d'appareils sur le réseau, des outils livrés tout faits.
+
+### 13.8 Essais et version
+
+Une branche, une fusion, la version 0.11.0. Sur la vraie pile, deux faux services : un appareil du réseau à jeton, en http ; un site à connexion par formulaire et cookie, en https. Le scénario de 13.1 est joué en entier, une fois vers un autre hôte et une fois vers un port de la machine qui héberge, et aussi : un port de la machine que le propriétaire n'a pas ouvert, un service de l'assistant lui-même, une adresse fermée, un compte retiré, une redirection vers une adresse fermée, un nom qui change de cible, un secret qu'un service renvoie dans sa réponse.
+
+### 13.9 Choix du rédacteur, à valider
+
+1. Un compte de la maison sert à l'assistant seul, ouvert au départ (13.5).
+2. Pas d'écoute d'événements dans cette étape : l'assistant regarde à intervalles (13.7).
+3. La session d'un site est gardée par cookies seulement (13.4, 13.7).
+4. Une adresse est ouverte pour un outil, pas pour tous (13.3).
+5. Le journal ne garde ni le chemin ni le corps d'une requête (13.3).
+6. Cette étape sort seule, en 0.11.0 ; le navigateur suivra en 0.12.0.
+
+### 13.10 Précisions après la relecture d'un constructeur (choix du rédacteur)
+
+Ce que la relecture a montré du code d'aujourd'hui, et ce qui en est décidé :
+
+- **Le coffre ne sait poser un secret que dans un en-tête**, et un secret est une seule valeur, donnée dans un formulaire à un seul champ. L'identifiant avec mot de passe et le champ d'un corps de connexion demandent une nouvelle forme de secret (plusieurs valeurs), un formulaire à deux champs et ses textes, et le masquage de chaque valeur séparément. C'est du travail de cette étape.
+- **Suivre une redirection et se connecter à l'adresse résolue** n'existent pas : le relais des fournisseurs ne suit aucune redirection et laisse la bibliothèque résoudre. Les deux sont à écrire, pour le relais des programmes seulement.
+- **Sortir et se servir d'un compte sont jugés par les droits**, à la différence des autres demandes d'un programme (ouvertes à tous à l'étape 1) : un compte de la maison est fermé à un invité sauf si le propriétaire l'ouvre (5.8). Donner et retirer un compte restent fermés à l'assistant seul ; s'en servir et demander un formulaire ne le sont pas.
+- **La liste des adresses ouvertes est tenue par le cœur**, qui l'envoie au gardien avec chaque requête : fermer une adresse vaut donc dès la requête suivante. Une adresse est liée au nom de l'outil et survit à ses versions ; pour un programme lancé à la main, elle est ouverte sans outil.
+- **Fermer une adresse ou retirer un compte, quand le propriétaire le demande, est une règle du propriétaire** : le code l'applique, l'assistant n'en juge pas.
+- **Ouvrir une adresse vers internet est le jugement de l'assistant**, comme le reste. C'est le seul chemin par lequel une donnée de la maison peut sortir : le propriétaire peut poser la règle « demande-moi d'abord » sur ce type d'action, et l'ouverture est toujours écrite au journal.
+- **Ce qu'un programme met lui-même dans ses en-têtes** : les en-têtes d'identification (Authorization, Cookie, clé d'API) sont retirés ; un secret ne passe que par un compte.
+- **Les cookies d'une session** sont gardés par le gardien en mémoire, par compte, et oubliés après un temps sans usage ou au redémarrage ; l'outil se reconnecte quand le site le lui refuse. Ils ne reviennent jamais au programme.
+- **Au journal** : une ligne avant la requête (ce que la barrière a jugé), une ligne après (code de retour, taille, durée).
+- **Les outils de l'assistant pour tout cela** (ouvrir et fermer une adresse, demander un compte, voir les comptes et les adresses) sont à ajouter ; leur forme est laissée au constructeur.
+- **Un service sur la machine qui héberge l'assistant.** Le propriétaire a dit le 2026-11-22 : « Les deux doivent être possibles, on ne connaît pas comment les utilisateurs feront leurs installations. » La machine reste fermée au départ, mais un port précis peut en être ouvert :
+  - Ouvrir un port de la machine qui l'héberge est un droit à part de celui d'ouvrir les autres adresses. Au départ, c'est le propriétaire qui dit oui, port par port, quand l'assistant le demande. Le propriétaire peut donner ce droit à l'assistant (« Un propriétaire pourrait accepter que l'assistant touche aux ports de lui-même », 2026-11-22) : l'assistant ouvre alors seul les ports de la machine, selon son jugement, et chaque ouverture est au journal. Le propriétaire le reprend quand il veut.
+  - Les services de l'assistant lui-même (le cœur, sa base, le gardien, le bac à sable) ne sont jamais ouvrables, même par le propriétaire : un outil ne parle pas au cœur par le réseau.
+  - Un port ouvert de la machine vaut comme une adresse de la maison (un compte peut y partir en http).
+  - Le code ne suppose pas Docker : il sait atteindre « la machine qui m'héberge » que l'assistant tourne dans des conteneurs ou comme une application sur un serveur. Dans des conteneurs, c'est l'adresse de l'hôte vue du gardien ; comme application, c'est la machine elle-même (`localhost`).

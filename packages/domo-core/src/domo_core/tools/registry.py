@@ -67,6 +67,15 @@ from domo_core.tools.notes import (
     NoteTold,
     NoteWithdraw,
 )
+from domo_core.tools.outward_tools import (
+    AccountAsk,
+    AccountRemove,
+    AccountShare,
+    AccountsLook,
+    AddressClose,
+    AddressesLook,
+    AddressOpen,
+)
 from domo_core.tools.plan_tools import PlanCancel, PlanChange, PlanSet
 from domo_core.tools.policy_tools import PolicyShow, PolicyUpdate
 from domo_core.tools.profile import DomoName, ProfileRename
@@ -173,6 +182,13 @@ _TOOLS: tuple[InternalTool, ...] = (
     ProgramRun(),
     AgreementKeep(),
     AgreementDrop(),
+    AddressOpen(),
+    AddressClose(),
+    AddressesLook(),
+    AccountAsk(),
+    AccountRemove(),
+    AccountShare(),
+    AccountsLook(),
     DoInOrder(),
     ChainContinue(),
 )

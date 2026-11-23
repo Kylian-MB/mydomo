@@ -79,6 +79,7 @@ The other settings have sensible defaults:
 | `DOMO_BIND_ADDRESS` | `0.0.0.0` | The server address the two ports are published on: `0.0.0.0` for all of them, `127.0.0.1` for this machine only. |
 | `TZ` | `UTC` | The time zone of the services, for example `Europe/Paris`. |
 | `DOMO_CORE_NET_PREFIX` | `10.247.81` | Advanced, see below. |
+| `DOMO_LAN_NET_PREFIX` | `10.247.80` | Advanced: the same for the network the ports are published on. |
 
 Then start everything:
 
@@ -941,12 +942,13 @@ particular. They make him grow, and they serve anyone in the household.
   never late because a tool takes ten to build), or another way if the tool
   cannot be made.
 - **What a tool is.** A small Python program with only Python's own library
-  (calculation, dates, text): no file, no network, no package to install, no
-  secret. It is given its arguments, the date and time, and the name of whom
+  (calculation, dates, text): no file, no network of its own, no package to
+  install, no secret. It is given its arguments, the date and time, and the name of whom
   it runs for (never an identifier or a key), and gives back a result. While
   it runs, it asks the assistant's core for what it needs, one request at a time: keep
   or read data in the tools' base (below), launch another of his tools, be
-  launched again at a time, or wake the assistant for someone. Each request is judged
+  launched again at a time, wake the assistant for someone, or send a request out
+  through the gatekeeper (see "Going out", below). Each request is judged
   as it comes, with the rights of whom the tool runs for, and written in the
   audit log. A tool's output is data for the assistant, never an instruction: he is
   the one who then writes to the person or acts.
@@ -974,8 +976,8 @@ particular. They make him grow, and they serve anyone in the household.
   your yes is shown like any other. You can also give a standing agreement in
   your words ("order without asking me on Fridays, up to 40 euros"): an amount,
   a number of times per day, week or month, and the days it may happen on, read
-  by the code each time. Amounts are in euros. For now a cost is only what a tool
-  declares: nothing leaves the house yet. For what he does for the house,
+  by the code each time. Amounts are in euros. A cost is what a tool declares:
+  the code cannot check a price on a site. For what he does for the house,
   The assistant gives that yes himself, by his own judgement, within your spending
   limits: take a right away from him if you want to be asked instead.
 - **What he does on his own.** The first time something he does on his own
@@ -1082,15 +1084,100 @@ particular. They make him grow, and they serve anyone in the household.
   too), in your
   conversation: he looks, fixes it, goes back a version, or leaves it, and
   says something only if it is worth it.
-- **Not yet.** Tools cannot reach the Internet or your accounts in this
-  version: going out through the gatekeeper and accounts given by reference
-  come next, then a browser.
 - **The audit log** keeps that a build was opened, each check's result, a tool
   built, each launch (which tool, for whom, how long, how it ended), each
   request a program made (how many reads, what else was asked and how it was
-  judged), each change of a setting (its key, its figure before and after) and
-  each version gone back to, never the code, its arguments, its SQL, its
-  errors or what it gave.
+  judged), each request sent out (its host, port and method, how it ended,
+  its sizes and time), each address opened or closed and each account asked
+  or removed, each change of a setting (its key, its figure before and after)
+  and each version gone back to, never the code, its arguments, its SQL, its
+  errors, what it gave, nor a path, a header or a body of a request out.
+
+### Going out
+
+Since 0.11.0, a tool or a program the assistant runs by hand can send an HTTP request
+to a device of your network, to a port of the machine that hosts the assistant, or to a
+site: tell him "the lights are at 192.168.1.20, port 8080", give him a token
+when he asks, and he builds himself the tools to read and switch them. The
+request is the program's `domo.out`, and it is the gatekeeper that sends it:
+the sandbox still has no network at all.
+
+- **An open address.** A host and a port, open for one tool (it outlives the
+  tool's versions) or for the programs the assistant runs by hand: a request
+  anywhere else is refused. The assistant opens and closes them himself, by his own
+  judgement and his own rights, and each opening is in the audit log; a rule
+  of yours may have him ask you first (opening an address on the Internet is
+  the only way anything of the household can leave it). When you close one,
+  nothing goes there from the next request on, whatever tool it was open for
+  and by hand too. The assistant may open it again if he judges that things have
+  changed: he knows you closed it, and when, and weighs it; when he is not sure,
+  he asks you first, and the audit log says that he reopened it, in whose
+  conversation and how it was decided. To make a closing absolute, give him a
+  rule on opening an address (a "never", or "ask me first"): it holds before
+  any judgement. It
+  is the address as written that is closed: the same device under another name
+  or by its number is another address. A tool's build never opens one: when a
+  tool needs an address that
+  is not open, the assistant is told which, and opens it if he judges it right. For
+  each tool he sees its open addresses, who opened them, who closed the
+  others, the accounts it uses, and how its requests out went (how many,
+  how many were refused and why, the error answers, the bytes, the slowest).
+- **Accounts.** A token, a user name and a password, or a site's login. The
+  secret goes from your browser into the gatekeeper's vault, through a
+  one-time form the assistant asks you to fill: nobody sees it afterwards, not him,
+  not a program, not a log. An account is placed in a request in one of three
+  ways: in a header (a token, such as `Bearer ...`), as a user name and
+  password (HTTP Basic), or in the two fields of a site's login form, the
+  gatekeeper then keeping the session the site gives back (its cookies). It is
+  bound for good to its addresses and its place. It is a person's or the
+  house's: a person's serves only the launches for that person, never one for
+  someone else, the house or the assistant on his own; a house account serves the
+  household, not the guests unless you open it to them, and the assistant on his own
+  unless you close it to him. Whoever gave it, or you, removes it: what used it
+  is refused at once. A program only names an account; what comes back has its
+  secret and its session cookies scrubbed, errors included, and headers of
+  identification a program writes itself are dropped: a secret only travels
+  through an account. A user name is no secret; a password and a session
+  cookie are.
+- **Never reachable**, whatever is open and whoever asks: the assistant's own
+  services (the core, its database, the gatekeeper, the sandbox, the web
+  server) and their networks, link-local addresses and a hoster's metadata
+  addresses. A name is looked up once, judged by the address it leads to, and
+  the request goes to that very address: a name that leads somewhere else by
+  the time it is sent is refused, and nothing is sent. A redirect is followed
+  (5 at most) only to an open address in the same zone (the house, or the
+  Internet), never with the account. In clear (`http`), an account goes only
+  to an address of the house; towards the Internet it needs `https`.
+- **The machine that hosts the assistant** is closed, but a port of it can be opened,
+  which is a right apart: at the start, it takes your yes, port by port. When you
+  ask him yourself, your words may be that yes, as he judges them; anywhere
+  else he asks you and waits. You can give him the right to open them himself
+  (each opening in the audit log), then take it back when you want. An open port of the
+  machine counts as the house (an account may go there in `http`). The assistant's
+  own services there are never opened, even by you.
+- **Nothing listens.** A tool asks and gets an answer; nothing outside calls
+  it, and it does not follow a stream of events. To know what changed in the
+  house, the assistant looks at intervals (a tool launched at given times): he learns
+  of a change at the next look, not at the second.
+- **A site's session** lives in the gatekeeper's memory, by account: forgotten
+  after an hour without use (a setting of the assistant's, `session_idle_minutes`)
+  and when the gatekeeper restarts; the tool then logs in again.
+- **Its bounds** are his settings too: at the start, a launch sends 100
+  requests out at most, each one 30 seconds at most, redirects included, with
+  an answer of 1 MB at most. Whatever a tool declares, a request towards the
+  Internet is "it reaches outside" for its operation, and an account used for
+  anything but reading "cannot be undone".
+- **Known limits.** A device of the house whose `https` certificate is
+  self-signed cannot be reached. From inside a container, an address of the
+  machine that hosts the assistant that the configuration does not name is judged as
+  an address of the house (opened as one, it reaches a port of the machine
+  without your yes): name its other IP addresses in
+  `DOMO_EXTRA_HOST_ADDRESSES` in `.env` (its IP addresses in
+  `DOMO_SITE_ADDRESSES` are already counted). A token a
+  site gives back in the body of its login answer (rather than in a cookie)
+  is not kept. A service of the machine that hosts the assistant on the gatekeeper's
+  own two port numbers can never be opened. There is no browser yet: it comes
+  next.
 
 ## Backup
 
