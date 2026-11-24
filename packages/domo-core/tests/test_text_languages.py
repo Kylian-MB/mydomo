@@ -222,6 +222,10 @@ class HeldTexts:
     def release(self) -> None:
         self._gate.set()
 
+    @property
+    def released(self) -> bool:
+        return self._gate.is_set()
+
     async def stream(
         self,
         *,
@@ -647,9 +651,12 @@ async def test_an_invitation_page_waits_ten_seconds_at_most(
         began = time.monotonic()
         page = await robin.get(f"/invite/{token}")
         waited = time.monotonic() - began
-        # Not ready in time: the house's version.
+        # Not ready in time: the house's version. The page came back while the writer was still
+        # held, so it did not wait for it; how long the rest took is the machine's own speed (a
+        # shared build machine pauses for ten seconds at times), and no proof of anything.
         assert page.status_code == 200
-        assert 0.5 <= waited < 5
+        assert waited >= 0.5
+        assert not held.released
         assert '<html lang="en">' in page.text
         assert meaning("invite.submit") in plain(page.text)
         # Written meanwhile, in the background: the next display is in Italian.

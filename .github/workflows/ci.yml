@@ -51,6 +51,10 @@ jobs:
           enable-cache: true
       - run: uv sync
       - run: uv run pytest -m "not stack"
+        env:
+          # The Windows machine has no Linux container engine: its database tests are left out
+          # by name, not by whether its Docker service happens to answer.
+          TESTS_DATABASE: ${{ matrix.os == 'windows-latest' && 'skip' || '' }}
 
   licenses:
     name: Dependency licenses

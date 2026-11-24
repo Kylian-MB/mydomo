@@ -205,8 +205,16 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.delenv(name)
 
 
+# Set to "skip" where no Linux container engine is meant to be there (the Windows machine of the
+# hosted checks): the database tests are then left out whether or not an engine answers. Anywhere
+# else an engine that does not answer fails them, so they are never skipped unnoticed.
+NO_DATABASE_VARIABLE = "TESTS_DATABASE"
+
+
 @pytest.fixture(scope="session")
 def postgres_container() -> Iterator[PostgresContainer]:
+    if os.environ.get(NO_DATABASE_VARIABLE) == "skip":
+        pytest.skip(f"the database tests are left out ({NO_DATABASE_VARIABLE}=skip)")
     try:
         engine_os = DockerClient().client.info().get("OSType")
     except Exception as error:
