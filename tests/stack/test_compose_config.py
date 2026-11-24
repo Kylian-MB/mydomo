@@ -185,6 +185,23 @@ def test_the_gatekeeper_is_told_the_host_address_on_each_network_of_the_file(
     )
 
 
+@pytest.mark.parametrize(
+    "files", [BASE_COMPOSE_FILES, FAKE_LLM_COMPOSE_FILES, GOING_OUT_COMPOSE_FILES]
+)
+def test_only_the_gatekeeper_knows_the_host_s_name(files):
+    """``host.docker.internal`` is mapped to the host for the gatekeeper on every engine (a plain
+    Linux engine does not know the name by itself, Docker Desktop maps it to the same address):
+    it is how a program names a service of the machine that hosts Domo. No other service, no
+    test file, gets the name."""
+    going_out = files == GOING_OUT_COMPOSE_FILES
+    env_file = GOING_OUT_ENV_FILE if going_out else TEST_ENV_FILE
+    env = {**FAKE_LLM_ENV, **(GOING_OUT_ENV if going_out else {})}
+    services = resolved(REPO_ROOT / env_file, files, env)["services"]
+    assert services["gatekeeper"]["extra_hosts"] == ["host.docker.internal=host-gateway"]
+    others = {name for name, s in services.items() if name != "gatekeeper" and s.get("extra_hosts")}
+    assert others == set()
+
+
 def test_the_example_settings_name_the_host_s_other_addresses():
     """``.env.example`` names the variable of the host's other addresses (I5)."""
     example = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
@@ -321,16 +338,22 @@ def test_the_device_on_another_machine_and_the_site_are_on_the_way_out_alone():
         assert not services[name].get("ports"), name
 
 
-def test_the_device_on_the_host_is_reached_through_this_machine_alone():
+@pytest.mark.parametrize("bind", [None, "172.17.0.1"])
+def test_the_device_on_the_host_is_reached_through_this_machine_alone(bind):
     """On a network no service of Domo is on: the gatekeeper reaches it only through the port
-    it is published on."""
-    services = going_out_config()["services"]
+    it is published on, on one address of this machine: the loopback by default (Docker
+    Desktop's), or the one the tests give (another engine's host-gateway: host_device_bind)."""
+    extra = {"GOING_OUT_HOST_DEVICE_BIND": bind} if bind else {}
+    config = resolved(
+        REPO_ROOT / GOING_OUT_ENV_FILE, GOING_OUT_COMPOSE_FILES, {**GOING_OUT_ENV, **extra}
+    )
+    services = config["services"]
     device = services["device-on-host"]
     assert set(device["networks"]) == {"device_host"}
     assert not any(
         "device_host" in s.get("networks", {}) for n, s in services.items() if n != "device-on-host"
     )
-    assert published(device) == {("127.0.0.1", str(GOING_OUT_HOST_DEVICE_PORT), 8000)}
+    assert published(device) == {(bind or "127.0.0.1", str(GOING_OUT_HOST_DEVICE_PORT), 8000)}
 
 
 # --- the sandbox ---------------------------------------------------------------------------

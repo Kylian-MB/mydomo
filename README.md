@@ -1155,6 +1155,25 @@ the sandbox still has no network at all.
   (each opening in the audit log), then take it back when you want. An open port of the
   machine counts as the house (an account may go there in `http`). The assistant's
   own services there are never opened, even by you.
+- **A service on the same machine as the assistant** is named
+  `host.docker.internal` (for example `http://host.docker.internal:8123`): the
+  name works on every Docker engine, because the compose file gives it to the
+  gatekeeper. With Docker Desktop, a service that listens on `127.0.0.1` is
+  reached. With a Docker Engine installed directly on Linux (WSL included), it
+  is not: the service must listen on an address the containers reach. Best is
+  the Docker bridge address that name leads to (`docker compose exec gatekeeper
+  getent ahostsv4 host.docker.internal`, next to `compose.yaml`, shows it, often
+  `172.17.0.1`); the service must then start after Docker has created that
+  bridge. All addresses (`0.0.0.0`) work too, but they also show the service to
+  the whole house network. A firewall on the machine (one that denies incoming
+  connections by default, for example) must let the Docker networks reach that
+  port. That address is already counted as this machine; another one (another
+  network card, the gateway of another Docker network) goes in
+  `DOMO_EXTRA_HOST_ADDRESSES`, as below. Two special cases: with rootless
+  Docker, the name leads into rootless Docker's own network, not to the
+  machine, so name the service by an address of the machine, put that address
+  in `DOMO_EXTRA_HOST_ADDRESSES` and check that it is reached; a Docker daemon
+  without a default bridge needs `host-gateway-ip` set in its `daemon.json`.
 - **Nothing listens.** A tool asks and gets an answer; nothing outside calls
   it, and it does not follow a stream of events. To know what changed in the
   house, the assistant looks at intervals (a tool launched at given times): he learns

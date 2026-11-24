@@ -1271,6 +1271,26 @@ réseau.
   tu veux. Un port ouvert de la machine compte comme la maison (un compte peut y
   partir en `http`). Les services de l'assistant lui-même n'y sont jamais ouverts,
   même par toi.
+- **Un service sur la même machine que l'assistant** se nomme
+  `host.docker.internal` (par exemple `http://host.docker.internal:8123`) : ce
+  nom marche avec tous les moteurs Docker, parce que le fichier compose le
+  donne au gardien. Avec Docker Desktop, un service qui écoute sur `127.0.0.1`
+  est joignable. Avec un Docker Engine installé directement sous Linux (WSL
+  compris), non : le service doit écouter sur une adresse que les conteneurs
+  joignent. Le mieux est l'adresse du pont Docker où mène ce nom (`docker
+  compose exec gatekeeper getent ahostsv4 host.docker.internal`, à côté de
+  `compose.yaml`, te la donne, souvent `172.17.0.1`) ; le service doit alors
+  démarrer après que Docker a créé ce pont. Toutes les adresses (`0.0.0.0`)
+  marchent aussi, mais elles montrent aussi le service à tout le réseau de la
+  maison. Un pare-feu sur la machine (qui refuse par défaut ce qui entre, par
+  exemple) doit laisser les réseaux Docker joindre ce port. Cette adresse
+  compte déjà comme la machine ; une autre (une autre carte réseau, la
+  passerelle d'un autre réseau Docker) va dans `DOMO_EXTRA_HOST_ADDRESSES`,
+  comme plus bas. Deux cas à part : avec Docker sans root (rootless), ce nom
+  mène dans le réseau propre à ce Docker, pas à la machine ; nomme alors le
+  service par une adresse de la machine, mets cette adresse dans
+  `DOMO_EXTRA_HOST_ADDRESSES` et vérifie qu'il est joint ; un démon Docker sans
+  pont par défaut a besoin de `host-gateway-ip` dans son `daemon.json`.
 - **Rien n'écoute.** Un outil demande et reçoit une réponse ; rien du dehors ne
   l'appelle, et il ne suit pas un flux d'événements. Pour savoir ce qui a
   changé dans la maison, l'assistant regarde à intervalles (un outil lancé à des

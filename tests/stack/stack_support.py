@@ -27,13 +27,14 @@ variables and the ones ``test.env`` sets: a variable of the shell would win over
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
 import secrets
 import subprocess
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -58,6 +59,17 @@ GOING_OUT_ENV_FILE = "tests/stack/going_out.env"
 GOING_OUT_PROJECT = "domo-test-out"
 # The port of this machine the device on the host is published on.
 GOING_OUT_HOST_DEVICE_PORT = 18996
+# The address of this machine it is published on (see host_device_bind).
+GOING_OUT_HOST_DEVICE_BIND = "GOING_OUT_HOST_DEVICE_BIND"
+HOST_NAME_IN_CONTAINERS = "host.docker.internal"
+# The image the stack's own services and fakes are built from: already there, and it has getent.
+PROBE_IMAGE = next(
+    line.split()[1]
+    for line in (REPO_ROOT / "tests/fakes/fake_device/Dockerfile")
+    .read_text(encoding="utf-8")
+    .splitlines()
+    if line.startswith("FROM ")
+)
 PROJECT = "domo-test"
 MIN_DOCKER_MAJOR = 28
 
@@ -389,6 +401,59 @@ def write_test_authority(directory: Path, site_name: str) -> tuple[Path, Path]:
     return certs, bundle
 
 
+def host_device_bind(
+    docker: Callable[[Sequence[str]], subprocess.CompletedProcess[str]],
+) -> str:
+    """The address of this machine the fake device on the host is published on, so that the
+    gatekeeper reaches it as ``host.docker.internal`` and nothing else of the network does.
+
+    Docker Desktop forwards that name to this machine's loopback: 127.0.0.1. Any other engine
+    maps it to its host-gateway address (the bridge's, as ``extra_hosts`` of ``compose.yaml``
+    does), where a port published on 127.0.0.1 is not reachable: that address, asked of the engine
+    itself through a container (the ``/etc/hosts`` it writes there). Never every address (the
+    fake device would be on the network of the house): when the address cannot be known, the
+    tests fail and say why. ``docker`` runs a docker command (``run`` with the environment of
+    the stack, in the tests of the stack)."""
+    info = docker(["docker", "info", "--format", "{{.OperatingSystem}}"])
+    if info.returncode != 0:
+        pytest.fail(f"`docker info` failed: {info.stderr.strip()}")
+    if "Docker Desktop" in info.stdout:
+        return "127.0.0.1"
+    # No network: the engine writes the name into /etc/hosts all the same, so a daemon without a
+    # default bridge (and with its host-gateway-ip set) answers too. getent would not: without an
+    # IPv4 interface it gives nothing for the name.
+    # If the daemon's host-gateway-ip is an address of the house, the fake device is published
+    # there while the tests run (it answers only with the run's token).
+    probe = docker(
+        [
+            "docker", "run", "--rm", "--network", "none",
+            "--add-host", f"{HOST_NAME_IN_CONTAINERS}:host-gateway",
+            PROBE_IMAGE, "cat", "/etc/hosts",
+        ]
+    )  # fmt: skip
+    found: list[ipaddress.IPv4Address] = []
+    for line in probe.stdout.splitlines() if probe.returncode == 0 else ():
+        address, *names = line.split("#", 1)[0].split() or [""]
+        if HOST_NAME_IN_CONTAINERS not in names:
+            continue
+        try:
+            found.append(ipaddress.IPv4Address(address))
+        except ValueError:
+            continue
+    if not found:
+        pytest.fail(
+            f"The engine ({info.stdout.strip()}) gave no IPv4 host-gateway address for "
+            f"{HOST_NAME_IN_CONTAINERS} (exit {probe.returncode}: {probe.stderr.strip()[-500:]}); "
+            "the fake device on the host cannot be published where the gatekeeper reaches it"
+        )
+    if found[0].is_unspecified:
+        pytest.fail(
+            f"The engine maps {HOST_NAME_IN_CONTAINERS} to {found[0]}: the fake device would be "
+            "published on every address of this machine"
+        )
+    return str(found[0])
+
+
 @contextmanager
 def running_stack_going_out(
     directory: Path,
@@ -406,6 +471,9 @@ def running_stack_going_out(
     stack of theirs, with the fake model: other ``files`` (``GOING_OUT_FAKES`` among them), another
     ``project``, ``env_file`` and ``host_device_port``, and ``extra_env`` (the fake model's key)."""
     certs, bundle = write_test_authority(directory, site_name)
+    env = docker_environment(env_file, extra_env)
+    require_docker(env)
+    bind = host_device_bind(lambda command: run(command, env=env))
     given = GoingOutSecrets(
         device_token="dt-" + secrets.token_hex(16),
         site_user="alex-" + secrets.token_hex(4),
@@ -421,6 +489,7 @@ def running_stack_going_out(
             "GOING_OUT_CERTS_DIR": str(certs),
             "GOING_OUT_CA_BUNDLE": str(bundle),
             "GOING_OUT_HOST_DEVICE_PORT": str(host_device_port),
+            GOING_OUT_HOST_DEVICE_BIND: bind,
         },
         project=project,
         env_file=env_file,

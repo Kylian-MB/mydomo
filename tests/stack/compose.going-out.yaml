@@ -9,6 +9,9 @@
 #   GOING_OUT_CERTS_DIR         the site's certificate and key, made by the tests' own authority
 #   GOING_OUT_CA_BUNDLE         the usual authorities plus the tests' own, for the gatekeeper
 #   GOING_OUT_HOST_DEVICE_PORT  the port of this machine the second device is published on
+#   GOING_OUT_HOST_DEVICE_BIND  the address of this machine it is published on (127.0.0.1 by
+#                               default, Docker Desktop's; on another engine the address the
+#                               host's name leads to: stack_support.host_device_bind)
 #
 # Two installations of a device:
 #   device          a device on another machine of the house: on the egress network, the way out

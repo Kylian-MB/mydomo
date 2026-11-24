@@ -133,6 +133,12 @@ services:
       DOMO_HOST_ADDRESSES: ${DOMO_LAN_NET_PREFIX:-10.247.80}.1,${DOMO_CORE_NET_PREFIX:-10.247.81}.1,${DOMO_EXTRA_HOST_ADDRESSES:-}
       DOMO_SITE_ADDRESSES: ${DOMO_SITE_ADDRESSES:-localhost}
       TZ: ${TZ:-UTC}
+    # The name a program gives for a service of the machine that hosts the assistant. It exists on
+    # every engine because of this line (a plain Linux engine does not know it by itself; Docker
+    # Desktop maps it to the same address of the machine). The gatekeeper counts what it leads
+    # to as that machine: closed until a port of it is opened. No other service gets the name.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - vault-data:/data
       - core-auth:/run/domo/core-auth:ro

@@ -23,3 +23,4 @@
 # carried out. The design documents (docs/superpowers/specs) and the notes kept
 # while building (docs/superpowers/followups) are published.
 docs/superpowers/plans export-ignore
+docs/superpowers/audits export-ignore
