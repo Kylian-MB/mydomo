@@ -4,8 +4,8 @@ An adult (for a child's request) or the owner (when a right sends a request to t
 context of each of their turns, the requests that wait for their yes: as data, and without the
 words of a note (D4). Domo may show one of them in their conversation
 (``confirmation_remind``); their next words are then read by the same code and the same isolated
-classifier as the requester's, under the same rules: they answer only the one request the reply
-just before showed (R74, R93), giving what the request asks (a yes, or "I confirm" for an explicit
+reader as the requester's, under the same rules: they answer only the requests the reply just
+before showed (R74, spec 11.1), giving what the request asks (a yes, or "I confirm" for an explicit
 yes), and only someone who may still say yes to it decides it. Nobody says yes to their own request
 when an adult or the owner must.
 
@@ -46,7 +46,7 @@ from domo_core.llm.types import (
     ToolDefinition,
 )
 from domo_core.prompts import OthersRequest, build_system_prompt
-from fakes import FakeChatModel
+from fakes import FakeChatModel, is_reader_call
 from sqlalchemy import func, select
 from test_chain_plan import chain
 from test_confirmation_tools import amend
@@ -203,11 +203,11 @@ async def test_words_answer_only_the_request_the_approvers_reply_just_showed(
     assert await confirmation_status(rid) == "pending"
 
 
-async def test_words_answer_only_one_request_shown_alone(
+async def test_words_are_read_for_each_request_shown_their_own_and_the_others(
     child_chat, adult_chat, an_adult_agrees_to_a_childs_rename, grant, confirmation_status
 ):
-    """R93 across the approver's own requests and the others': one reply that shows two leaves
-    the words to Domo."""
+    """Spec 11.1 (it was R93) across the approver's own requests and the others': one reply that
+    shows two has the words read for both; a yes that does not say which decides neither."""
     theirs = await child_chat.say_with_tool("profile_rename", {"name": "Sam B"})
     mine = await adult_chat.say_with_tool("note_leave", {"recipient": "Sam", "text": "x"})
     await adult_chat.say_with_tool(
@@ -227,8 +227,13 @@ async def test_words_answer_only_one_request_shown_alone(
     both = await adult_chat.say("montre-moi tout")
     for shown in (theirs, mine):
         assert f'data-confirmation-id="{shown.pending_confirmation_id}"' in both.cards_html
-    adult_chat.use_model(FakeChatModel(["Laquelle ?"]))
+    model = adult_chat.use_model(FakeChatModel(["Laquelle ?"]))
     await adult_chat.say("oui")
+    # The reader was given both, numbered, and named neither.
+    reader = [call for call in model.calls if is_reader_call(call.system)]
+    (given,) = reader[0].messages
+    assert isinstance(given, ChatMessage)
+    assert [r["n"] for r in json.loads(given.content)["requests"]] == [1, 2]
     assert await confirmation_status(theirs.pending_confirmation_id) == "pending"
     assert await confirmation_status(mine.pending_confirmation_id) == "pending"
 
@@ -311,7 +316,7 @@ class HeldClassifier:
         if not tools:
             self.waiting.set()
             await self.go.wait()
-            yield ChatChunk("yes")
+            yield ChatChunk("1: yes" if is_reader_call(system) else "yes")
         else:
             yield ChatChunk("ok")
         yield ChatUsage(3, 2)

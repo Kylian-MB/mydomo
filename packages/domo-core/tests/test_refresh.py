@@ -278,6 +278,30 @@ async def test_the_upkeep_relists_a_key_used_today(session_factory, gk_client, g
     assert set(await listed(session_factory, used_today.id)) == set(lister.models)
 
 
+async def test_the_owners_key_that_works_again_becomes_the_general_key_when_there_is_none(
+    session_factory, gk_client, gk_mock, clock
+):
+    # Ruling R65 (task 25, fix round 1): the general key went with nobody to take over; the
+    # owner's key listed again takes its place, never someone else's.
+    async with session_factory() as writer:
+        owner = Person(display_name="Alex", role="owner")
+        dana = Person(display_name="Dana", role="adult")
+        writer.add_all([owner, dana])
+        await writer.commit()
+    now = clock()
+    old = now - MODEL_LIST_MAX_AGE - timedelta(hours=1)
+    danas = await add_listed_key(session_factory, dana.id, listed_at=old, used_at=None)
+    alexs = await add_listed_key(session_factory, owner.id, listed_at=old, used_at=None)
+    lister = FakeModelLister()
+    lister.models = ("new-small-1",)
+    for key in (danas, alexs):
+        async with session_factory() as session:
+            await refresh.relist_key(session, gk_client, key, lister, now=now)
+    async with session_factory() as reader:
+        generals = (await reader.scalars(select(Provider.id).where(Provider.is_general))).all()
+    assert generals == [alexs.id]
+
+
 async def remove_while_asked(session_factory, key_id: str):
     """What ``key_remove`` does while a provider is asked about the key ``key_id``: its routes
     were declared without a key, then its row goes."""

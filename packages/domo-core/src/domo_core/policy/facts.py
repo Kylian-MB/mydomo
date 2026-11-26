@@ -96,6 +96,7 @@ _MONTH: Final = timedelta(days=30)
 _CHAIN: Final = "chain.run"
 # The reason on the card of an action the yes-judge refused (``"reason"``).
 _JUDGE_REFUSAL: Final = "judge"
+_NO_ANSWER: Final = ("refused", "expired")
 
 
 class History(NamedTuple):
@@ -112,16 +113,18 @@ NO_HISTORY: Final = History()
 class PersonHistory(NamedTuple):
     """How many actions of a type a person did (the four kinds ``_history`` counts, with no request
     left out): over the last day, week and month, since always (``ever``), when the last one was
-    (``last_at``), and how many of their requests of this type were refused or dropped
-    (``refused_or_dropped``: requests refused or expired, and the actions of this type the judge
-    refused, which create no request)."""
+    (``last_at``), how many of their requests of this type were refused (``refused``: requests
+    refused, and the actions of this type the judge refused, which create no request) and how many
+    lapsed (``expired``: past their lifetime, or dropped by the assistant). A no and a silence are
+    apart: only the first says what the person wants."""
 
     day: int
     week: int
     month: int
     ever: int
     last_at: datetime | None
-    refused_or_dropped: int
+    refused: int
+    expired: int
 
     @property
     def first_time(self) -> bool:
@@ -479,7 +482,10 @@ async def domo_judge_history(
     """What Domo did on his own of ``action_type`` until ``now``, as the yes-judge reads it
     (``PersonHistory``, as ``person_history`` for a person): what the barrier allowed him
     (``_allowed_to_domo``) over the last day, week and month, since always, and the moment of the
-    last one; nothing refused or dropped (no request is his own). Reads only."""
+    last one, less the requests of his that were counted when made (``counted_for_domo``) and ended
+    ``refused`` or ``expired``, which never ran (they are counted by the moment they were made, the
+    moment of their ``allow``); and how many of his requests of this type were refused or expired.
+    Reads only."""
     ts = AuditEntry.ts
     day, week, month, ever, last_at = (
         await session.execute(
@@ -492,9 +498,52 @@ async def domo_judge_history(
             ).where(*_allowed_to_domo(action_type), ts <= now)
         )
     ).one()
-    return PersonHistory(
-        day=day, week=week, month=month, ever=ever, last_at=last_at, refused_or_dropped=0
+    made = Confirmation.created_at
+    never_ran = (
+        await session.execute(
+            select(
+                func.count().filter(made > now - _DAY),
+                func.count().filter(made > now - _WEEK),
+                func.count().filter(made > now - _MONTH),
+                func.count(),
+            ).where(
+                *_his_requests(action_type),
+                Confirmation.counted_for_domo.is_(True),
+                Confirmation.status.in_(_NO_ANSWER),
+            )
+        )
+    ).one()
+    day, week, month, ever = (
+        max(0, done - lost) for done, lost in zip((day, week, month, ever), never_ran, strict=True)
     )
+    return PersonHistory(
+        day=day,
+        week=week,
+        month=month,
+        ever=ever,
+        last_at=last_at if ever else None,
+        refused=await _his_requests_ended(session, action_type, "refused"),
+        expired=await _his_requests_ended(session, action_type, "expired"),
+    )
+
+
+def _his_requests(action_type: str) -> list[ColumnElement[bool]]:
+    """What picks the requests of ``action_type`` that Domo made in his own name."""
+    return [
+        Confirmation.by_domo.is_(True),
+        Confirmation.action["action_type"].astext == action_type,
+    ]
+
+
+async def _his_requests_ended(session: AsyncSession, action_type: str, status: str) -> int:
+    """How many of Domo's requests of ``action_type`` ended ``status``."""
+    return (
+        await session.execute(
+            select(func.count())
+            .select_from(Confirmation)
+            .where(*_his_requests(action_type), Confirmation.status == status)
+        )
+    ).scalar_one()
 
 
 async def person_history(
@@ -502,21 +551,25 @@ async def person_history(
 ) -> PersonHistory:
     """What the person did of ``action_type`` until ``now``, as the yes-judge reads it
     (``PersonHistory``): the four kinds of actions done, since always and with no request left
-    out, and how many of their requests of this type were refused or dropped. Reads only."""
+    out, and how many of their requests of this type were refused and how many expired.
+    Reads only."""
     done = await _done(session, person_id, action_type, now, since=None)
     moments = [counted.last_at for counted in done if counted.last_at is not None]
-    requests_refused_or_dropped = (
-        await session.execute(
-            select(func.count())
-            .select_from(Confirmation)
-            .where(
-                Confirmation.requester_id == person_id,
-                Confirmation.by_domo.is_(False),
-                Confirmation.action["action_type"].astext == action_type,
-                Confirmation.status.in_(("refused", "expired")),
+    requests_ended = {
+        status: (
+            await session.execute(
+                select(func.count())
+                .select_from(Confirmation)
+                .where(
+                    Confirmation.requester_id == person_id,
+                    Confirmation.by_domo.is_(False),
+                    Confirmation.action["action_type"].astext == action_type,
+                    Confirmation.status == status,
+                )
             )
-        )
-    ).scalar_one()
+        ).scalar_one()
+        for status in _NO_ANSWER
+    }
     # The judge's own refusals create no request: the card of the action says so.
     refused_by_the_judge = (
         await session.execute(
@@ -540,5 +593,6 @@ async def person_history(
         month=sum(counted.month for counted in done),
         ever=sum(counted.ever for counted in done),
         last_at=max(moments, default=None),
-        refused_or_dropped=requests_refused_or_dropped + refused_by_the_judge,
+        refused=requests_ended["refused"] + refused_by_the_judge,
+        expired=requests_ended["expired"],
     )

@@ -70,6 +70,7 @@ ALL_TABLES = {
     "made_tool_launches",
     "tool_trouble_days",
     "open_addresses",
+    "went_wrong",
     "service_accounts",
 }
 # The tables of iteration 1a: what the database holds one revision before the household.
@@ -2077,3 +2078,70 @@ async def test_every_account_is_given_its_means_of_proof(scratch_database_url):
                 )
     finally:
         await engine.dispose()
+
+
+async def test_upgrade_then_downgrade_leaves_no_table(scratch_database_url, list_tables):
+    """0055 makes the table of what went wrong; going back down leaves the schema of 0054."""
+    config = alembic_config(scratch_database_url)
+    await asyncio.to_thread(command.upgrade, config, "0054")
+    before = await schema_of(scratch_database_url)
+    tables_before = await list_tables(scratch_database_url)
+    assert "went_wrong" not in tables_before
+    await asyncio.to_thread(command.upgrade, config, "0055")
+    assert await list_tables(scratch_database_url) == tables_before | {"went_wrong"}
+    after = await schema_of(scratch_database_url)
+    assert ("went_wrong", "by_domo", "boolean", "NO", "false") in after["columns"]
+    assert ("went_wrong", "of_domo", "boolean", "NO", "false") in after["columns"]
+    indexes = {row[1]: row[2] for row in after["indexes"]}
+    assert "(action_type, at DESC)" in indexes["ix_went_wrong_action_type_at"]
+    assert "(subject_key, at DESC)" in indexes["ix_went_wrong_subject_key_at"]
+    await asyncio.to_thread(command.downgrade, config, "0054")
+    assert await list_tables(scratch_database_url) == tables_before
+    assert await schema_of(scratch_database_url) == before
+
+
+async def test_0056_gives_a_memory_its_author_and_what_a_lesson_is_about(scratch_database_url):
+    """0056 adds the assistant's authorship, a lesson's target and a warning's answer to
+    ``memories``; going back down leaves the schema of 0055."""
+    config = alembic_config(scratch_database_url)
+    await asyncio.to_thread(command.upgrade, config, "0055")
+    before = await schema_of(scratch_database_url)
+    await asyncio.to_thread(command.upgrade, config, "0056")
+    after = await schema_of(scratch_database_url)
+    columns = {(row[0], row[1]): row[2:] for row in after["columns"]}
+    assert columns[("memories", "by_domo")] == ("boolean", "NO", "false")
+    assert columns[("memories", "for_everyone")] == ("boolean", "NO", "false")
+    for name in ("lesson_action_type", "lesson_subject_key", "told_answer", "told_keep_asking"):
+        assert columns[("memories", name)][1] == "YES"
+    indexes = {row[1]: row[2] for row in after["indexes"]}
+    assert "WHERE (lesson_action_type IS NOT NULL)" in indexes["ix_memories_lesson_action_type"]
+    await asyncio.to_thread(command.downgrade, config, "0055")
+    assert await schema_of(scratch_database_url) == before
+
+
+async def test_0057_gives_actions_and_requests_their_subject_idea_and_who_answers(
+    scratch_database_url,
+):
+    """0057 adds the subject key and the assistant's reason to actions and requests, and to a
+    request who answers, the words of a refusal and when an expiry woke him; going back down
+    leaves the schema of 0056."""
+    config = alembic_config(scratch_database_url)
+    await asyncio.to_thread(command.upgrade, config, "0056")
+    before = await schema_of(scratch_database_url)
+    await asyncio.to_thread(command.upgrade, config, "0057")
+    after = await schema_of(scratch_database_url)
+    columns = {(row[0], row[1]): row[2:] for row in after["columns"]}
+    for table, names in (
+        ("message_actions", ("subject_key", "idea_reason")),
+        (
+            "confirmations",
+            ("subject_key", "idea_reason", "concerned_id", "refusal_words", "expiry_woken_at"),
+        ),
+    ):
+        for name in names:
+            assert columns[(table, name)][1] == "YES", (table, name)
+    indexes = {row[1]: row[2] for row in after["indexes"]}
+    assert "(subject_key, created_at DESC)" in indexes["ix_message_actions_subject_key_created_at"]
+    assert "WHERE (subject_key IS NOT NULL)" in indexes["ix_message_actions_subject_key_created_at"]
+    await asyncio.to_thread(command.downgrade, config, "0056")
+    assert await schema_of(scratch_database_url) == before

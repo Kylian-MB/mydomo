@@ -7,13 +7,15 @@ The barrier's code reads it when a launch begins that operation
 (``madetools.yes.agreement_covers``), never a model: within its amount, on its weekdays (ISO
 numbers, Monday 1, in the household's zone), and its times per calendar day, ISO week or month. It
 is kept for the one who keeps it (``me``), everyone's, a guest's too; for the house (``house``, the
-launches Domo makes on his own) by the owner, or by Domo himself in a turn he acts in on his own
-(the tool's own guard, ``_may_keep_for_the_house``; kept there by nobody, ``given_by`` empty: it is
-his). In such a turn nobody asked: an agreement is the house's, and one for the person whose
+launches Domo makes on his own) at once by whom the rights allow ``house.set`` (the owner by
+default), or by Domo himself in a turn he acts in on his own (kept there by nobody, ``given_by``
+empty: it is his); anyone else's waits for the owner's yes, as Domo's request (``AsksItsYes``,
+ruling R17, Task 27: ``ToolContext.may_set_for_the_house``), and is never kept without it. In such
+a turn of his own nobody asked: an agreement is the house's, and one for the person whose
 conversation it is (said so) is refused. Who may not launch a tool may not keep one on it (the
 owner closed it to them, or to Domo: ``not_possible``). ``agreement_drop`` withdraws one: one's
-own, or the house's for the owner and for Domo on his own. Both are judged and shown like the
-other actions; what they describe holds the tool's name, the operation and the bounds, never more.
+own, or the house's the same way. Both are judged and shown like the other actions; what they
+describe holds the tool's name, the operation and the bounds, never more.
 
 The context of a turn lists the person's agreements, and the house's to the owner, as data
 (``agreements_of``)."""
@@ -29,12 +31,20 @@ from domo_core.madetools.models import OFFERED_PREFIX, MadeTool, StandingAgreeme
 from domo_core.madetools.risks import operations_of
 from domo_core.madetools.service import tool_named
 from domo_core.policy.actions import DescribedAction, FactValue
+from domo_core.policy.asks import Asked
 from domo_core.policy.catalog import MADE_PREFIX
 from domo_core.policy.open_catalog import load_policy
 from domo_core.policy.rights import load_rights
 from domo_core.policy.roles import Actor
 from domo_core.prompts import AgreementLine
-from domo_core.tools.context import InvalidArguments, ToolContext, ToolOutcome
+from domo_core.tools.context import (
+    HOUSE_SET_ON_A_YES,
+    InvalidArguments,
+    ToolContext,
+    ToolOutcome,
+    WaitsForAYes,
+    set_on_a_yes,
+)
 
 # The most an agreement lets through in one operation, in cents, and the most times per period.
 MOST_CENTS: Final = 10_000_000
@@ -49,9 +59,10 @@ _NO_TOOL: Final = "no tool of yours has this name"
 _NO_OPERATION: Final = "this tool has no operation of this name"
 _COSTS_NOTHING: Final = "this operation costs nothing: it needs no agreement"
 _CLOSED: Final = "this tool is not open to the person: no agreement is kept on it. Nothing was done"
-_HOUSE_IS_THE_OWNERS: Final = (
-    "an agreement for the house is the owner's to keep or withdraw, or yours on your own. "
-    "Nothing was done"
+_HOUSE_NEEDS_THE_OWNER: Final = (
+    "an agreement for the house is kept or withdrawn at once by the owner, by whom the rights "
+    "allow it, or by you on your own; anyone else's waits for the owner's yes: call it on its "
+    "own, and it waits for it. Nothing was done"
 )
 _NOT_YOURS: Final = "no agreement of theirs has this id"
 _NOBODY_ASKED: Final = (
@@ -118,10 +129,9 @@ def _weekdays(value: object) -> list[int] | None:
     return sorted(cast(list[int], days))
 
 
-def _may_keep_for_the_house(ctx: ToolContext) -> bool:
-    """Whether this turn may keep or withdraw an agreement for the house: the owner's, and
-    Domo's own in a turn he acts in on his own (``ToolContext.may_act_for_the_house``)."""
-    return ctx.may_act_for_the_house
+_WAITS_FOR_THE_OWNER: Final = WaitsForAYes(
+    approver="owner", asked=Asked("yes", "approver", None), domo_asks=True
+)
 
 
 async def _may_launch(session: AsyncSession, ctx: ToolContext, name: str) -> bool:
@@ -134,14 +144,13 @@ async def _may_launch(session: AsyncSession, ctx: ToolContext, name: str) -> boo
 
 
 async def _keepable(session: AsyncSession, kept: _Kept, ctx: ToolContext) -> MadeTool:
-    """The tool the agreement is on, once it may be kept (see the module docstring)."""
+    """The tool the agreement is on, once it may be kept (see the module docstring); one for the
+    house that waits for the owner's yes is not refused here (``_needs_the_owner``)."""
     if ctx.on_his_own:
         if kept.for_me:
             raise InvalidArguments("not_possible", _NOBODY_ASKED)
         # Nobody asked: it is the house's.
         kept.for_house = True
-    if kept.for_house and not _may_keep_for_the_house(ctx):
-        raise InvalidArguments("not_possible", _HOUSE_IS_THE_OWNERS)
     tool = await tool_named(session, kept.tool)
     if tool is None:
         raise InvalidArguments("not_found", _NO_TOOL)
@@ -184,7 +193,8 @@ class AgreementKeep:
             "without asking each time, within its bounds (an amount in cents at most, a number of "
             "times per day, week or month, and the weekdays it may happen on, Monday 1 to Sunday "
             '7). For the person you talk with ("me"), or for the house ("house": the launches '
-            "made for the house: the owner only, or you when you act on your own). The tool "
+            "made for the house: kept at once by whom the owner's rules allow it, or by you "
+            "when you act on your own; anyone else's waits for the owner's yes). The tool "
             "is yours and serves anyone; someone it is closed to keeps no agreement on it. For a "
             "person, only when they asked for it in their words."
         ),
@@ -228,10 +238,31 @@ class AgreementKeep:
             tool = await _keepable(session, kept, ctx)
         return _kept_described(kept, tool)
 
+    async def _needs_the_owner(self, arguments: JsonObject, ctx: ToolContext) -> bool:
+        kept = _Kept(arguments)
+        async with ctx.session_factory() as session:
+            await _keepable(session, kept, ctx)
+            return kept.for_house and not await ctx.may_set_for_the_house(session)
+
+    async def waits_for(self, arguments: JsonObject, ctx: ToolContext) -> WaitsForAYes | None:
+        """One for the house asked by someone who may not set it: Domo's request waiting for the
+        owner's yes (ruling R17), never refused. Any other: ``None``."""
+        return _WAITS_FOR_THE_OWNER if await self._needs_the_owner(arguments, ctx) else None
+
+    async def never_a_step(self, arguments: JsonObject, ctx: ToolContext) -> str | None:
+        """One that waits for the owner's yes is never a step of a chain (``NeverAStep``)."""
+        return _HOUSE_NEEDS_THE_OWNER if await self._needs_the_owner(arguments, ctx) else None
+
     async def execute(self, arguments: JsonObject, ctx: ToolContext) -> ToolOutcome:
         kept = _Kept(arguments)
         async with ctx.session_factory() as session:
             tool = await _keepable(session, kept, ctx)
+            told_after = False
+            if kept.for_house:
+                if not await ctx.may_set_for_the_house(session):
+                    # Run without the owner's yes: nothing is kept.
+                    raise InvalidArguments("not_possible", _HOUSE_NEEDS_THE_OWNER)
+                told_after = await set_on_a_yes(session, ctx)
             row = StandingAgreement(
                 tool_id=tool.id,
                 operation=kept.operation,
@@ -248,9 +279,12 @@ class AgreementKeep:
             await session.flush()
             agreement_id = row.id
             await session.commit()
+        told: JsonObject = {"agreement": str(agreement_id)}
+        if told_after:
+            told["detail"] = HOUSE_SET_ON_A_YES
         return ToolOutcome(
             status="done",
-            model_result={"agreement": str(agreement_id)},
+            model_result=told,
             card={"key": "action.card.done.agreement.keep", "params": {}},
         )
 
@@ -268,16 +302,22 @@ async def _droppable(
     session: AsyncSession, agreement_id: uuid.UUID, ctx: ToolContext, *, lock: bool = False
 ) -> StandingAgreement:
     """The agreement ``agreement_id`` in force, when this turn may withdraw it: one's own, or the
-    house's for the owner and for Domo on his own (who withdraws only the house's there)."""
+    house's (Domo on his own withdraws only the house's there); whether the house's may be
+    withdrawn at once is ``_house_needs_the_owner``'s to say."""
     row = await session.get(StandingAgreement, agreement_id, with_for_update=lock)
     if row is None or row.withdrawn_at is not None:
         raise InvalidArguments("not_found", _NOT_YOURS)
-    if row.for_person_id is None:
-        if not _may_keep_for_the_house(ctx):
-            raise InvalidArguments("not_possible", _HOUSE_IS_THE_OWNERS)
-    elif row.for_person_id != ctx.person.id or ctx.on_his_own:
+    if row.for_person_id is not None and (row.for_person_id != ctx.person.id or ctx.on_his_own):
         raise InvalidArguments("not_found", _NOT_YOURS)
     return row
+
+
+async def _house_needs_the_owner(
+    session: AsyncSession, row: StandingAgreement, ctx: ToolContext
+) -> bool:
+    """Whether withdrawing ``row`` waits for the owner's yes: the house's, asked by someone who
+    may not set it (ruling R17)."""
+    return row.for_person_id is None and not await ctx.may_set_for_the_house(session)
 
 
 class AgreementDrop:
@@ -287,8 +327,9 @@ class AgreementDrop:
         name="agreement_drop",
         description=(
             "Withdraw a standing agreement (agreement_keep), by its id: from then on that "
-            "operation is asked again. The person's own, or the house's: the owner only, or you "
-            "when you act on your own."
+            "operation is asked again. The person's own, or the house's: at once by whom the "
+            "owner's rules allow it, or by you on your own; anyone else's waits for the owner's "
+            "yes."
         ),
         parameters={
             "type": "object",
@@ -314,10 +355,28 @@ class AgreementDrop:
             facts={"for_house": row.for_person_id is None},
         )
 
+    async def _needs_the_owner(self, arguments: JsonObject, ctx: ToolContext) -> bool:
+        agreement_id = _drop_argument(arguments)
+        async with ctx.session_factory() as session:
+            row = await _droppable(session, agreement_id, ctx)
+            return await _house_needs_the_owner(session, row, ctx)
+
+    async def waits_for(self, arguments: JsonObject, ctx: ToolContext) -> WaitsForAYes | None:
+        """The house's, withdrawn by someone who may not set it: Domo's request waiting for the
+        owner's yes (ruling R17). Any other: ``None``."""
+        return _WAITS_FOR_THE_OWNER if await self._needs_the_owner(arguments, ctx) else None
+
+    async def never_a_step(self, arguments: JsonObject, ctx: ToolContext) -> str | None:
+        """One that waits for the owner's yes is never a step of a chain (``NeverAStep``)."""
+        return _HOUSE_NEEDS_THE_OWNER if await self._needs_the_owner(arguments, ctx) else None
+
     async def execute(self, arguments: JsonObject, ctx: ToolContext) -> ToolOutcome:
         agreement_id = _drop_argument(arguments)
         async with ctx.session_factory() as session:
             row = await _droppable(session, agreement_id, ctx, lock=True)
+            if await _house_needs_the_owner(session, row, ctx):
+                # Run without the owner's yes: nothing is withdrawn.
+                raise InvalidArguments("not_possible", _HOUSE_NEEDS_THE_OWNER)
             row.withdrawn_at = ctx.clock()
             await session.commit()
         return ToolOutcome(

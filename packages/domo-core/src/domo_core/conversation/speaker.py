@@ -29,15 +29,26 @@ class Clue:
 
 @dataclass(frozen=True)
 class Speaker:
-    """Who speaks. ``channel`` is data for the judge and the audit, never branched on."""
+    """Who speaks. ``channel`` is data for the judge and the audit, never branched on.
+
+    ``nobody_spoke`` is set for a turn the assistant started, that answers no words (a wake, an
+    arrival, a plan): who it is for stays as the clues say, but nobody is said to speak.
+    ``last_heard_at`` is when the person was heard before in this conversation (their message
+    before the one the turn answers), ``None`` when never."""
 
     person_id: UUID | None
     channel: str
     device_id: UUID | None = None
     clues: tuple[Clue, ...] = ()
+    nobody_spoke: bool = False
+    last_heard_at: datetime | None = None
 
     def as_json(self, now: datetime) -> JsonObject:
-        """What the judge reads: the channel and the clues, never an identifier."""
+        """What the judge reads, never an identifier: the channel, and that nobody spoke, alone,
+        in a turn nobody spoke in; else the clues, each with its real age, and how long ago the
+        person was heard before here (``None`` when never)."""
+        if self.nobody_spoke:
+            return {"channel": self.channel, "nobody_spoke": True}
         return {
             "channel": self.channel,
             "clues": [
@@ -46,11 +57,19 @@ class Speaker:
                     "weighs": clue.weighs,
                     "strength": clue.strength,
                     "source": clue.source,
-                    "minutes_ago": max(0, int((now - clue.at).total_seconds() // 60)),
+                    "minutes_ago": _minutes_before(clue.at, now),
                 }
                 for clue in self.clues
             ],
+            "last_heard_minutes_ago": (
+                None if self.last_heard_at is None else _minutes_before(self.last_heard_at, now)
+            ),
         }
+
+
+def _minutes_before(at: datetime, now: datetime) -> int:
+    """How many whole minutes ``at`` is before ``now`` (0 for a moment after it)."""
+    return max(0, int((now - at).total_seconds() // 60))
 
 
 def established(speaker: Speaker) -> bool:

@@ -156,3 +156,50 @@ async def test_an_answer_cut_after_some_words_is_not_asked_again():
 async def test_an_answer_that_ended_by_itself_is_not_cut_short():
     events = await collect(FakeChatModel(["Hello"]))
     assert isinstance(events[-1], TurnDone) and not events[-1].cut_short
+
+
+# --- what the person writes while the turn runs (spec 11.3) ------------------------------------
+
+
+async def test_between_two_rounds_what_they_wrote_is_read_as_their_words():
+    from domo_core.chat.agent import KEPT_MARKER, ActionRecord
+    from domo_core.llm.types import ToolCall, ToolDefinition
+
+    tool = ToolDefinition("rename", "Rename.", {"type": "object", "properties": {}})
+    model = FakeChatModel(tool_script=[ToolCall("c1", "rename", "{}"), "Stopped."])
+    asked: list[int] = []
+
+    async def handle(call: ToolCall, *, over_limit: bool = False) -> ActionRecord:
+        return ActionRecord("rename", "test.rename", "done", None, {"status": "done"}, {})
+
+    async def between_rounds() -> list[str]:
+        asked.append(len(model.calls))
+        return ["no, stop", "really"]
+
+    events = await collect(
+        model, tools=(tool,), handle_tool_call=handle, between_rounds=between_rounds
+    )
+    assert isinstance(events[-1], TurnDone)
+    # Asked once: after the round of calls, before the model is asked again.
+    assert asked == [1]
+    last = model.calls[1].messages[-1]
+    assert isinstance(last, ChatMessage) and last.role == "user"
+    assert last.content.startswith(KEPT_MARKER)
+    assert last.content.index("no, stop") < last.content.index("really")
+
+
+async def test_nothing_written_meanwhile_adds_nothing():
+    from domo_core.chat.agent import ActionRecord
+    from domo_core.llm.types import ToolCall, ToolDefinition, ToolResult
+
+    tool = ToolDefinition("rename", "Rename.", {"type": "object", "properties": {}})
+    model = FakeChatModel(tool_script=[ToolCall("c1", "rename", "{}"), "Done."])
+
+    async def handle(call: ToolCall, *, over_limit: bool = False) -> ActionRecord:
+        return ActionRecord("rename", "test.rename", "done", None, {"status": "done"}, {})
+
+    async def between_rounds() -> list[str]:
+        return []
+
+    await collect(model, tools=(tool,), handle_tool_call=handle, between_rounds=between_rounds)
+    assert isinstance(model.calls[1].messages[-1], ToolResult)

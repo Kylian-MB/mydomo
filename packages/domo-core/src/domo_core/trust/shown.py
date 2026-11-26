@@ -9,8 +9,8 @@ no figure shown.
 ``trust_shown`` reads them all at once: one savepoint, one query on the people, one grouped query
 on the facts (``trust.service.trust_of_many``), and the household's start when the caller does
 not give it. A read that fails never fails what reads it (``db.read_or_nothing``): it gives no
-figure. The figures are data for Domo's judgement: nothing of the policy, the barrier, the
-confirmations or the spending reads them.
+figure. The figures are data for Domo's judgement: nothing of the policy, the barrier or the
+spending reads them (the yes-judge reads the facts in its case, to weigh, never as a yes).
 """
 
 import uuid

@@ -199,8 +199,7 @@ async def search(
 ) -> list[Memory]:
     """The memories ``words`` find for this person's turn, the best first, ``limit`` at most.
     ``with_kept`` (Domo asks for what he keeps for himself, on purpose) lets every memory in.
-    ``only`` narrows both legs further, in the query itself (what the yes-judge may read:
-    ``memory.told.for_judge``)."""
+    ``only`` narrows both legs further, in the query itself."""
     found = await _found(
         session,
         person_id,
@@ -212,6 +211,21 @@ async def search(
         only=only,
     )
     return found[:limit]
+
+
+async def search_for_case(
+    session: AsyncSession,
+    private_of: uuid.UUID,
+    words: str,
+    *,
+    embedder: Embedder,
+    limit: int,
+) -> list[Memory]:
+    """The memories ``words`` find for the yes-judge's case (``confirmations.case.gather``), the
+    best first, ``limit`` at most: whoever said them, but never what is kept private by someone
+    other than ``private_of`` (``visible_to``, in both legs' queries). Who said each one is for
+    the caller to read from its columns."""
+    return await search(session, private_of, words, embedder=embedder, limit=limit, with_kept=False)
 
 
 @dataclass(frozen=True)

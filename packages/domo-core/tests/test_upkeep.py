@@ -14,6 +14,8 @@ import httpx
 from domo_common.gatekeeper_api import ProviderRoute
 from domo_core.accounts.models import Person
 from domo_core.audit.models import AuditEntry
+from domo_core.chat.models import Conversation
+from domo_core.confirmations.models import Confirmation
 from domo_core.gatekeeper_client import new_http_client
 from domo_core.llm import real_spend
 from domo_core.llm.models import Provider, new_provider_id
@@ -93,6 +95,42 @@ async def test_the_app_settles_the_stale_reservations(settings, session_factory,
             while (await status_of(session_factory, stale))[0] != "settled":
                 await anyio.sleep(0.01)
     assert await status_of(session_factory, stale) == ("settled", Decimal("0.3"))
+
+
+async def test_the_app_expires_the_requests_past_their_lifetime(settings, session_factory, clock):
+    async with session_factory() as writer:
+        alex = Person(display_name="Alex", role="adult")
+        writer.add(alex)
+        await writer.flush()
+        conversation = Conversation(person_id=alex.id)
+        writer.add(conversation)
+        await writer.flush()
+        # Past the owner's default lifetime (a week) on the application's clock (2030), and never
+        # opened by anyone.
+        request = Confirmation(
+            requester_id=alex.id,
+            approver_kind="self",
+            conversation_id=conversation.id,
+            tool_name="note_leave",
+            arguments={},
+            action={"action_type": "note.leave"},
+            status="pending",
+            created_at=clock() - timedelta(days=8),
+        )
+        writer.add(request)
+        await writer.commit()
+    app = create_app(settings)
+    app.dependency_overrides[get_clock] = lambda: clock
+    async with app.router.lifespan_context(app):
+        with anyio.fail_after(30):
+            while True:
+                async with session_factory() as reader:
+                    status = await reader.scalar(
+                        select(Confirmation.status).where(Confirmation.id == request.id)
+                    )
+                if status == "expired":
+                    break
+                await anyio.sleep(0.01)
 
 
 # --- what the upkeep reads of the world ---------------------------------------------------------

@@ -87,7 +87,10 @@ truth, under the rule of the chain and the yes of the one who gave it (``ToolCon
 Both go through ``confirmations.chain.run_steps``, which describes each step again, puts it through
 the barrier, runs it and records it, and stops at the first that fails, or pauses the request at a
 step that waits for an arrival still to come; the outcome says what came of it
-(``confirmations.chain.chain_outcome``).
+(``confirmations.chain.chain_outcome``). A chain that runs at once and meets a step that needs
+someone's agreement does not stop: its rest waits for that approver's yes, in a request stored for
+it then (``_the_rest_waits``, JDG-9), with its steps done kept done; Domo reads its id
+(``"request_id"``).
 
 ``chain_continue`` (``chain.continue``, the members', judged inside: the rest it carries is judged,
 not the call) takes up a chain that stopped, from the step that failed: only the person's own
@@ -149,6 +152,7 @@ from domo_core.audit.log import append_audit
 from domo_core.chat.agent import ActionRecord
 from domo_core.confirmations.chain import (
     STEPS_LEFT,
+    RestAsked,
     can_be_continued,
     chain_outcome,
     failed_step_may_have_acted,
@@ -156,6 +160,7 @@ from domo_core.confirmations.chain import (
     planned_of,
     request_told,
     run_steps,
+    stopped_without_a_request,
     stored_steps,
     waits_again,
 )
@@ -181,7 +186,13 @@ from domo_core.confirmations.replan import (
 )
 from domo_core.confirmations.service import DecidedVia, settle, what_the_yes_gave
 from domo_core.confirmations.steps import PlannedStep, add_steps, mark_step, steps_of
-from domo_core.confirmations.store import asked_of, covers, how_to_answer, is_past_lifetime
+from domo_core.confirmations.store import (
+    asked_of,
+    covers,
+    create_confirmation,
+    how_to_answer,
+    is_past_lifetime,
+)
 from domo_core.conversation.execution import (
     JUDGE_REFUSED_DETAIL,
     WHO_SAYS_YES,
@@ -199,6 +210,7 @@ from domo_core.policy.barrier import (
     NeedsApproval,
     Refuse,
     approval_needed,
+    record_decision,
     stricter,
 )
 from domo_core.policy.catalog import ACTION_FACTS, is_made, is_silent
@@ -630,6 +642,15 @@ def _not_at_all(steps: Sequence[PlannedStep]) -> NeverAsk | None:
     return None
 
 
+def _basis_of(actor: Actor, rights: RightsTable) -> ChainBasis:
+    """What a chain remembers of ``actor`` as they are now (``ChainBasis``): their role, and the
+    ids of the rights in force given to them themselves (``rights``)."""
+    return ChainBasis(
+        actor.role,
+        frozenset(right.id for right in rights.rights if right.person_id == actor.person_id),
+    )
+
+
 def _shown_to(actor: Actor, ctx: ToolContext, rights: RightsTable) -> frozenset[str]:
     """The names of the tools ``actor`` is shown, under ``rights`` (``tools_for``)."""
     return frozenset(
@@ -753,16 +774,7 @@ class DoInOrder:
         )
         if kept is not None and len(kept) != len(steps):
             raise ValueError("a chain planned again says, for each of its steps, if it is kept")
-        remembered = (
-            ChainBasis(
-                actor.role,
-                frozenset(
-                    right.id for right in rights.rights if right.person_id == actor.person_id
-                ),
-            )
-            if basis is None
-            else basis
-        )
+        remembered = _basis_of(actor, rights) if basis is None else basis
         planned: list[PlannedStep] = []
         described: list[DescribedAction] = []
         # Whom and what the steps before touch (those done included): a described step touches
@@ -949,7 +961,27 @@ class DoInOrder:
         if ctx.request_id is None:
             steps = await _steps_now(arguments, ctx)
             run = await run_steps(ctx, steps, basis=None, request_id=None, decider=None)
-            return chain_outcome(run, total=len(steps), at_once=True)
+            outcome = chain_outcome(run, total=len(steps), at_once=True)
+            if run.asked is None:
+                return outcome
+            # A step needs someone's agreement: the rest waits for it, as a request.
+            try:
+                request_id = await _the_rest_waits(ctx, self.definition.name, steps, run.asked)
+            except Exception as error:
+                # What ran is told and counted all the same: the chain stops at that step, as
+                # when nobody could be asked (its card lists the types of the steps done).
+                logger.error(
+                    "The rest of a chain that ran at once could not be stored (%s)",
+                    type(error).__name__,
+                )
+                stopped = stopped_without_a_request(run)
+                return chain_outcome(stopped, total=len(steps), at_once=True)
+            told: JsonObject = {
+                **outcome.model_result,
+                "request_id": str(request_id),
+                "steps": [step.told() for step in run.done],
+            }
+            return replace(outcome, model_result=told, confirmation_id=request_id)
         async with ctx.session_factory() as session:
             c = await _request(session, ctx.request_id)
             steps = await stored_steps(session, ctx.request_id)
@@ -972,6 +1004,143 @@ async def _steps_now(arguments: JsonObject, ctx: ToolContext) -> list[PlannedSte
         )
         for step in _steps_from(arguments, ctx.registry, _shown_to(ctx.actor, ctx, rights))
     ]
+
+
+async def _described_later(
+    ctx: ToolContext, steps: Sequence[PlannedStep], asked: RestAsked
+) -> list[DescribedAction | None]:
+    """The steps after the one that waits (``asked``) of a chain that ran at once, each described
+    now for the person as the barrier judged them, as ``DoInOrder.plan`` describes the steps of a
+    chain asked for: the approver sees their targets, and each must still be that target when
+    its turn comes. A step is left to be checked in its turn (``None``) when ``plan`` would leave
+    it so: from the first wait for an arrival on, or when it acts on whom a step before it touches
+    (those done and the one that waits included); and when its tool cannot describe it now or
+    takes more than ``_PLAN_SECONDS`` (its turn checks it again: nothing is guessed)."""
+    judged_ctx = replace(ctx, actor=asked.judged)
+    touched_so_far: set[str] = set(touched(asked.action))
+    for _, action, _ in asked.done:
+        touched_so_far |= touched(action)
+    after_a_wait = False
+    found: list[DescribedAction | None] = []
+    for step in steps[asked.position + 1 :]:
+        tool = ctx.registry.get(step.tool_name)
+        if tool is None:
+            found.append(None)
+            continue
+        after_a_wait = after_a_wait or step.after_arrival_of is not None
+        as_given = _Step(tool, step.tool_name, step.arguments, step.after_arrival_of)
+        action: DescribedAction | None = None
+        if not after_a_wait and not await _acts_on_an_earlier_one(as_given, touched_so_far, ctx):
+            with anyio.move_on_after(_PLAN_SECONDS):
+                try:
+                    action = await tool.describe(step.arguments, asked.judged, judged_ctx)
+                except InvalidArguments:
+                    action = None
+            if action is not None and action.action_type != step.action_type:
+                action = None
+        if action is None:
+            touched_so_far |= await touched_by(tool, step.arguments, asked.judged, ctx)
+        else:
+            touched_so_far |= touched(action)
+        found.append(action)
+    return found
+
+
+async def _the_rest_waits(
+    ctx: ToolContext, tool_name: str, steps: Sequence[PlannedStep], asked: RestAsked
+) -> uuid.UUID:
+    """The request for the rest of a chain that ran at once (its call ``tool_name``, its
+    ``steps``) and met a step that needs someone's agreement (``asked``, JDG-9), stored in one
+    transaction within ``_STORE_SECONDS`` (``store.create_confirmation``, ``steps.add_steps``), as
+    a request of the chain's call would be: its requester (the person of the turn, whose
+    conversation it waits in, made by the reply of the call: ``ToolContext.domo_message_id``), the
+    chain's call with all its steps, its own action (the facts of the steps as they stand now:
+    the one that waits is described, and those after it as ``_described_later`` finds them), what
+    it remembers
+    of the one who asked as they are now (``ChainBasis``), and Domo's when the turn is his own.
+    It waits for the barrier's approver for that step, never a person concerned (ruling R34),
+    asking what the owner's rule on it asks, else a plain yes of the approver, with the question a
+    limit asked. Its steps: those done, ``done`` with the action and the card they ran with, then
+    the rest; each is judged again in its turn with the role of now, as the chain judged it
+    (``with_basis`` is off). The barrier's decision on the step is audited, last. Raises when it
+    cannot be stored: the step did not run.
+
+    A step that became one a judge must weigh first (``RestAsked.plain_yes``: the last key)
+    waits for a plain yes, the judge's (``Asked("yes", "judge")``), of the approver the barrier
+    asks for it, else of the person who asked (``self``), or of the owner for a chain of his own
+    (his own yes is nobody's)."""
+    need = asked.need
+    done = {position: (action, card) for position, action, card in asked.done}
+    later = await _described_later(ctx, steps, asked)
+    actions: list[DescribedAction | None] = [
+        done[position][0]
+        if position in done
+        else asked.action
+        if position == asked.position
+        else later[position - asked.position - 1]
+        for position in range(len(steps))
+    ]
+    planned = [
+        replace(step, action=action, with_basis=False)
+        for step, action in zip(steps, actions, strict=True)
+    ]
+    rest = planned[asked.position :]
+    action = _chain_action(
+        len(steps),
+        sum(1 for step in rest if step.action is None),
+        [step.action for step in rest if step.action is not None],
+        [step.action_type for step in rest],
+        sum(1 for step in steps if step.after_arrival_of is not None),
+    )
+    if isinstance(need, NeedsApproval):
+        approver: Approver = need.approver
+        question = need.question
+    else:
+        # His own yes is nobody's: a chain of his own waits for the owner, whose conversation it
+        # is (as ``execution._waits`` places it).
+        approver, question = ("owner" if ctx.on_his_own else "self"), None
+    asking = (
+        Asked(need.rule, "rule")
+        if need.rule is not None
+        else Asked("yes", "judge" if asked.plain_yes else "approver")
+    )
+    with anyio.fail_after(_STORE_SECONDS):
+        async with ctx.session_factory() as session:
+            now = ctx.clock()
+            rights = await load_rights(session)
+            c = await create_confirmation(
+                session,
+                requester=ctx.actor,
+                tool_name=tool_name,
+                arguments={
+                    "steps": [
+                        as_call(step.tool_name, step.arguments, step.after_arrival_of)
+                        for step in steps
+                    ]
+                },
+                action=action,
+                approver=approver,
+                asked=asking,
+                conversation_id=ctx.conversation_id,
+                message_id=ctx.domo_message_id,
+                now=now,
+                question=question,
+                chain_basis=_basis_of(asked.judged, rights),
+                by_domo=ctx.on_his_own,
+            )
+            await add_steps(session, c.id, planned)
+            for position, (_, card) in done.items():
+                await mark_step(session, c.id, position, status="done", result=card, now=now)
+            # Last, just before the commit.
+            await record_decision(
+                session,
+                asked.judged,
+                asked.action,
+                need,
+                tool_name=steps[asked.position].tool_name,
+            )
+            await session.commit()
+            return c.id
 
 
 async def _request(
@@ -1005,6 +1174,8 @@ _NO_STOPPED_CHAIN: Final = (
 # How long planning the rest of a chain may take (as for a change of a chain that waits,
 # ``confirmations.service``): the tool bounds its own steps.
 _PLAN_SECONDS: Final = 60.0
+# How long storing the request for the rest of a chain that ran at once may take.
+_STORE_SECONDS: Final = 15.0
 # What the model reads of the rest of a chain that waits for a new yes, or that the judge did not
 # let go on.
 _WAITS_FOR_A_NEW_YES: Final = "waiting_for_confirmation"
@@ -1184,6 +1355,7 @@ async def run_under_the_same_yes(
             decider,
             outcome="executed" if outcome.status == "done" else "failed",
             via=taken.via,
+            now=ctx.clock(),
         )
     return replace(outcome, confirmation_id=request_id), record
 
@@ -1295,7 +1467,7 @@ async def _the_rest_planned(
         action=plan.action,
         says=describe_chain(plan.arguments, REFERENCE),
         rights=rights_say(decision),
-        steps=told,
+        steps=plan.steps,
         request=request,
         owner_rule=owner_rule_of(plan.never_ask),
     )
@@ -1473,6 +1645,6 @@ class ChainContinue:
                 return taken
             case UnderTheSameYes():
                 # The steps were asked for in an earlier turn: its message is not this one's.
-                later = replace(ctx, said=None)
+                later = replace(ctx, said=None, said_later=())
                 outcome, _ = await run_under_the_same_yes(later, request_id, taken)
                 return outcome

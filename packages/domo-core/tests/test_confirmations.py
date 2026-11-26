@@ -24,7 +24,7 @@ from domo_core.channels.page.abilities import PAGE
 from domo_core.chat.models import Conversation
 from domo_core.confirmations import routes as confirmation_routes
 from domo_core.confirmations.describe import describe_for_people, waiting_since
-from domo_core.confirmations.intent import Reading
+from domo_core.confirmations.intent import Reading, classifier_prompt
 from domo_core.confirmations.models import Confirmation
 from domo_core.confirmations.service import (
     NOT_SURE_REASON,
@@ -116,9 +116,12 @@ async def test_free_wording_goes_to_the_isolated_classifier(adult_chat, display_
     await adult_chat.say_with_tool("profile_rename", {"name": "Alex B"})
     model = adult_chat.use_model(FakeChatModel(["yes"]))
     await adult_chat.say("ça me va très bien, merci")
-    # The classifier reads the words (no tools, only the message); then Domo answers.
+    # The reader reads the words (no tools, one message: data); then Domo answers.
     assert len(model.calls) == 2 and model.calls[0].tools == () and model.calls[1].tools
-    assert model.calls[0].messages == [ChatMessage("user", "ça me va très bien, merci")]
+    assert model.calls[0].system == classifier_prompt()
+    (given,) = model.calls[0].messages
+    assert isinstance(given, ChatMessage)
+    assert json.loads(given.content)["reply"] == "ça me va très bien, merci"
     assert await display_name_of(adult_chat.person) == "Alex B"
 
 
@@ -142,7 +145,9 @@ async def test_an_explicit_yes_needs_the_button_or_i_confirm(adult_chat, display
     await adult_chat.say_with_tool("profile_rename", {"name": "Alex B"}, judge="explicit_yes: odd")
     model = adult_chat.use_model(FakeChatModel(["Tu confirmes ?"]))
     await adult_chat.say("oui")
-    assert len(model.calls) == 1 and model.calls[0].tools  # the main model, never the classifier
+    # The reader is asked whether that yes is firm (it is not), then Domo answers.
+    assert len(model.calls) == 2 and model.calls[0].system == classifier_prompt()
+    assert model.calls[1].tools
     assert await display_name_of(adult_chat.person) == "Alex"
     await adult_chat.say("Je confirme.")
     assert await display_name_of(adult_chat.person) == "Alex B"
@@ -398,7 +403,8 @@ async def test_domo_is_told_that_a_request_a_rule_asks_explicitly_needs_the_butt
 @pytest.mark.parametrize(
     "words,script",
     [
-        ("oui", ["Il faut le bouton, ou dire « je confirme »."]),  # a phrase the code knows
+        # A phrase the code knows: the reader says whether it is firm (a bare yes here).
+        ("oui", ["yes", "Il faut le bouton, ou dire « je confirme »."]),
         ("ça me va très bien", ["yes", "Il faut le bouton, ou « je confirme »."]),  # classifier
     ],
 )
@@ -428,10 +434,10 @@ async def test_a_yes_the_service_finds_not_explicit_enough_is_marked_too(
     await adult_chat.say_with_tool("profile_rename", {"name": "Alex B"})
     await grant("profile.rename", role="adult", ask="explicit_yes")
 
-    async def read_as_a_plain_yes(text, ask, model):
-        return Reading("approve", "phrase")
+    async def read_as_a_plain_yes(text, shown, **_):
+        return tuple(Reading("approve", "phrase") for _ in shown)
 
-    monkeypatch.setattr(conversation_turn, "read_reply_in_full", read_as_a_plain_yes)
+    monkeypatch.setattr(conversation_turn, "read_replies", read_as_a_plain_yes)
     model = adult_chat.use_model(FakeChatModel(["Il faut le bouton, ou « je confirme »."]))
     await adult_chat.say("oui")
     (request,) = _pending_in(model.calls[0].system)
@@ -775,9 +781,9 @@ async def test_a_yes_after_another_exchange_does_not_answer_an_older_request(
     assert status_of(r) == "executed"
 
 
-async def test_a_reply_that_made_two_requests_is_not_answered_by_a_yes(
+async def test_a_yes_that_does_not_say_which_of_two_requests_decides_neither(
     adult_chat, display_name_of
-):  # R74 (c)
+):  # R74 (c); spec 11.1: the reader reads it for both, and finds no answer to either
     adult_chat.use_model(
         FakeChatModel(
             tool_script=[
@@ -791,7 +797,8 @@ async def test_a_reply_that_made_two_requests_is_not_answered_by_a_yes(
     assert [a["status"] for a in reply.actions] == ["waiting", "waiting"]
     model = adult_chat.use_model(FakeChatModel(["Laquelle ?"]))
     await adult_chat.say("oui")
-    assert len(model.calls) == 1 and await display_name_of(adult_chat.person) == "Alex"
+    assert len(model.calls) == 2 and model.calls[0].system == classifier_prompt()
+    assert await display_name_of(adult_chat.person) == "Alex"
 
 
 async def test_words_answer_the_request_domo_shows_again_while_another_waits(
@@ -807,9 +814,9 @@ async def test_words_answer_the_request_domo_shows_again_while_another_waits(
     assert await confirmation_status(b) == "pending"
 
 
-async def test_a_reply_that_showed_two_requests_again_is_not_answered_by_a_yes(
+async def test_a_reply_that_showed_two_requests_again_is_read_for_both(
     adult_chat, display_name_of, confirmation_status
-):  # R93: words answer a request only when the reply just before showed it alone
+):  # spec 11.1 (it was R93): words answer each request the reply just before showed
     a = (await adult_chat.say_with_tool("profile_rename", {"name": "A"})).pending_confirmation_id
     b = (await adult_chat.say_with_tool("profile_rename", {"name": "B"})).pending_confirmation_id
     adult_chat.use_model(
@@ -826,16 +833,41 @@ async def test_a_reply_that_showed_two_requests_again_is_not_answered_by_a_yes(
     assert [a["status"] for a in both.actions] == ["done", "done"]
     model = adult_chat.use_model(FakeChatModel(["Laquelle des deux ?"]))
     await adult_chat.say("oui")
-    assert len(model.calls) == 1 and model.calls[0].tools  # Domo answers: nothing decided
+    # The reader is given both, and its answer names neither: nothing decided, Domo answers.
+    assert len(model.calls) == 2 and model.calls[1].tools
+    (given,) = model.calls[0].messages
+    assert isinstance(given, ChatMessage)
+    assert [r["n"] for r in json.loads(given.content)["requests"]] == [1, 2]
     assert await display_name_of(adult_chat.person) == "Alex"
     assert [await confirmation_status(c) for c in (a, b)] == ["pending", "pending"]
+    # Shown again, both (the reply before showed none: no reader), and a yes to the second only
+    # decides it.
+    adult_chat.use_model(
+        FakeChatModel(
+            tool_script=[
+                ToolCall("r3", "confirmation_remind", json.dumps({"request_id": str(a)})),
+                ToolCall("r4", "confirmation_remind", json.dumps({"request_id": str(b)})),
+                "Les revoici.",
+            ]
+        )
+    )
+    await adult_chat.say("montre-les encore")
+    model = adult_chat.use_model(FakeChatModel(tool_script=["1: unclear\n2: yes", "Fait."]))
+    await adult_chat.say("oui pour le deuxième")
+    (given,) = model.calls[0].messages
+    assert isinstance(given, ChatMessage)
+    second = json.loads(given.content)["requests"][1]["says"]
+    yes, no = (b, a) if second == t("action.describe.profile.rename", "en", name="B") else (a, b)
+    assert [await confirmation_status(c) for c in (yes, no)] == ["executed", "pending"]
 
 
 async def test_for_an_explicit_yes_i_confirm_answers_after_domo_asked_for_it_only(
     adult_chat, display_name_of
 ):  # R74, explicit yes: a plain yes is an answer, which Domo's next reply asks to confirm
     await adult_chat.say_with_tool("profile_rename", {"name": "Alex B"}, judge="explicit_yes: odd")
-    adult_chat.use_model(FakeChatModel(tool_script=["Dis « je confirme ».", "unclear", "Ah ?"]))
+    adult_chat.use_model(
+        FakeChatModel(tool_script=["yes", "Dis « je confirme ».", "unclear", "Ah ?"])
+    )
     await adult_chat.say("oui")  # a plain yes: Domo asks for "je confirme"
     await adult_chat.say("hmm")  # another exchange: the request is two replies back now
     model = adult_chat.use_model(FakeChatModel(["Confirmer quoi ?"]))

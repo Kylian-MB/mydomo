@@ -21,6 +21,7 @@ from chat_support import ChatPilot, ChatServer, Member, actions_of
 from domo_core.audit.models import AuditEntry
 from domo_core.channels.turns import app_turn_deps
 from domo_core.chat.models import Conversation, Message
+from domo_core.confirmations.models import Confirmation
 from domo_core.conversation import starts
 from domo_core.conversation.prepare import PLAN_MARKER
 from domo_core.conversation.visits import ArrivalTurns
@@ -32,6 +33,7 @@ from domo_core.llm.types import (
     ToolChoice,
     ToolDefinition,
 )
+from domo_core.memory.service import keep
 from domo_core.notes.models import Note
 from domo_core.plans.models import Plan
 from domo_core.plans.service import make
@@ -406,6 +408,12 @@ async def test_their_kept_words_count_as_what_they_asked(
     assert (await plan_row(server, plan_id)).last_outcome == "spoke"
 
 
+async def requests_of(server: ChatServer) -> list[Confirmation]:
+    """Every request stored so far."""
+    async with server.session_factory() as session:
+        return list((await session.scalars(select(Confirmation))).all())
+
+
 async def test_a_plan_domo_made_alone_does_not(
     owner_chat: ChatPilot, adult_member: Member, count_notes: Any
 ):
@@ -420,13 +428,105 @@ async def test_a_plan_domo_made_alone_does_not(
     )
     server.clock.advance(LATER)
     await run_the_pass(server)
-    # Their last messages are not what the judge reads: nobody asked for it, it asks a yes.
-    assert judged_case(model)["words"] == []
+    # Their last messages are not what the judge reads: nobody asked for it. It is an idea of
+    # his, and a judge silent twice on it means nothing is done and nobody is asked.
+    cases = [json.loads(str(call.messages[0].content)) for call in model.judge_calls()]
+    assert [case["words"] for case in cases] == [[], []]
     assert await count_notes() == 0
+    assert await requests_of(server) == []
     reply = (await replies_of(server, owner_chat))[-1]
     async with server.session_factory() as session:
         [action] = await actions_of(session, reply.id)
-    assert action["status"] == "waiting"
+    assert action["status"] == "refused"
+
+
+async def test_a_plan_he_set_alone_is_judged_on_its_reason_not_asked_back(
+    owner_chat: ChatPilot, adult_member: Member, count_notes: Any
+):
+    # Part 8 of "Domo judges first": the case tells the truth, nobody spoke and the plan's
+    # reason is why he acts; the judge says do, and it is done, nothing asked of anyone.
+    server = owner_chat.server
+    await make_plan(owner_chat, "tell Alex about the bins", made_by_domo=True)
+    model = owner_chat.use_model(
+        FakeChatModel(tool_script=[note_to_alex(), "I told Alex."], judge="do")
+    )
+    server.clock.advance(LATER)
+    await run_the_pass(server)
+    case = judged_case(model)
+    assert case["idea"]["of"] == "domo"
+    assert case["idea"]["reason"] == "tell Alex about the bins"
+    assert case["speaker"] == {"channel": "unasked", "nobody_spoke": True}
+    assert await count_notes() == 1
+    assert await requests_of(server) == []
+    # Still the person's act, with their rights (ruling R31): never his own.
+    async with server.session_factory() as session:
+        [decided] = [
+            entry
+            for entry in (
+                await session.scalars(
+                    select(AuditEntry).where(AuditEntry.action == "policy.decision")
+                )
+            ).all()
+            if entry.details["action_type"] == "note.leave"
+        ]
+    assert decided.actor == f"person:{owner_chat.person.id}"
+
+
+async def test_a_plan_that_keeps_their_words_is_still_their_request(
+    owner_chat: ChatPilot, adult_member: Member, count_notes: Any
+):
+    server = owner_chat.server
+    said = "remind Alex tomorrow to take the bins out"
+    await make_plan(owner_chat, "tell Alex to take the bins out", their_words=said)
+    model = owner_chat.use_model(
+        FakeChatModel(tool_script=[note_to_alex(), "I told Alex."], judge="do")
+    )
+    server.clock.advance(LATER)
+    await run_the_pass(server)
+    assert judged_case(model)["idea"] == {
+        "of": "person",
+        "reason": None,
+        "born_of_words_of": None,
+        "they_lack_the_right": False,
+        "after_outside_words": False,
+    }
+    # With a plan he set alone due at the same time, its reason alone is why he acts.
+    await make_plan(owner_chat, "tell Alex again", their_words="tell Alex again tomorrow")
+    await make_plan(owner_chat, "check the bins myself", made_by_domo=True)
+    model = owner_chat.use_model(
+        FakeChatModel(tool_script=[note_to_alex("n2"), "I told Alex."], judge="do")
+    )
+    server.clock.advance(LATER)
+    await run_the_pass(server)
+    idea = judged_case(model)["idea"]
+    assert (idea["of"], idea["reason"]) == ("domo", "check the bins myself")
+
+
+async def test_a_wake_recalls_from_its_reason(owner_chat: ChatPilot):
+    # LRN-7: in a turn he started, what he learned is looked for from why he acts, not only from
+    # the person's last words.
+    server = owner_chat.server
+    async with server.session_factory() as session:
+        await keep(
+            session,
+            said_by=owner_chat.person.id,
+            subject="reminders",
+            content="Dentist reminders work best the evening before.",
+            kind="lesson",
+            origin="deduced",
+            kept_private=False,
+            core=False,
+            now=server.clock(),
+        )
+        await session.commit()
+    owner_chat.use_model(FakeChatModel(["ok"]))
+    await owner_chat.say("Bike?")
+    await make_plan(owner_chat, "dentist", made_by_domo=True)
+    owner_chat.use_model(FakeChatModel(["Your dentist is tomorrow."]))
+    server.clock.advance(LATER)
+    await run_the_pass(server)
+    [call] = plan_calls(server)
+    assert "Dentist reminders work best the evening before." in call.system
 
 
 async def test_a_plan_to_tell_someone_else_leaves_them_a_note(
@@ -475,20 +575,22 @@ async def test_a_turn_counts_as_asked_only_when_every_plan_due_keeps_their_words
     said = "remind Alex tomorrow to take the bins out"
     await make_plan(owner_chat, "tell Alex to take the bins out", their_words=said)
     await make_plan(owner_chat, "check the bins myself", made_by_domo=True)
-    # One of them nobody asked for: an action of the turn may be for it. The judge does not
-    # answer, so a yes is asked.
+    # One of them nobody asked for: an action of the turn may be for it, an idea of his. The
+    # judge does not answer, twice: nothing is done, and nobody is asked.
     model = owner_chat.use_model(
         FakeChatModel(tool_script=[note_to_alex(), "I asked first."], judge="mumble")
     )
     server.clock.advance(LATER)
     await run_the_pass(server)
     # The judge still reads the words the plans keep.
-    assert judged_case(model)["words"] == [said]
+    cases = [json.loads(str(call.messages[0].content)) for call in model.judge_calls()]
+    assert [case["words"] for case in cases] == [[said], [said]]
     assert await count_notes() == 0
+    assert await requests_of(server) == []
     reply = (await replies_of(server, owner_chat))[-1]
     async with server.session_factory() as session:
         [action] = await actions_of(session, reply.id)
-    assert action["status"] == "waiting"
+    assert action["status"] == "refused"
 
 
 async def test_a_plan_on_return_may_act_in_the_arrival_turn(
@@ -509,11 +611,55 @@ async def test_a_plan_on_return_may_act_in_the_arrival_turn(
     await open_page(owner_chat)
     await server.wait_for_wakes()
     [arrival] = arrival_calls(owner_chat)
-    assert "unless a plan of yours is due" in arrival.system
+    assert "and may act if worth it, judged like any act." in arrival.system
     assert "note_leave" in {tool.name for tool in arrival.tools}
     assert await count_notes() == 1
     plan = await plan_row(server, plan_id)
     assert (plan.state, plan.last_outcome) == ("done", "spoke")
+
+
+async def test_a_plan_on_return_that_keeps_their_words_is_their_request_at_the_arrival(
+    owner_chat: ChatPilot, adult_member: Member, count_notes: Any
+):
+    # Ruling R39: at their return, a plan that keeps their words is their request, as in a
+    # plan's turn: a judge that does not answer asks nothing, and it is done.
+    server = owner_chat.server
+    server.app.state.arrival_turns = ArrivalTurns()
+    await make_plan(
+        owner_chat,
+        "tell Alex the bins are theirs",
+        after=None,
+        on_return=True,
+        their_words="when I am back, tell Alex the bins are theirs",
+    )
+    model = owner_chat.use_model(
+        FakeChatModel(tool_script=[note_to_alex(), "Welcome back: I told Alex."], judge="mumble")
+    )
+    await open_page(owner_chat)
+    await server.wait_for_wakes()
+    case = judged_case(model)
+    assert (case["idea"]["of"], case["idea"]["reason"]) == ("person", None)
+    assert await count_notes() == 1
+    assert await requests_of(server) == []
+
+
+async def test_a_plan_he_set_alone_due_at_their_return_is_judged_on_its_why(
+    owner_chat: ChatPilot, adult_member: Member, count_notes: Any
+):
+    # Ruling R39: at an arrival with plans due, why he acts is their why, not the arrival.
+    server = owner_chat.server
+    server.app.state.arrival_turns = ArrivalTurns()
+    await make_plan(
+        owner_chat, "tell Alex the bins are theirs", after=None, on_return=True, made_by_domo=True
+    )
+    model = owner_chat.use_model(
+        FakeChatModel(tool_script=[note_to_alex(), "Welcome back: I told Alex."], judge="do")
+    )
+    await open_page(owner_chat)
+    await server.wait_for_wakes()
+    idea = judged_case(model)["idea"]
+    assert (idea["of"], idea["reason"]) == ("domo", "tell Alex the bins are theirs")
+    assert await count_notes() == 1
 
 
 async def test_a_plan_that_cannot_be_settled_is_a_failure_and_waits(

@@ -3,9 +3,9 @@ worth, looks at a score with its reasons and corrects a fact (trust per person, 
 task 2).
 
 The code keeps anyone from lowering someone else's score by talk, or raising their own: no fact in
-a turn that does not answer the person who speaks, or that carries someone else's words; no fact
-about the person who speaks; a confirmed fact only from what was said about the person who speaks;
-a reported fact keeps who reported it.
+a turn that carries someone else's words (a fact is noted in his answer, in a turn he started or
+in one on his own); no fact about the person who speaks; a confirmed fact only from what was
+said about the person who speaks; a reported fact keeps who reported it.
 """
 
 import json
@@ -18,6 +18,7 @@ import pytest
 from chat_support import ChatPilot
 from domo_core.accounts.models import Person
 from domo_core.audit.models import AuditEntry
+from domo_core.conversation.execution import execute_allowed
 from domo_core.db import SessionFactory
 from domo_core.llm.choices import HOUSEHOLD_SCOPE, Choices, save_choices
 from domo_core.llm.models import ModelLesson
@@ -26,12 +27,12 @@ from domo_core.memory.models import Memory
 from domo_core.memory.service import keep
 from domo_core.policy.catalog import DEFAULT_POLICY, is_silent, needs_the_judge
 from domo_core.policy.roles import Actor
-from domo_core.tools.context import InvalidArguments, NamesPeople, ToolContext
+from domo_core.tools.context import InvalidArguments, NamesPeople, ToolContext, ToolOutcome
 from domo_core.tools.registry import TOOLS
 from domo_core.trust import service
 from domo_core.trust.models import TrustFact
 from fakes import FakeChatModel
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 NOW = datetime(2030, 1, 7, 9, 0, tzinfo=UTC)
 TRUST_TOOLS = ("trust_note", "trust_look", "trust_correct")
@@ -259,28 +260,80 @@ async def test_no_fact_in_a_turn_with_someone_elses_words(session_factory: Sessi
     assert await facts(session_factory) == []
 
 
-async def test_no_fact_in_a_turn_domo_started(session_factory: SessionFactory):
-    alex, sam, _ = await household(session_factory)
-    ctx = replace(context(sam, session_factory), reply_message_id=None)
-    refused = await refusal(
-        "trust_note", ctx, person="Alex", outcome="held", how="seen", about="The boiler was off."
+async def test_he_notes_what_he_saw_in_a_turn_he_started(session_factory: SessionFactory):
+    # A turn he started, or one on his own: no message of the person to answer, and nothing from
+    # outside in it. A fact of any way of knowing may be noted there (the owner, 2026-11-24).
+    alex, sam, dana = await household(session_factory)
+    started = replace(context(sam, session_factory), reply_message_id=None)
+    own = replace(context(alex, session_factory), reply_message_id=None, on_his_own=True)
+    await run("trust_note", started, person="Alex", outcome="held", how="seen", about="Boiler off.")
+    await run("trust_note", own, person="Sam", outcome="held", how="seen", about="Back on time.")
+    # He hears elsewhere, and judges: another's word, or what the person it is about confirmed.
+    said_about_alex = await said(session_factory, dana, alex, "Alex hates spinach.")
+    await run(
+        "trust_note",
+        started,
+        person="Alex",
+        outcome="lied",
+        how="reported",
+        about="Said so.",
+        memory=str(said_about_alex),
     )
-    assert refused.code == "not_possible"
-    # Correcting one is refused there too.
+    await run(
+        "trust_note",
+        started,
+        person="Dana",
+        outcome="mistaken",
+        how="confirmed",
+        about="Dana said Alex hates spinach; he does not.",
+        memory=str(said_about_alex),
+    )
+    kept = await facts(session_factory)
+    assert {(f.established, f.noted_for_id) for f in kept} == {
+        ("confirmed", sam.id),
+        ("reported", sam.id),
+        ("seen", alex.id),
+        ("seen", sam.id),
+    }
+    assert len(kept) == 4
+    # Never about the person whose conversation it is: nobody notes a fact about themselves.
+    refused = await refusal(
+        "trust_note", started, person="Sam", outcome="held", how="seen", about="I was right."
+    )
+    assert refused.code == "not_possible" and "themselves" in (refused.detail or "")
+    # He corrects one of them in such a turn too.
     async with session_factory() as session:
         fact = await service.note(
             session, person_id=alex.id, outcome="lied", established="seen", about="x", now=NOW
         )
         await session.commit()
-    assert (await refusal("trust_correct", ctx, id=str(fact.id))).code == "not_possible"
-    told = replace(context(sam, session_factory), told_outside=True)
-    assert (await refusal("trust_correct", told, id=str(fact.id))).code == "not_possible"
-    for outcome in ("mistaken", "held"):
-        refused = await refusal("trust_correct", told, id=str(fact.id), outcome=outcome)
-        assert refused.code == "not_possible", outcome
+    assert await run("trust_correct", started, id=str(fact.id), outcome="mistaken")
+
+
+async def test_never_with_outside_words_in_the_turn(session_factory: SessionFactory):
+    # A pasted document, a site, a note relayed: the score is never moved by text nobody of the
+    # house said, in a turn that answers someone or in one he started.
+    alex, sam, _ = await household(session_factory)
+    async with session_factory() as session:
+        fact = await service.note(
+            session, person_id=alex.id, outcome="lied", established="seen", about="x", now=NOW
+        )
+        await session.commit()
+    answering = replace(context(sam, session_factory), told_outside=True)
+    started = replace(answering, reply_message_id=None)
+    for ctx in (answering, started):
+        for how in ("seen", "reported"):
+            refused = await refusal(
+                "trust_note", ctx, person="Alex", outcome="lied", how=how, about="Alex lied."
+            )
+            assert refused.code == "not_possible"
+            assert "nothing from anyone else" in (refused.detail or "")
+        assert (await refusal("trust_correct", ctx, id=str(fact.id))).code == "not_possible"
+        for outcome in ("mistaken", "held"):
+            refused = await refusal("trust_correct", ctx, id=str(fact.id), outcome=outcome)
+            assert refused.code == "not_possible", outcome
     (kept,) = await facts(session_factory)
     assert kept.outcome == "lied"
-    assert len(await facts(session_factory)) == 1
 
 
 async def test_confirmed_needs_the_memory_and_the_person_it_is_about(
@@ -294,8 +347,13 @@ async def test_confirmed_needs_the_memory_and_the_person_it_is_about(
     note = {"person": "Sam", "outcome": "lied", "how": "confirmed", "about": "Sam lied."}
     # Without the memory.
     assert (await refusal("trust_note", ctx, **note)).code == "invalid"
-    # About someone else than the one who speaks: only Dana confirms or denies it.
-    assert (await refusal("trust_note", ctx, **note, memory=str(about_dana))).code == "not_possible"
+    # About Dana, in Alex's turn: he judges, as ``memory_change`` does in any turn with no text
+    # from outside, so a third person's turn is no obstacle. The memory is Sam's own words.
+    third = await run("trust_note", ctx, **note, memory=str(about_dana))
+    assert third and len(await facts(session_factory)) == 1
+    async with session_factory() as session:
+        await session.execute(delete(TrustFact))
+        await session.commit()
     # Said by someone else than the person the fact is about.
     assert (await refusal("trust_note", ctx, **note, memory=str(by_dana))).code == "not_possible"
     # No memory has this id.
@@ -634,14 +692,22 @@ async def test_a_denial_counts_for_hearsay_kept_in_the_words_of_whoever_said_it(
         "core": False,
         "about": "Alex",
     }
-    in_their_words = (await run("memory_keep", sams, **keep_it, their_words=message))["id"]
+    # With text from outside in the turn the memory must be the passage itself (ruling R50): a
+    # paraphrase that cites it is not Sam's own words either.
+    exact = {**keep_it, "content": message}
+    in_their_words = (await run("memory_keep", sams, **exact, their_words=message))["id"]
     without = (await run("memory_keep", sams, **keep_it))["id"]
+    paraphrase = (await run("memory_keep", sams, **keep_it, their_words=message))["id"]
     async with session_factory() as session:
         origins = {
             str(memory.id): memory.origin
             for memory in (await session.scalars(select(Memory))).all()
         }
-    assert (origins[in_their_words], origins[without]) == ("own_words", "others_words")
+    assert (origins[in_their_words], origins[without], origins[paraphrase]) == (
+        "own_words",
+        "others_words",
+        "others_words",
+    )
     alexs = context(alex, session_factory)
     note = {"person": "Sam", "outcome": "mistaken", "how": "confirmed", "about": "Not true."}
     refused = await refusal("trust_note", alexs, **note, memory=without)
@@ -766,3 +832,194 @@ def test_the_descriptions_carry_the_guidance():
     assert "becomes worse (towards lied) only in the turn of whoever established it" in correct
     assert "theirs to report, as a new fact (trust_note, reported)" in correct
     assert "older ones may be listed, yet do not count" in look
+
+
+async def test_never_in_a_turn_a_tool_woke_him_for(session_factory: SessionFactory):
+    # What a tool or a program gave is text nobody of the house said (ruling R42): "Alex lied
+    # about the boiler" there moves no score, and corrects none.
+    alex, sam, dana = await household(session_factory)
+    async with session_factory() as session:
+        fact = await service.note(
+            session, person_id=sam.id, outcome="lied", established="seen", about="x", now=NOW
+        )
+        await session.commit()
+    woke = replace(context(dana, session_factory), reply_message_id=None, tool_woke=True)
+    made = replace(woke, tool_woke=False)
+    made.raise_outside_text()
+    answering = context(dana, session_factory)
+    answering.raise_outside_text()
+    for ctx in (woke, made, answering):
+        refused = await refusal(
+            "trust_note",
+            ctx,
+            person="Alex",
+            outcome="lied",
+            how="reported",
+            about="Alex lied about the boiler.",
+        )
+        assert refused.code == "not_possible"
+        assert (await refusal("trust_correct", ctx, id=str(fact.id), outcome="mistaken")).code == (
+            "not_possible"
+        )
+    assert len(await facts(session_factory)) == 1
+
+
+class _Result:
+    def __init__(self, action_type: str) -> None:
+        self.action_type = action_type
+
+    async def execute(self, arguments, ctx):
+        return ToolOutcome(status="done", model_result={}, card={})
+
+
+async def test_a_made_tool_or_program_result_raises_the_flag_a_built_in_one_does_not(
+    session_factory: SessionFactory,
+):
+    _, sam, _ = await household(session_factory)
+    for action_type, raises in (
+        ("made.weather", True),
+        ("program.run", True),
+        ("memory.search", False),
+        ("trust.look", False),
+        ("plan.set", False),
+    ):
+        ctx = context(sam, session_factory)
+        tool = _Result(action_type)
+        await execute_allowed(tool, "x", action_type, {}, ctx)  # type: ignore[arg-type]
+        assert ctx.outside_text is raises, action_type
+
+
+async def test_the_flag_is_shared_by_every_copy_of_the_context(session_factory: SessionFactory):
+    # A request decided in the turn runs on a copy of its context: what its made tool gave still
+    # marks the turn (ruling R46).
+    _, sam, _ = await household(session_factory)
+    ctx = context(sam, session_factory)
+    copy = replace(ctx, described_action=None)
+    await execute_allowed(_Result("made.weather"), "x", "made.weather", {}, copy)  # type: ignore[arg-type]
+    assert ctx.outside_text and copy.outside_text
+    assert replace(ctx, reply_message_id=None).outside_text
+
+
+async def test_a_reported_fact_outside_an_answer_rests_on_a_members_own_words(
+    session_factory: SessionFactory,
+):
+    alex, sam, dana = await household(session_factory)
+    started = replace(context(dana, session_factory), reply_message_id=None)
+    note = {"person": "Alex", "outcome": "lied", "how": "reported", "about": "Said so."}
+    # None, or one not in the member's own words, or said by the fact's person: refused, and the
+    # message says to keep what a person says in the turn where they say it.
+    assert (await refusal("trust_note", started, **note)).code == "not_possible"
+    refused = await refusal("trust_note", started, **note)
+    assert "turn where they say it" in (refused.detail or "")
+    async with session_factory() as session:
+        for origin in ("deduced", "others_words", "external"):
+            memory = await keep(
+                session,
+                said_by=sam.id,
+                subject="Alex",
+                content=f"Alex lies ({origin}).",
+                kind="preference",
+                origin=origin,  # type: ignore[arg-type]
+                kept_private=False,
+                core=False,
+                now=NOW,
+                about_id=alex.id,
+            )
+            await session.commit()
+            assert (
+                await refusal("trust_note", started, **note, memory=str(memory.id))
+            ).code == "not_possible", origin
+    said_by_alex = await said(session_factory, alex, dana, "Dana is late.")
+    assert (
+        await refusal("trust_note", started, **note, memory=str(said_by_alex))
+    ).code == "not_possible"
+    assert await facts(session_factory) == []
+    # A member's own words: the fact is charged to that member, by the code.
+    sams = await said(session_factory, sam, alex, "Alex lied about the car.")
+    await run("trust_note", started, **note, memory=str(sams))
+    (fact,) = await facts(session_factory)
+    assert (fact.reported_by_id, fact.noted_for_id, fact.memory_id) == (sam.id, dana.id, sams)
+    # The same memory is counted once.
+    assert (await refusal("trust_note", started, **note, memory=str(sams))).code == "not_possible"
+    # In an answering turn the speaker is the reporter, and no memory is given.
+    answering = context(dana, session_factory)
+    assert (await refusal("trust_note", answering, **note, memory=str(sams))).code == "invalid"
+    await run("trust_note", answering, **note)
+    assert {f.reported_by_id for f in await facts(session_factory)} == {sam.id, dana.id}
+    # A seen fact takes no memory.
+    seen = {**note, "how": "seen"}
+    assert (await refusal("trust_note", started, **seen, memory=str(sams))).code == "invalid"
+
+
+async def test_a_memory_kept_after_a_made_tool_is_not_own_words_and_no_fact_rests_on_it(
+    session_factory: SessionFactory,
+):
+    # Two turns: in the first a made tool returned, then he kept what "Sam said"; in the second
+    # a confirmed fact would rest on it. It is not Sam's own words, so it is refused.
+    alex, sam, dana = await household(session_factory)
+    first = context(sam, session_factory)
+    first.raise_outside_text()
+    kept = await TOOLS["memory_keep"].execute(
+        {
+            "content": "Alex hates spinach.",
+            "subject": "Alex",
+            "kind": "preference",
+            "private": False,
+            "core": False,
+        },
+        first,
+    )
+    memory_id = kept.model_result["id"]
+    async with session_factory() as session:
+        row = await session.get(Memory, uuid.UUID(str(memory_id)))
+        assert row is not None and row.origin == "others_words"
+    note = {
+        "person": "Sam",
+        "outcome": "lied",
+        "how": "confirmed",
+        "about": "Sam lied.",
+        "memory": str(memory_id),
+    }
+    assert (await refusal("trust_note", context(alex, session_factory), **note)).code == (
+        "not_possible"
+    )
+    assert await facts(session_factory) == []
+
+
+async def test_a_reported_fact_rests_on_a_memory_about_the_fact_s_person(
+    session_factory: SessionFactory,
+):
+    alex, sam, dana = await household(session_factory)
+    started = replace(context(dana, session_factory), reply_message_id=None)
+    note = {"person": "Alex", "outcome": "lied", "how": "reported", "about": "Said so."}
+    # Sam's own words, but about Dana, not about Alex: it cannot back a fact about Alex.
+    elsewhere = await said(session_factory, sam, dana, "Dana likes tea.")
+    assert (
+        await refusal("trust_note", started, **note, memory=str(elsewhere))
+    ).code == "not_possible"
+    assert await facts(session_factory) == []
+
+
+async def test_the_order_of_a_confirmed_and_a_reported_fact_on_one_memory_does_not_matter(
+    session_factory: SessionFactory,
+):
+    alex, sam, dana = await household(session_factory)
+    note = {"outcome": "lied", "about": "Said so."}
+    for first in ("confirmed", "reported"):
+        async with session_factory() as session:
+            await session.execute(delete(TrustFact))
+            await session.commit()
+        memory = await said(session_factory, sam, alex, f"Alex lied ({first}).")
+        # A confirmed fact needs the person it is about (Alex) to be the one who confirms or
+        # denies it: he judges it in a turn of his own here; a reported one in a turn of Dana's.
+        confirmed = replace(context(dana, session_factory), reply_message_id=None)
+        reported = replace(context(dana, session_factory), reply_message_id=None)
+        steps = {
+            "confirmed": ("Sam", "confirmed", confirmed),
+            "reported": ("Alex", "reported", reported),
+        }
+        order = [first, "reported" if first == "confirmed" else "confirmed"]
+        for how in order:
+            who, kind, ctx = steps[how]
+            assert await run("trust_note", ctx, person=who, how=kind, memory=str(memory), **note)
+        assert {f.established for f in await facts(session_factory)} == {"confirmed", "reported"}

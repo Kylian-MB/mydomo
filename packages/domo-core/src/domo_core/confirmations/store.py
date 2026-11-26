@@ -39,15 +39,18 @@ that (``how_to_answer``, ``how_to_approve``).
 
 import uuid
 from collections.abc import Iterable, Mapping
+from dataclasses import replace
 from datetime import datetime
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import active_at, is_active
+from domo_core.chat.models import Conversation, Message
 from domo_core.confirmations.models import Confirmation
+from domo_core.confirmations.who_agrees import agrees_for_children, may_agree_for_a_child
 from domo_core.llm.types import JsonObject
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.asks import Ask, Asked, AskedBy, as_ask, as_asked_by
@@ -57,6 +60,9 @@ from domo_core.policy.rights import Approver
 from domo_core.policy.roles import DOMO_SUBJECT_ID, Actor
 from domo_core.policy.settings import PolicySettings, load_policy_settings
 from domo_core.tools.context import InvalidArguments
+
+if TYPE_CHECKING:
+    from domo_core.confirmations.judge import Judgement
 
 
 async def create_confirmation(
@@ -77,6 +83,10 @@ async def create_confirmation(
     approver_note: str | None = None,
     by_domo: bool = False,
     counted_for_domo: bool = False,
+    subject_key: str | None = None,
+    idea_reason: str | None = None,
+    concerned_id: uuid.UUID | None = None,
+    in_their_turn: bool = False,
 ) -> Confirmation:
     """Store a request that waits for a yes: exactly the call that would run (``tool_name`` and
     ``arguments``) and the action the barrier saw, who may answer (``approver``), what it asks for,
@@ -94,7 +104,10 @@ async def create_confirmation(
     change. ``by_domo``: Domo made it on his own (``Confirmation.by_domo``; ``requester`` is
     then the person whose conversation it waits in). ``counted_for_domo``: the decision that made
     it wrote an ``allow`` in Domo's name, so his history counts it already
-    (``Confirmation.counted_for_domo``). Flushed, not committed."""
+    (``Confirmation.counted_for_domo``). ``subject_key``: what it is about (``policy.subjects``);
+    ``idea_reason``: why he asks, when it was his own idea; ``concerned_id``: the person who alone
+    answers it (``None``: its approver kind says); ``in_their_turn``: his request born of the
+    owner's rule in a person's turn (``Confirmation.in_their_turn``). Flushed, not committed."""
     confirmation = Confirmation(
         requester_id=requester.person_id,
         approver_kind=approver,
@@ -116,6 +129,10 @@ async def create_confirmation(
         approver_note=approver_note,
         by_domo=by_domo,
         counted_for_domo=counted_for_domo,
+        subject_key=subject_key,
+        idea_reason=idea_reason,
+        concerned_id=concerned_id,
+        in_their_turn=in_their_turn,
     )
     session.add(confirmation)
     await session.flush()
@@ -224,6 +241,107 @@ def requester_of(c: Confirmation) -> uuid.UUID:
     return DOMO_SUBJECT_ID if c.by_domo else c.requester_id
 
 
+# What a request that waits with the person concerned says of a warning of the judge's: the code's
+# own words, never the judge's reason, written from someone else's case (rulings R29, R69, R72). A
+# card shows it in the reader's language (``confirmation.asked.domo.cannot_be_undone``).
+CANNOT_BE_UNDONE_REASON: Final = "It cannot be undone"
+
+
+def for_the_person_concerned(asked: Asked) -> Asked:
+    """What a request asks, as it waits with the person concerned, someone else than the person of
+    the turn: without the judge's reason; when the judge warned, with the code's own line that it
+    cannot be undone (``CANNOT_BE_UNDONE_REASON``), so that they are told before they answer."""
+    return replace(asked, why=CANNOT_BE_UNDONE_REASON if asked.warned else None)
+
+
+def judgement_told_to(
+    judgement: "Judgement", *, case_of: uuid.UUID | None, reader: uuid.UUID
+) -> "Judgement":
+    """The judge's verdict as ``reader`` may be told it (ruling R75): its reason is said only to
+    the person whose case it was (``case_of``: whose private memories it read; ``None`` when that
+    is not known). Anyone else gets the code's own line instead, that it cannot be undone when the
+    judge warned (``CANNOT_BE_UNDONE_REASON``), else none: on a card, a tool's result, a request's
+    ``ask_why`` or a fact about them. The reason kept for the journal (``noted``) stays, for the
+    audit alone."""
+    if case_of is not None and case_of == reader:
+        return judgement
+    return replace(
+        judgement,
+        reason=CANNOT_BE_UNDONE_REASON if judgement.warns else "",
+        noted=judgement.noted,
+    )
+
+
+def warned_one(c: Confirmation) -> uuid.UUID | None:
+    """Whom the judge warned with ``c`` (``warned``, with its reason ``ask_why``): the person the
+    thing belongs to, the person it concerns (``concerned_id``: for an idea of Domo's, the one
+    who alone answers it) or else the one who asked. What he told them is theirs alone, kept when
+    they answer it (``service._mark_decided``). ``None`` when nobody was warned. A request that
+    waits with the person concerned keeps the fact that it was warned, never the judge's words
+    (ruling R69): ``ask_why`` is then the code's own line (``for_the_person_concerned``)."""
+    if not c.warned:
+        return None
+    return c.concerned_id if c.concerned_id is not None else c.requester_id
+
+
+def replayed_on_his_own(c: Confirmation) -> bool:
+    """Whether a yes replays ``c`` as an act of his on his own (on his own rights, for the house):
+    a request of his (``by_domo``) made in a turn of his own. Never one born of his mark in a
+    person's turn (``made_in_a_turn``), nor one born of the owner's rule on his act there
+    (``in_their_turn``): those are replayed in that turn, for that person."""
+    return c.by_domo and not made_in_a_turn(c) and not c.in_their_turn
+
+
+def made_in_a_turn(c: Confirmation) -> bool:
+    """Whether ``c`` is a request of Domo's (``by_domo``) born of his explicit mark
+    (``act_on_my_own``) in a person's turn: judged again and run as his in that person's turn
+    (the requester's), never as a turn of his own. Only such a request keeps his reason
+    (``idea_reason``, set by ``conversation.execution`` for a marked call and nothing else: not
+    for a call of a turn he began, which stays the person's, nor on his own, replayed on his
+    own)."""
+    return c.by_domo and c.idea_reason is not None
+
+
+async def conversation_made_in(session: AsyncSession, c: Confirmation) -> uuid.UUID | None:
+    """The conversation of the turn the request was first made in, the one who asked's
+    (``requester_id``): where it runs after a yes, and where they are woken and told what came of
+    it. It is the one it waits in (``conversation_id``) when that one is theirs; else (it waits
+    for the person it concerns, in their own conversation) the conversation of the reply that
+    made it (``message_id``, which every request born of a change of it keeps), when that one is
+    theirs. ``None`` when that cannot be known: nothing is then run or woken anywhere, never in
+    someone else's conversation as theirs. Reads only."""
+    whose = await session.scalar(
+        select(Conversation.person_id).where(Conversation.id == c.conversation_id)
+    )
+    if whose == c.requester_id:
+        return c.conversation_id
+    if c.message_id is None:
+        return None
+    found = (
+        await session.execute(
+            select(Conversation.id, Conversation.person_id)
+            .join(Message, Message.conversation_id == Conversation.id)
+            .where(Message.id == c.message_id)
+        )
+    ).first()
+    if found is None or found.person_id != c.requester_id:
+        return None
+    return found.id
+
+
+def decided_for_him(c: Confirmation) -> bool:
+    """Whether ``c`` is a request Domo made on his own (``by_domo``, no mark) that waited for
+    someone else than the person whose turn he made it in (``concerned_id``): what that person
+    decided wakes him, on his own, and is no news for the one in whose conversation he made it,
+    who asked nothing (ruling R33)."""
+    return (
+        c.by_domo
+        and not made_in_a_turn(c)
+        and c.concerned_id is not None
+        and c.concerned_id != c.requester_id
+    )
+
+
 def approves(approver_kind: str, person: Person, requester_id: uuid.UUID) -> bool:
     """Whether ``person`` is an approver of that kind for a request of ``requester_id``: the
     requester for ``self``; an adult or the owner other than the requester for ``adult``; the
@@ -232,7 +350,8 @@ def approves(approver_kind: str, person: Person, requester_id: uuid.UUID) -> boo
         case "self":
             return person.id == requester_id
         case "adult":
-            return person.role in ("adult", "owner") and person.id != requester_id
+            # The single rule of who may agree for a child (the judge's case marks by it too).
+            return may_agree_for_a_child(person.role, person.id, requester_id)
         case "owner":
             return person.role == "owner" and person.id != requester_id
         case _:
@@ -315,6 +434,25 @@ def who_answers(c: Confirmation) -> str:
     return _WHO[approver_of(c)]
 
 
+# Who a request waits for, as a word for a role: its own requester, the person it concerns, or the
+# approver the barrier named. Never a name, never a detail of a person (``waits_for_of``).
+_WAITS_FOR: Final[Mapping[Approver, str]] = {
+    "self": "the person themself",
+    "adult": "an adult",
+    "owner": "the owner",
+}
+WAITS_FOR_THE_CONCERNED: Final = "the person it concerns"
+
+
+def waits_for_of(c: Confirmation) -> str:
+    """Who must answer the request, as a role word: the person it concerns when it is not the one
+    who asked (``concerned_id``: they alone answer it), else the approver's kind (the person
+    themself, an adult, the owner). It names no one."""
+    if c.concerned_id is not None and c.concerned_id != c.requester_id:
+        return WAITS_FOR_THE_CONCERNED
+    return _WAITS_FOR[approver_of(c)]
+
+
 def how_to_answer(c: Confirmation) -> str:
     """How that yes can be given, as the Domo of the one who asked is told: someone else's yes
     (an adult's for a child, or the owner's) by the button of their own page or in words to their
@@ -358,12 +496,18 @@ async def pending_for(
     now: datetime,
 ) -> list[Confirmation]:
     """The requests this person answers themselves (``self``) that wait in this conversation and
-    are still under the lifetime, oldest first (never one Domo made on his own there)."""
+    are still under the lifetime, oldest first: their own, and those of Domo's that concern them
+    (``concerned_id``: they alone answer it); never one of his that waits for someone else's yes
+    there."""
     result = await session.execute(
         select(Confirmation)
         .where(
-            Confirmation.requester_id == person_id,
-            Confirmation.by_domo.is_(False),
+            or_(
+                Confirmation.concerned_id == person_id,
+                (Confirmation.requester_id == person_id)
+                & Confirmation.by_domo.is_(False)
+                & Confirmation.concerned_id.is_(None),
+            ),
             Confirmation.conversation_id == conversation_id,
             Confirmation.approver_kind == "self",
             Confirmation.status == "pending",
@@ -444,7 +588,7 @@ async def awaiting_approval(
     approves their own), but a request Domo made on his own is never the approver's own, even
     in their conversation: its name is Domo's (``DOMO_NAME``). A child or a guest gets an
     empty list."""
-    if not is_active(approver, now) or approver.role not in ("adult", "owner"):
+    if not is_active(approver, now) or not agrees_for_children(approver.role):
         return [], 0
     kinds = ("adult", "owner") if approver.role == "owner" else ("adult",)
     waiting = (

@@ -4,13 +4,13 @@
 run by hand (``tool_name`` ``None``), and ``close_address`` closes it; ``open_for`` gives the live
 ones of a tool as the gatekeeper reads them (``domo_common.gatekeeper_api.OpenAddress``), sent
 with each of its requests: a closing holds from the next one. Who opens or closes is ``"domo"``
-(a turn he acts in on his own) or a person's id (``by``). What the owner closed stays closed
-(spec 13.10: his closing is a rule of his, the code applies it, Domo does not judge it): his
-closing of a host and port closes it for every tool and for the programs run by hand at once
-(ruling R20), and while its last closing, whatever the tool, was the owner's
-(``OpenAddress.closed_by_owner``, kept on the row as it was at the closing, so that it outlives a
-change of owner), anyone but the owner of now who opens it again, for any tool or by hand, is
-refused (``ClosedByOwner``). Anyone else's closing is one tool's. Only an act of Domo's in a
+(a turn he acts in on his own) or a person's id (``by``). The owner's closing of a host and port
+closes it for every tool and for the programs run by hand at once (ruling R20). While its last
+closing, whatever the tool, was the owner's (``OpenAddress.closed_by_owner``, kept on the row as it
+was at the closing, so that it outlives a change of owner), it is opened again only when Domo
+judged that things changed, that closing weighed (``reopening``: the tool's call, judged, with the
+owner's yes when one is asked), or by the owner of now; anyone else's opening is refused
+(``ClosedByOwner``). Anyone else's closing is one tool's. Only an act of Domo's in a
 turn, or the owner's, opens an address: a build or a new version of a tool never does.
 
 **Accounts.** ``ask_account`` makes the row of an account Domo asks someone for (a person's own,
@@ -20,9 +20,10 @@ the form is filled: until the vault holds its secret, asking again for that very
 giver, hosts and place) opens a new form for it; anything else of that name is refused
 (``AccountExists``), as is an account whose secret the vault holds already: an account is never
 replaced. ``remove_account`` marks one removed (the vault cannot erase: the core refuses it from
-then on); a removal by the owner is kept as his (``ServiceAccount.removed_by_owner``), and the same
-account (its name and whose it is) asked again is refused (``RemovedByOwner``) unless the owner
-asks, or the person whose own account it was (``may_ask_again``, ruling R10). ``account_for`` is
+then on); a removal by the owner is kept as his (``ServiceAccount.removed_by_owner``, and when:
+``owner_s_removal``), and the same account (its name and whose it is) asked again is refused
+(``RemovedByOwner``) unless the caller weighed that removal first (``asking_again``: Domo's
+judgement, whoever asks, Task 27). ``account_for`` is
 the one rule of who a launch may use an account for:
 the person's own account of that name, else the house's; a house account is never given to a guest
 unless the owner opened it to guests (``for_guests``), nor to Domo on his own unless he may
@@ -61,7 +62,8 @@ PLACE: Final = TypeAdapter[InjectionLocation](InjectionLocation)
 
 
 class ClosedByOwner(Exception):
-    """The last closing of this address was the owner's: only the owner opens it again."""
+    """The last closing of this address was the owner's, and it was opened again by someone other
+    than the owner of now without that closing weighed (``reopening``)."""
 
 
 class AccountExists(Exception):
@@ -70,7 +72,7 @@ class AccountExists(Exception):
 
 
 class RemovedByOwner(Exception):
-    """The owner removed this account: only the owner asks for it again."""
+    """The owner removed this account, and it was asked again without that removal weighed."""
 
 
 # --- who ------------------------------------------------------------------------------------------
@@ -305,31 +307,34 @@ async def live_account(
     return found.scalar_one_or_none()
 
 
+async def owner_s_removal(
+    session: AsyncSession, *, name: str, person_id: uuid.UUID | None
+) -> datetime | None:
+    """When the owner removed the account ``name`` of ``person_id`` (``None``: the house's): its
+    last removal was his, and none of that name is live since. ``None`` otherwise."""
+    if await live_account(session, name=name, person_id=person_id) is not None:
+        return None
+    last = (
+        await session.execute(
+            select(ServiceAccount.removed_by_owner, ServiceAccount.removed_at)
+            .where(
+                ServiceAccount.name == name,
+                _whose(person_id),
+                ServiceAccount.removed_at.is_not(None),
+            )
+            .order_by(ServiceAccount.removed_at.desc())
+            .limit(1)
+        )
+    ).first()
+    return last[1] if last is not None and last[0] else None
+
+
 async def removed_by_the_owner(
     session: AsyncSession, *, name: str, person_id: uuid.UUID | None
 ) -> bool:
-    """Whether the last removal of the account ``name`` of ``person_id`` (``None``: the house's)
-    was the owner's, and none of that name is live since."""
-    if await live_account(session, name=name, person_id=person_id) is not None:
-        return False
-    last = await session.scalar(
-        select(ServiceAccount.removed_by_owner)
-        .where(
-            ServiceAccount.name == name, _whose(person_id), ServiceAccount.removed_at.is_not(None)
-        )
-        .order_by(ServiceAccount.removed_at.desc())
-        .limit(1)
-    )
-    return last is True
-
-
-async def may_ask_again(session: AsyncSession, *, by: str, person_id: uuid.UUID | None) -> bool:
-    """Whether ``by`` may ask again for an account of ``person_id`` (``None``: the house's) the
-    owner removed (ruling R10): a house account only the owner of now; a person's own, that person
-    or the owner; Domo on his own never."""
-    if by == DOMO:
-        return False
-    return (person_id is not None and by == str(person_id)) or await is_the_owner(session, by)
+    """Whether the account ``name`` of ``person_id`` is removed by the owner
+    (``owner_s_removal``)."""
+    return await owner_s_removal(session, name=name, person_id=person_id) is not None
 
 
 def place_of(account: ServiceAccount) -> InjectionLocation:
@@ -371,24 +376,24 @@ async def ask_account(
     place: InjectionLocation,
     by: str,
     form: tuple[KeyForm, str] | None,
+    asking_again: bool = False,
 ) -> AskedAccount:
     """The account ``name`` of ``person_id`` (``None``: the house's) that ``giver`` gives, bound to
     ``hosts`` at ``place``, asked by ``by`` (``"domo"`` or a person's id); with ``form`` (the
     words of the giver's form and its purpose), the one-time form the gatekeeper opens for it.
 
-    Raises ``RemovedByOwner`` when the owner removed it last and ``by`` is not the owner now, and
-    ``AccountExists`` when an account of that name is there for ``person_id`` already, unless it is
-    this very one (its giver, hosts and place) and the vault does not hold its secret yet: its form
-    is then asked for again. ``GatekeeperError`` when the gatekeeper does not answer as it should.
-    Flushed, not committed."""
+    Raises ``RemovedByOwner`` when the owner removed it last, unless the caller weighed that
+    removal and asks for it again knowingly (``asking_again``: the call was judged with it, or
+    agreed); and ``AccountExists`` when an account of that name is there for ``person_id``
+    already, unless it is this very one (its giver, hosts and place) and the vault does not hold
+    its secret yet: its form is then asked for again. ``GatekeeperError`` when the gatekeeper does
+    not answer as it should. Flushed, not committed."""
     kept = kept_hosts(hosts)
     kept_place = cast(dict[str, object], PLACE.dump_python(place, mode="json"))
     live = await live_account(session, name=name, person_id=person_id)
     again = live is not None
     if live is None:
-        if not await may_ask_again(
-            session, by=by, person_id=person_id
-        ) and await removed_by_the_owner(session, name=name, person_id=person_id):
+        if not asking_again and await removed_by_the_owner(session, name=name, person_id=person_id):
             raise RemovedByOwner
         account = ServiceAccount(
             name=name,

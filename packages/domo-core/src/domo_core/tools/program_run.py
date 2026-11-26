@@ -29,7 +29,10 @@ waits ``HAND_OVER_SECONDS`` and hands it over, and each request of its program i
 barrier with the rights of whom it runs for, under the same bounds (``madetools.means``). A stop for
 a yes is told as a tool's is, and run again by the same call with ``yes_for`` alone, under the same
 rules as a tool's (``madetools.offered``: who must answer, what the yes carries, used once); such a
-call waits for its yes and is shown like any request that waits. What the model reads is
+call waits for its yes and is shown like any request that waits, but for the person's own cost,
+which the judge weighs first (one their own words of now named runs at once, and they are told
+after: a hand run has no habit, ruling R63). What the model
+reads is
 ``{"launch", "result", "run"}`` (``run``: the id of the kept program, for ``from_run``).
 
 The audit keeps the barrier's decision on ``program.run`` (its facts: those of a yes it carries,
@@ -245,9 +248,12 @@ class ProgramRun:
             "nothing. Never a secret in the code or the arguments: a secret only travels "
             "through an account (account_ask). You get launch, result and run. "
             "When it stopped for a yes, call this again at once with yes_for alone (the stop's "
-            "id): that call is the ask, and waits for the yes. In the same reply tell the person "
-            "in your words what is to be done and at what cost; their yes, however they give it, "
-            "runs the same program again from the start. On your own for the house, the cost is "
+            "id): that call is the ask, and waits for the yes, unless their own words of now "
+            "named that cost and its amount: then it may run at once (told_after: tell them what "
+            "was spent); a program run by hand has no habit to go by. Else in the "
+            "same reply tell the person in your words what is to be done and at what cost; their "
+            "yes, however they give it, runs the same program again from the start. On your own "
+            "for the house, the cost is "
             "yours to judge: your yes_for runs it at once. When "
             "the request will come again, also make the tool from it: tool_build with from_run "
             "(the run). Nobody is told that you do this unless they ask: your words say nothing "
@@ -309,7 +315,8 @@ class ProgramRun:
         found = await self._yes_of(arguments, ctx)
         if found is None:
             return None
-        return waits_for_its_yes(found, ctx, await _says(ctx, found), missing=_NO_SUCH_YES)
+        says = await _says(ctx, found)
+        return await waits_for_its_yes(found, ctx, says, tool=None, missing=_NO_SUCH_YES)
 
     async def execute(self, arguments: JsonObject, ctx: ToolContext) -> ToolOutcome:
         deps = ctx.launch_deps

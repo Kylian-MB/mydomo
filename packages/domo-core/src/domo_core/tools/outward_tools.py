@@ -34,12 +34,16 @@ says afterwards. The form's link is shown once, to the giver, in the answer that
 (``ToolOutcome.card_once``): never stored, never told to the model. When no one may see it now
 (someone else said yes, nobody reads the turn, a step of a chain, no address to reach Domo at),
 the account waits, and the same call later opens its form. On his own, Domo names who gives it
-(``giver``), the account waits, and a note of his tells them (``tools.notes``: his own word).
-``account_remove`` is whoever gave the account's, or the owner's, never Domo's on his own;
-``account_share`` (ruling P2) opens a house account to guests or closes it to Domo on his own,
-the owner's. ``accounts_look`` shows the accounts the person of the turn has (theirs and the
-house's; a guest's, the house's only when open to guests; the owner's, all), and on his own the
-house's.
+(``giver``), the account waits, and a note of his tells them (``tools.notes``: his own word). An
+account the owner removed is no longer refused by who asks (Task 27): the call is judged, its facts
+saying that the owner removed it and when (``removed_by_owner``, ``removed_on``); a yes asked
+before a house account is asked again is the owner's, as Domo's request (``AsksWhomItsYes``); the
+owner's deny on ``account.ask`` holds first. ``account_remove`` is whoever gave the account's, or
+the owner's, and Domo's on his own for one that no longer serves (the owner's decision D8), judged
+like his other acts of his own; ``account_share`` (ruling P2) opens a house account to guests or
+closes it to Domo on his own, the owner's alone. ``accounts_look`` shows the accounts the person
+of the turn has (theirs and the house's; a guest's, the house's only when open to guests; the
+owner's, all), and on his own the house's.
 
 Every act is audited, metadata only (``outward.address_opened``, ``outward.address_closed``,
 ``outward.account_asked``, ``outward.account_removed``, ``outward.account_shared``): the host, the
@@ -90,12 +94,11 @@ from domo_core.outward.service import (
     kept_hosts,
     live_account,
     live_addresses,
-    may_ask_again,
     open_address,
     owner_s_closing,
+    owner_s_removal,
     place_of,
     remove_account,
-    removed_by_the_owner,
     who_of,
 )
 from domo_core.outward.service import close_address as close_the_address
@@ -157,10 +160,9 @@ _EXISTS: Final = (
     "someone else or with other hosts or another place): nothing replaces it. Use it, or give it "
     "another name. Nothing was done"
 )
-_REMOVED_BY_OWNER: Final = (
-    "removed_by_owner: the owner removed this account: a house account is asked again only in the "
-    "owner's conversation, a person's own in theirs or the owner's, never by you on your own. "
-    "Nothing was done"
+_REMOVED_SINCE: Final = (
+    "removed_by_owner: the owner removed this account since it was asked: call account_ask "
+    "again, and it is weighed with that removal. Nothing was done"
 )
 _HOUSE_ACCOUNT: Final = (
     "a house account is given by the owner or an adult: ask one of them, or ask for an account of "
@@ -191,7 +193,9 @@ _NOT_THEIR_OWN: Final = (
 _GUEST_GIVES_NONE: Final = "a guest gives no account. Nothing was done"
 _NO_ACCOUNT: Final = "no account of this name is there for whom you said"
 _NOT_THEIRS: Final = "only whoever gave this account removes it, or the owner. Nothing was done"
-_ON_HIS_OWN: Final = "on your own you never remove an account. Nothing was done"
+_NOBODY_S_OWN: Final = (
+    'on your own, name the account by whose it is: for "house", or "person" with of'
+)
 _NOTHING_TO_SHARE: Final = "say guests, domo, or both"
 _GATEKEEPER: Final = "the secret vault did not answer as it should; try again in a moment"
 # What the model is told when the form waits.
@@ -837,24 +841,22 @@ async def _giver(session: AsyncSession, ctx: ToolContext, given: _Ask) -> Person
 
 
 async def _askable(
-    session: AsyncSession, ctx: ToolContext, given: _Ask, giver: Person
-) -> uuid.UUID | None:
-    """Whose the account is (``None``: the house's), once what the database alone says allows it:
-    an account removed by the owner, or one of that name already there otherwise, refuses it."""
+    session: AsyncSession, given: _Ask, giver: Person
+) -> tuple[uuid.UUID | None, datetime | None]:
+    """Whose the account is (``None``: the house's), once what the database alone says allows it
+    (one of that name already there otherwise refuses it), and when the owner removed it, if he
+    was the last to remove it (``None`` otherwise): never a refusal, but what the call is judged
+    with (Task 27)."""
     person_id = None if given.for_ == "house" else giver.id
     live = await live_account(session, name=given.name, person_id=person_id)
-    if live is None:
-        if not await may_ask_again(
-            session, by=_by(ctx), person_id=person_id
-        ) and await removed_by_the_owner(session, name=given.name, person_id=person_id):
-            raise InvalidArguments("not_possible", _REMOVED_BY_OWNER)
-    elif (
+    if live is not None and (
         live.given_by != giver.id
         or live.hosts != kept_hosts(given.hosts)
         or live.place != PLACE.dump_python(given.place, mode="json")
     ):
         raise InvalidArguments("not_possible", _EXISTS)
-    return person_id
+    removed_at = await owner_s_removal(session, name=given.name, person_id=person_id)
+    return person_id, removed_at
 
 
 def _place_words(place: InjectionLocation) -> dict[str, str]:
@@ -916,9 +918,10 @@ class AccountAsk:
             "conversation. A name already there is refused (exists): nothing is replaced. When the "
             "form cannot be shown to them now, the same call later shows it. On your own, name who "
             "gives it (giver) and write them a note (note), in your words and their language: it "
-            "tells them, and they give it when they talk with you. An account given in clear "
-            "goes only to the house: towards the internet, its "
-            "requests use https."
+            "tells them, and they give it when they talk with you. A removed account may be asked "
+            "again when you judge things have changed: the call says so, and when; a yes it then "
+            "takes for a house account is the owner's yes. An account given in clear goes only to "
+            "the house: towards the internet, its requests use https."
         ),
         parameters={
             "type": "object",
@@ -976,7 +979,7 @@ class AccountAsk:
         given = _Ask(arguments)
         async with ctx.session_factory() as session:
             giver = await _giver(session, ctx, given)
-            await _askable(session, ctx, given, giver)
+            _, removed_at = await _askable(session, given, giver)
         facts: dict[str, FactValue] = {
             "name": given.name,
             "place": given.place.kind,
@@ -984,6 +987,9 @@ class AccountAsk:
             "giver": f"person:{giver.id}",
             "hosts": len(given.hosts),
             "outward": any(literal_zone(host) == "internet" for host, _ in given.hosts),
+            # The owner's removal, for whoever weighs asking it again (the judge, a rule of his).
+            "removed_by_owner": removed_at is not None,
+            "removed_on": _day_of(removed_at),
         }
         return DescribedAction(
             connector="core",
@@ -993,6 +999,17 @@ class AccountAsk:
             destination="household",
             facts=facts,
         )
+
+    async def whose_yes(self, arguments: JsonObject, ctx: ToolContext) -> Approver | None:
+        """A house account the owner removed, out of his own turn: when a yes is asked before it
+        is asked again, it is the owner's, as Domo's request (``AsksWhomItsYes``; the house's
+        thing answers to the owner). Any other call: the usual."""
+        given = _Ask(arguments)
+        if given.for_ != "house" or _owners_turn(ctx):
+            return None
+        async with ctx.session_factory() as session:
+            removed_at = await owner_s_removal(session, name=given.name, person_id=None)
+        return None if removed_at is None else "owner"
 
     async def execute(self, arguments: JsonObject, ctx: ToolContext) -> ToolOutcome:
         given = _Ask(arguments)
@@ -1009,8 +1026,18 @@ class AccountAsk:
                     **_place_words(given.place),
                 )
                 form = (words, purpose)
+        # What the call was judged or agreed with (``described_action``: a stored request, a
+        # step, or a call judged in this turn, ``catalog.WARNED_FACTS``): the owner's removal
+        # opens it again only when that very removal (and its day) was what was weighed; any
+        # other is sent back to be asked again, never run on what nobody weighed.
+        described = ctx.described_action
         async with ctx.session_factory() as session:
-            person_id = await _askable(session, ctx, given, giver)
+            person_id, removed_at = await _askable(session, given, giver)
+            weighed = removed_at is None or (
+                described is not None
+                and described.facts.get("removed_by_owner") is True
+                and described.facts.get("removed_on") == _day_of(removed_at)
+            )
             try:
                 asked = await ask_account(
                     session,
@@ -1022,9 +1049,10 @@ class AccountAsk:
                     place=given.place,
                     by=_by(ctx),
                     form=form,
+                    asking_again=weighed,
                 )
             except RemovedByOwner:
-                raise InvalidArguments("not_possible", _REMOVED_BY_OWNER) from None
+                raise InvalidArguments("not_possible", _REMOVED_SINCE) from None
             except AccountExists:
                 raise InvalidArguments("not_possible", _EXISTS) from None
             except GatekeeperError:
@@ -1129,9 +1157,14 @@ async def _account_named(
 
 
 async def _removable(session: AsyncSession, ctx: ToolContext, given: _Whose) -> ServiceAccount:
-    """The account to remove: whoever gave it, or the owner; never Domo on his own."""
+    """The account to remove: whoever gave it, or the owner; on his own, Domo's act on any one
+    he names by whose it is (the owner, D8: one that no longer serves), judged with his own
+    rights like his other acts of his own, a doubt waiting for whom it belongs to."""
     if ctx.on_his_own:
-        raise InvalidArguments("not_possible", _ON_HIS_OWN)
+        if given.for_ == "me":
+            raise InvalidArguments("invalid", _NOBODY_S_OWN)
+        account, _ = await _account_named(session, ctx, given)
+        return account
     account, owner = await _account_named(session, ctx, given)
     theirs = account.given_by == ctx.person.id or (owner is not None and owner.id == ctx.person.id)
     if ctx.person.role == "child" and account.person_id != ctx.person.id:
@@ -1152,8 +1185,10 @@ class AccountRemove:
             "Remove an account when whoever gave it wants it gone (the owner only, for an account "
             "someone else gave): nothing uses it any more, at once, and its secret stays in the "
             "vault, where nothing can use it; to be sure, they change it at the service. It "
-            "cannot be undone: an account given again is another. A removal by the owner's rules "
-            "holds: the owner only asks for it again. You never remove one on your own."
+            "cannot be undone: an account given again is another. When it was the owner only who "
+            "removed it, that is weighed whenever it is asked again. On your own, you may remove "
+            "one that no longer "
+            "serves (for: house, or person with of), when you judge it right."
         ),
         parameters={
             "type": "object",
@@ -1204,11 +1239,14 @@ class AccountRemove:
                 raise InvalidArguments(
                     "not_found", "this is no longer the account the yes was given for: ask again"
                 )
-            by = _by(ctx)
+            # Who it was judged as: the assistant for an idea of his, never the person whose
+            # turn it is (the owner's removal is his own, not Domo's).
+            acting = ctx.acting
+            by = who_of(None if acting.subject == "domo" else ctx.person)
             await remove_account(session, account=account, by=by, now=ctx.clock())
             await append_audit(
                 session,
-                actor=actor_label(ctx.turn_subject),
+                actor=actor_label(acting),
                 action="outward.account_removed",
                 details={
                     "name": account.name,

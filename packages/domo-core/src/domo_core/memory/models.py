@@ -40,7 +40,14 @@ class Memory(Base):
     to myself": such a memory is never put under his eyes in another person's turn of itself.
     ``core`` memories are always present in the turn. ``origin`` is fixed by the code from the turn
     that made the memory, never by the model; ``action_type`` names the action Domo told the
-    person about, for ``told_by_domo`` only. ``served_at`` is the last time it was put under his
+    person about, for ``told_by_domo`` only. ``by_domo`` says the assistant himself wrote it
+    (``said_by_id`` may then be empty). A lesson (``kind``) may say whom it is for
+    (``for_everyone``) and what it is about (``lesson_action_type``, ``lesson_subject_key``); what
+    he told a person keeps the answer they gave (``told_answer``) and whether they agreed to be
+    asked again (``told_keep_asking``). ``words_checked`` says the code checked, word for word,
+    that its content is itself a passage of the person's own message (rulings R73, R79):
+    only such a memory may count as an adult's agreement for a child (``may_agree``, ruling R73).
+    ``served_at`` is the last time it was put under his
     eyes. ``confirmed_at`` is when the person it is about confirmed it, for a memory about someone
     of the household that someone else said (``memory.service.unconfirmed``: their word, not a
     fact, until then). ``search`` is what the words are searched in (``simple`` configuration: no
@@ -63,6 +70,22 @@ class Memory(Base):
         ),
         CheckConstraint(
             "action_type IS NULL OR origin = 'told_by_domo'", name="action_type_needs_origin"
+        ),
+        CheckConstraint(
+            "kind = 'lesson' OR (lesson_action_type IS NULL AND lesson_subject_key IS NULL "
+            "AND NOT for_everyone)",
+            name="lesson_fields_need_a_lesson",
+        ),
+        CheckConstraint("told_answer IN ('yes', 'no')", name="told_answer_values"),
+        CheckConstraint(
+            "origin = 'told_by_domo' OR (told_answer IS NULL AND told_keep_asking IS NULL)",
+            name="told_fields_need_origin",
+        ),
+        # "The lessons about this type of action".
+        Index(
+            "ix_memories_lesson_action_type",
+            "lesson_action_type",
+            postgresql_where=text("lesson_action_type IS NOT NULL"),
         ),
         # "The memories this person said" (what they see, what goes with them).
         Index("ix_memories_said_by_id", "said_by_id"),
@@ -91,6 +114,13 @@ class Memory(Base):
     kept_private: Mapped[bool] = mapped_column(server_default=text("false"))
     core: Mapped[bool] = mapped_column(server_default=text("false"))
     action_type: Mapped[str | None]
+    by_domo: Mapped[bool] = mapped_column(server_default=text("false"))
+    for_everyone: Mapped[bool] = mapped_column(server_default=text("false"))
+    lesson_action_type: Mapped[str | None]
+    lesson_subject_key: Mapped[str | None]
+    told_answer: Mapped[Literal["yes", "no"] | None] = mapped_column(Text())
+    told_keep_asking: Mapped[bool | None]
+    words_checked: Mapped[bool] = mapped_column(server_default=text("false"), default=False)
     created_at: Mapped[datetime] = mapped_column(server_default=func.clock_timestamp())
     changed_at: Mapped[datetime] = mapped_column(server_default=func.clock_timestamp())
     served_at: Mapped[datetime | None]

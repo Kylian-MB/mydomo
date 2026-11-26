@@ -17,13 +17,15 @@ injected. It answers ``POST /v1/chat/completions``, streamed (server-sent events
   loses it too, and its streamed answer waits ``SLOW_PIECE_SECONDS`` before each piece of its
   words: ``/slow one two`` is answered ``Fake reply: one two``, slowly, so that an end-to-end test
   can leave the page while Domo still writes.
-* A call of the isolated classifier of the confirmations (its system prompt starts with the line
-  ``CLASSIFIER_FIRST_LINE``, the first line of the core's ``prompts/confirm_classifier.md``) gets
-  ``unclear``, unless the last user message is exactly ``yes``, ``no`` or ``change``: that word
-  comes back as it is; or unless it starts with ``CLASSIFIER_CHANGE_PREFIX`` and a space (the
-  command that makes the main model call ``confirmation_amend``, below): that is a yes with a
-  change, ``change``. The turn then goes on to the main model, which makes the call. It never
-  calls a tool.
+* A call of the isolated reader of the replies to requests (its system prompt starts with the
+  line ``CLASSIFIER_FIRST_LINE``, the first line of the core's ``prompts/confirm_classifier.md``)
+  is given one JSON object (the requests shown, numbered, and the person's ``reply``); it answers
+  one line per request shown, ``<n>: word``, the same word for each: ``unclear``, unless the reply
+  is exactly ``yes``, ``no`` or ``change``: that word; or unless it starts with
+  ``CLASSIFIER_CHANGE_PREFIX`` and a space (the command that makes the main model call
+  ``confirmation_amend``, below): that is a yes with a change, ``change``. The turn then goes on to
+  the main model, which makes the call. A message that is not such an object gets ``unclear``,
+  which the core reads as no line at all. It never calls a tool.
 * A call of the yes-judge (its system prompt starts with the line ``JUDGE_FIRST_LINE``, the first
   line of the core's ``prompts/yes_judge.md``) reads the JSON case it is sent: when the last of
   the person's ``words`` starts with ``JUDGE_PREFIX``, the verdict (and the reason after ``:``)
@@ -173,10 +175,11 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, ClassVar, Final
 
-# The first line of the prompt of the core's isolated classifier (confirmations/intent.py reads
-# prompts/confirm_classifier.md): a call whose system prompt starts with it is the classifier's.
-CLASSIFIER_FIRST_LINE: Final = "You classify one reply to a pending request."
-# The replies the classifier gets back as they are; to anything else it says CLASSIFIER_UNCLEAR.
+# The first line of the prompt of the core's isolated reader (confirmations/intent.py reads
+# prompts/confirm_classifier.md): a call whose system prompt starts with it is the reader's.
+CLASSIFIER_FIRST_LINE: Final = "You read one reply to the requests an assistant showed."
+# The replies whose word the reader says for each request; to anything else it says
+# CLASSIFIER_UNCLEAR.
 CLASSIFIER_ECHOES: Final = frozenset({"yes", "no", "change"})
 CLASSIFIER_UNCLEAR: Final = "unclear"
 # A reply that starts with this is a yes with a change to the classifier (it says
@@ -893,6 +896,26 @@ def decided_answer(decided: dict[str, Any]) -> Answer:
     return Answer(DECIDED_PREFIX + outcome)
 
 
+def reader_answer(user_message: str) -> str:
+    """What the reader of the replies says of the JSON object ``user_message``: for each request
+    shown, a line ``<n>: word``, the word the person's reply (without its ``/judge`` and ``/slow``
+    prefixes) gives (see the module's docstring); ``CLASSIFIER_UNCLEAR`` alone for a message that
+    is not such an object."""
+    try:
+        given = json.loads(user_message)
+        reply = strip_slow_prefix(strip_judge_prefix(str(given["reply"])))
+        numbers = [int(shown["n"]) for shown in given["requests"]]
+    except (ValueError, TypeError, KeyError):
+        return CLASSIFIER_UNCLEAR
+    if reply in CLASSIFIER_ECHOES:
+        word = reply
+    elif reply.startswith(CLASSIFIER_CHANGE_PREFIX + " "):
+        word = CLASSIFIER_CHANGE
+    else:
+        word = CLASSIFIER_UNCLEAR
+    return "\n".join(f"{number}: {word}" for number in numbers)
+
+
 def answer_for(
     request: dict[str, Any], user_message: str, received_key: str, *, marked: bool = False
 ) -> Answer:
@@ -902,11 +925,7 @@ def answer_for(
     reads the message without its ``/judge`` and ``/slow`` prefixes."""
     said = strip_slow_prefix(strip_judge_prefix(user_message))
     if is_classifier_call(request):
-        if said in CLASSIFIER_ECHOES:
-            return Answer(said)
-        if said.startswith(CLASSIFIER_CHANGE_PREFIX + " "):
-            return Answer(CLASSIFIER_CHANGE)
-        return Answer(CLASSIFIER_UNCLEAR)
+        return Answer(reader_answer(user_message))
     if is_judge_call(request):
         return Answer(judge_answer(user_message))
     if is_writer_call(request):

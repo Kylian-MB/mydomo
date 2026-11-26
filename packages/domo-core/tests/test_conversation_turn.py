@@ -14,7 +14,10 @@ from domo_core.conversation.prepare import NoKey, prepare_turn
 from domo_core.conversation.service import Conversation
 from domo_core.gatekeeper_client import GatekeeperClient
 from domo_core.llm.types import ChatUsage, ToolCall
+from domo_core.prompts import JustDecided
+from domo_core.trust.models import TrustFact
 from fakes import FakeChatModel
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 
@@ -194,3 +197,53 @@ async def test_an_answer_cut_short_in_a_turn_that_may_stay_silent_says_nothing(
     listener = Collecting()
     await turn.run(listener)
     assert listener.events == [Ended("complete")]
+
+
+@pytest.mark.parametrize(("from_outside", "noted"), [(True, 0), (False, 1)])
+async def test_a_decision_wake_of_a_made_tool_moves_no_trust(
+    chat_server: ChatServer,
+    owner_member: Member,
+    add_member,
+    settings: CoreSettings,
+    gk_client: GatekeeperClient,
+    from_outside: bool,
+    noted: int,
+):
+    # The turn a decision wakes him for carries what the decided request gave: from a made tool
+    # or a program it is text nobody of the house said (``JustDecided.from_outside``).
+    owner = owner_member.person
+    await add_member("Sam Martin", "adult")
+    call = ToolCall(
+        "c1",
+        "trust_note",
+        '{"person": "Sam", "outcome": "held", "how": "seen", "about": "The boiler was off."}',
+    )
+    deps = turn_deps(
+        session_factory=chat_server.session_factory,
+        model=FakeChatModel(tool_script=[call, "ok"]),
+        settings=settings,
+        gatekeeper=gk_client,
+        clock=chat_server.clock,
+    )
+    reply = await said(chat_server.session_factory, owner, "Hi")
+    decided = JustDecided(
+        request_id="r",
+        description="A made tool ran",
+        outcome="executed",
+        decided_by="the person",
+        via="button",
+        result={"status": "done"},
+        woken=True,
+        from_outside=from_outside,
+    )
+    turn = await prepare_turn(
+        deps,
+        person=owner,
+        reply=reply,
+        request=request_of(owner, chat_server.clock()),
+        decided=decided,
+    )
+    await turn.run(Collecting())
+    async with chat_server.session_factory() as session:
+        count = await session.scalar(select(func.count()).select_from(TrustFact))
+    assert count == noted

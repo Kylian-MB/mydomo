@@ -18,7 +18,9 @@ import html
 import json
 import re
 import uuid
-from datetime import timedelta
+from contextlib import nullcontext
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from chat_support import Reply, confirmation_cards, status_of
@@ -35,15 +37,23 @@ from domo_core.confirmations.store import (
 )
 from domo_core.conversation import execution
 from domo_core.llm.types import ChatChunk, ChatMessage, ChatUsage, ToolCall, ToolDefinition
+from domo_core.memory.models import Memory
+from domo_core.memory.told import told
 from domo_core.policy.actions import DescribedAction
-from domo_core.policy.catalog import DEFAULT_POLICY, KNOWN_ACTIONS, PolicyTables
+from domo_core.policy.catalog import (
+    CHANGES_NOTHING,
+    DEFAULT_POLICY,
+    KNOWN_ACTIONS,
+    PolicyTables,
+    is_silent,
+)
 from domo_core.policy.models import RightsDraft
 from domo_core.policy.roles import Actor
 from domo_core.tools.context import ToolContext, ToolOutcome
 from domo_core.tools.registry import TOOLS, InvalidArguments
 from domo_core.web.deps import get_policy, get_tool_registry
 from fakes import JUDGE_DEFAULT as JUDGE_ASKS
-from fakes import FakeCall, FakeChatModel
+from fakes import FakeCall, FakeChatModel, is_reader_call
 from sqlalchemy import select, text, update
 from test_rights_tools import (
     SUMMARY,
@@ -209,7 +219,9 @@ async def test_domo_can_ask_for_an_explicit_check(adult_chat, display_name_of):
     )
     model = adult_chat.use_model(FakeChatModel(["Dis « je confirme »."]))
     await adult_chat.say("oui")
-    assert len(model.calls) == 1 and await display_name_of(adult_chat.person) == "Alex"
+    # The reader is asked whether that yes is firm (it is not); then Domo answers.
+    assert len(model.calls) == 2 and is_reader_call(model.calls[0].system)
+    assert await display_name_of(adult_chat.person) == "Alex"
     await adult_chat.say("je confirme")
     assert await display_name_of(adult_chat.person) == "Alex B"
 
@@ -933,7 +945,8 @@ class ActsFirstModel:
             FakeCall(system, list(messages), tuple(tools), max_output_tokens, tool_choice)
         )
         if not tools:
-            yield ChatChunk("change")
+            # The reader of the person's words: a change to the one request shown.
+            yield ChatChunk("1: change" if is_reader_call(system) else "change")
         elif tool_choice == "auto" and not self._made:
             self._made = True
             await self._act()
@@ -1751,3 +1764,151 @@ def test_asking_more_than_the_judge_needs_a_reason_of_his_own(name: str):
     assert "it does not sound like them, something contradicts what you know" in described
     assert "That an action is serious or cannot be undone is no such reason" in described
     assert "someone who says they know is not asked again" in described
+
+
+# --- what cannot be undone: asked a first time, then as agreed (Task 26) -------------------------
+
+AGREE = "asking_agreed"
+AGREED_AT = datetime(2030, 1, 1, 12, 0, tzinfo=UTC)
+
+
+SAID = "Oui, vas-y. Plus besoin de me le redemander pour ça."
+NO_NEED = "Plus besoin de me le redemander"
+
+
+def agreeing(
+    person, session, *, answers_them: bool = True, said: tuple[str, ...] = (SAID,)
+) -> ToolContext:
+    """The context of ``person``'s turn, on ``session`` (its commits only release a savepoint);
+    ``answers_them``: the turn answers a message of theirs, which ``said`` holds (their messages
+    of the turn, one by one)."""
+    return ToolContext(
+        session_factory=lambda: nullcontext(session),
+        actor=Actor(person.id, person.role),
+        person=person,
+        conversation_id=uuid.uuid4(),
+        origin="",
+        gatekeeper=None,  # type: ignore[arg-type]
+        clock=lambda: AGREED_AT,
+        registry=TOOLS,
+        policy=DEFAULT_POLICY,
+        reply_message_id=uuid.uuid4() if answers_them else None,
+        said=said[0] if said else None,
+        said_later=tuple(said[1:]),
+    )
+
+
+async def told_of(session, person_id: uuid.UUID) -> dict[str, bool | None]:
+    rows = await session.scalars(
+        select(Memory).where(Memory.said_by_id == person_id, Memory.origin == "told_by_domo")
+    )
+    return {memory.action_type: memory.told_keep_asking for memory in rows}
+
+
+async def warned(session, person, *action_types: str) -> None:
+    for action_type in action_types:
+        await told(
+            session,
+            person_id=person.id,
+            action_type=action_type,
+            reason="you cannot take it back",
+            answer="yes",
+            now=AGREED_AT,
+        )
+
+
+async def test_no_need_to_ask_again_is_kept_for_that_person_and_kind(session, add_person):
+    alex = await add_person("Alex", "adult")
+    await warned(session, alex, "household.remove", "profile.rename")
+    tool = TOOLS[AGREE]
+    arguments = {"action_type": "household.remove", "keep_asking": False, "their_words": NO_NEED}
+    ctx = agreeing(alex, session)
+    # It changes nothing in the household, and is never shown.
+    assert await tool.describe(arguments, ctx.actor, ctx) == DescribedAction(
+        "core", "confirmation.agree_asking", None, "own_requests", "household"
+    )
+    assert tool.action_type in KNOWN_ACTIONS
+    assert tool.action_type in CHANGES_NOTHING and is_silent(tool.action_type)
+    outcome = await tool.execute(arguments, ctx)
+    assert outcome.status == "done"
+    assert await told_of(session, alex.id) == {"household.remove": False, "profile.rename": None}
+
+
+async def test_another_person_s_agreement_is_not_theirs(session, add_person):
+    alex = await add_person("Alex", "adult")
+    dana = await add_person("Dana", "adult")
+    await warned(session, alex, "household.remove")
+    await warned(session, dana, "household.remove")
+    arguments = {"action_type": "household.remove", "keep_asking": False, "their_words": NO_NEED}
+    await TOOLS[AGREE].execute(arguments, agreeing(dana, session))
+    assert await told_of(session, dana.id) == {"household.remove": False}
+    assert await told_of(session, alex.id) == {"household.remove": None}
+
+
+async def test_agreed_asking_without_a_warning_before_is_not_found(session, add_person):
+    alex = await add_person("Alex", "adult")
+    dana = await add_person("Dana", "adult")
+    await warned(session, dana, "household.remove")
+    arguments = {"action_type": "household.remove", "keep_asking": False, "their_words": NO_NEED}
+    with pytest.raises(InvalidArguments) as refused:
+        await TOOLS[AGREE].execute(arguments, agreeing(alex, session))
+    assert refused.value.code == "not_found"
+    # Only in a turn that answers them: never on his own, nor in a turn nobody spoke in.
+    await warned(session, alex, "household.remove")
+    for ctx in (
+        agreeing(alex, session, answers_them=False),
+        replace(agreeing(alex, session), on_his_own=True),
+        # A turn with words from outside in it is not their own words (ruling R68).
+        replace(agreeing(alex, session), told_outside=True),
+    ):
+        with pytest.raises(InvalidArguments) as refused:
+            await TOOLS[AGREE].execute(arguments, ctx)
+        assert refused.value.code == "not_possible"
+    assert await told_of(session, alex.id) == {"household.remove": None}
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        # Not what they said.
+        ("Oui, vas-y.",),
+        # Across two of their messages: never (ruling R62).
+        ("Oui, vas-y. Plus besoin", "de me le redemander"),
+    ],
+)
+async def test_agreed_asking_needs_a_passage_of_their_message_of_now(session, add_person, said):
+    alex = await add_person("Alex", "adult")
+    await warned(session, alex, "household.remove")
+    arguments = {
+        "action_type": "household.remove",
+        "keep_asking": False,
+        "their_words": "Plus besoin de me le redemander",
+    }
+    with pytest.raises(InvalidArguments) as refused:
+        await TOOLS[AGREE].execute(arguments, agreeing(alex, session, said=said))
+    assert refused.value.code == "not_possible"
+    assert await told_of(session, alex.id) == {"household.remove": None}
+    # In one message of theirs, word for word: kept.
+    await TOOLS[AGREE].execute(
+        arguments, agreeing(alex, session, said=("ok", "Plus besoin de me le redemander !"))
+    )
+    assert await told_of(session, alex.id) == {"household.remove": False}
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"action_type": "household.remove", "keep_asking": True},
+        {"action_type": "", "keep_asking": True, "their_words": "x"},
+        {"action_type": 3, "keep_asking": True, "their_words": "x"},
+        {"action_type": "household.remove", "keep_asking": "no", "their_words": "x"},
+        {"action_type": "household.remove", "keep_asking": True, "more": 1, "their_words": "x"},
+        {"action_type": "household.remove", "keep_asking": True, "their_words": " "},
+        {"action_type": "household.remove", "keep_asking": True, "their_words": 1},
+    ],
+)
+async def test_agreed_asking_refuses_malformed_arguments(arguments):
+    with pytest.raises(InvalidArguments) as refused:
+        await TOOLS[AGREE].describe(arguments, Actor(uuid.uuid4(), "adult"), None)
+    assert refused.value.code == "invalid"

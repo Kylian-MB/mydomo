@@ -32,8 +32,11 @@ from domo_core.llm.types import (
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.catalog import (
     ACTION_FACTS,
+    CHANGES_NOTHING,
     DEFAULT_LIMITS,
     DEFAULT_POLICY,
+    DOMO_DEVICE_ACTIONS,
+    DOMO_HOUSEHOLD_ACTIONS,
     DOMO_NOT_BY_DEFAULT,
     GUEST_DAYS_RULE,
     NOT_ON_HIS_OWN,
@@ -673,6 +676,21 @@ async def test_the_outcome_of_an_example_is_the_barriers(example, rights, outcom
     assert await example_outcome(example, empty, context(rights=RightsTable(rights))) == outcome
 
 
+async def test_the_writer_says_the_assistant_decides_when_he_knows():
+    # Task 25: a limit that says "judge" is the assistant's when he knows the answer; the owner
+    # reads the question only when he doubts. An example cannot show what he knows: it shows what
+    # happens when he doubts.
+    prompt = writer_prompt()
+    assert "the assistant decides when he knows the answer" in prompt
+    assert "for now it waits for the owner's yes" not in prompt
+    assert "an example cannot show what he knows" in prompt
+    limit = Limit('"judge"', "Is Sam a friend of Dana?", "a limit")
+    judged = _right("household.invite", person_id=ALEX, access="allow", limit=limit)
+    example = invite("guest", 2, "asks_the_owner")
+    ctx = context(rights=RightsTable((judged,)))
+    assert await example_outcome(example, Draft((), ()), ctx) == "asks_the_owner"
+
+
 async def test_the_draft_is_laid_over_the_rights_in_force():
     # Alex's old right is replaced by the draft's for the same type: the outcome is the draft's.
     old = _right("household.invite", person_id=ALEX, access="allow", approver="owner")
@@ -951,7 +969,8 @@ def test_the_writers_text_speaks_of_asks_not_levels():
         "domo_judges",
         "asks_them",
         "everyone",
-        "for now it waits for the owner's yes",
+        # (Task 25: a limit "judge" is the assistant's when he knows, the owner's when he doubts.)
+        "the assistant decides when he knows the answer",
     ):
         assert needed in prompt, needed
     for gone in ("always_confirm", '"free"', "`level`"):
@@ -2060,6 +2079,8 @@ GOING_OUT_FACTS = {
         "giver": f"person:{ALEX}",
         "hosts": 1,
         "outward": False,
+        "removed_by_owner": True,
+        "removed_on": "2030-01-01",
     },
 }
 
@@ -2131,8 +2152,9 @@ async def test_closing_an_address_and_looking_take_access_alone(action_type):
 
 
 CLOSED_TO_DOMO = (
-    "change 1: secrets, keys and accounts, spending limits and who may do what are not opened to "
-    "the assistant himself for now: only taken from him"
+    "change 1: secrets, keys, sharing an account, spending limits and who may do what (rights, "
+    "rules, leaving, handing the owner's role over) are not opened to the assistant himself for "
+    "now: only taken from him"
 )
 # Opened to Domo by a right of the owner (``test_the_owner_opens_to_domo_what_he_lacks_by_
 # default``, ``test_the_owner_gives_domo_the_ports_of_the_machine_that_hosts_him``).
@@ -2142,11 +2164,13 @@ SOCLE_CLOSED_TO_DOMO = sorted(
 )
 
 
-def test_removing_or_sharing_an_account_is_closed_to_domo():
-    # Spec 13.5: on his own he neither creates, replaces nor removes an account.
-    assert "account.remove" in SOCLE_CLOSED_TO_DOMO
+def test_sharing_an_account_is_closed_to_domo_and_removing_one_is_his():
+    # The owner, 2026-11-24: he removes on his own an account that no longer serves.
+    assert "account.remove" not in SOCLE_CLOSED_TO_DOMO
+    assert "account.remove" not in DOMO_NOT_BY_DEFAULT
     # Sharing a house account is the owner's alone: no right writes it for anyone.
     assert "account.share" in OWNER_ONLY_ACTIONS
+    assert {"household.leave", "keys.house", "spending.limit"} <= set(SOCLE_CLOSED_TO_DOMO)
 
 
 @pytest.mark.parametrize("socle", SOCLE_CLOSED_TO_DOMO)
@@ -2171,6 +2195,98 @@ async def test_secrets_spending_limits_and_permissions_are_never_opened_to_domo(
         (Example(ALEX, socle, facts, "refused"),),
     )
     assert CLOSED_TO_DOMO not in await check_draft(for_alex, context())
+
+
+HIS_OWN_BY_DEFAULT = [
+    *sorted((DOMO_HOUSEHOLD_ACTIONS | DOMO_DEVICE_ACTIONS) - set(RIGHTS_OF)),
+    "account.remove",
+    "memory.keep",
+    "memory.forget",
+    "trust.note",
+    "plan.set",
+    "confirmation.remind",
+    "chain.run",
+    "chain.continue",
+    "writing.choose",
+    "delivery.look",
+]
+_FACT_OF_KIND: dict[str, object] = {
+    "person": f"person:{ALEX}",
+    "role": "adult",
+    "boolean": False,
+    "number": None,
+    "text": "a text",
+    "date": "2026-01-02",
+}
+
+
+def his_example(action_type: str, expected: str) -> Example:
+    """The assistant acting on his own on ``action_type``, with every fact of a plausible kind."""
+    facts = {name: _FACT_OF_KIND[kind] for name, kind in ACTION_FACTS.get(action_type, {}).items()}
+    # Sam (a child) is the one the people types are about; Kim, who left, is brought back.
+    if "person" in facts:
+        facts["person"] = f"person:{KIM if action_type == 'household.bring_back' else SAM}"
+    if "current_role" in facts:
+        facts["current_role"] = "child"
+    if action_type == "device.remove":
+        facts["is_self"] = True  # (the tool's own guard refuses another's device to a non-owner)
+    return Example(None, action_type, facts, expected, for_domo=True)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("held", HIS_OWN_BY_DEFAULT)
+async def test_the_owner_takes_from_the_assistant_what_he_keeps_on_his_own_and_gives_it_back(held):
+    # Each is written whole, with no problem at all: a deny, an "ask me first" (the barrier asks
+    # it before any judgement, even on what changes nothing) and a yes given back after a deny.
+    assert held not in SOCLE_CLOSED_TO_DOMO
+    for rule, outcome in (
+        (domo_change(action_type=held, access="deny"), "refused"),
+        (
+            domo_change(action_type=held, access=None, ask="yes", summary="Demande-moi."),
+            "asks_them",
+        ),
+        (
+            domo_change(action_type=held, access="allow", summary="Il peut de nouveau."),
+            "domo_judges",
+        ),
+    ):
+        draft = Draft((rule,), (his_example(held, outcome),))
+        assert await check_draft(draft, context(former=FORMER)) == [], (held, rule)
+
+
+async def test_the_owner_s_ask_me_first_for_him_is_written_but_never_for_a_person():
+    # For a person, nothing is asked on what changes nothing: as before.
+    assert "plan.set" in CHANGES_NOTHING
+    for_alex = change(
+        action_type="plan.set", access=None, limit_expression=None, ask="yes", summary="Demande."
+    )
+    assert any(
+        "nothing is asked" in problem
+        for problem in await check_draft(Draft((for_alex,), ()), context())
+    )
+
+
+async def test_the_owner_never_leaves_to_a_judge_what_is_never_judged_for_him():
+    # Memory is never judged: "ask: judge" for him there would do nothing (it is accepted for a
+    # type his judge weighs, such as inviting).
+    never_judged = domo_change(
+        action_type="memory.keep", access=None, ask="judge", ask_when="always", summary="Juge."
+    )
+    problems = await check_draft(Draft((never_judged,), ()), context())
+    assert any("never weighs" in problem for problem in problems), problems
+    judged = domo_change(
+        action_type="household.remove", access=None, ask="judge", ask_when="x", summary="Juge."
+    )
+    problems = await check_draft(Draft((judged,), ()), context())
+    assert not any("never weighs" in problem for problem in problems), problems
+
+
+@pytest.mark.parametrize("socle", ["key.add", "household.leave", "spending.limit", "account.share"])
+async def test_what_stays_closed_to_him_is_still_refused_for_an_opening(socle):
+    opening = domo_change(action_type=socle, access="allow", summary="Il peut.")
+    problems = await check_draft(Draft((opening,), ()), context())
+    assert problems != []
+    ask = domo_change(action_type=socle, access=None, ask="yes", summary="Demande-moi.")
+    assert await check_draft(Draft((ask,), ()), context()) != []
 
 
 # --- what a tool does and spends (final review I2, spec 5.3, 5.8) ------------------------------

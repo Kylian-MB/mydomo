@@ -3,8 +3,9 @@
 Next to each memory that is someone's word about another person, not confirmed by them, said by
 someone else than the person of the turn: what the word of who said it has been worth so far. For
 the person who speaks: their own, on one line of the context, as data. The guard of the memories
-says what a figure is and is not. Nothing of it reaches the yes-judge, and no code of the policy,
-the confirmations or the spending imports the trust. A read of the scores that fails leaves the
+says what a figure is and is not. The yes-judge reads the trust of the one who asks, in his case
+(the owner decided it on 2026-11-23); no other code of the policy, the confirmations or the
+spending imports the trust, and the barrier reads none. A read of the scores that fails leaves the
 turn going, without a figure.
 """
 
@@ -197,14 +198,19 @@ async def test_a_stranger_starts_at_the_start_domo_chose(
     assert line_of(system, memory_id)["trust"] == {"percent": 50, "facts": 0}
 
 
-async def test_the_judge_reads_no_trust(adult_chat: ChatPilot, child_chat: ChatPilot):
+async def test_the_judge_reads_the_trust_of_the_one_who_asks(
+    adult_chat: ChatPilot, child_chat: ChatPilot
+):
     alex = adult_chat.person
-    # Alex's own word about Sam: in Sam's turns it comes with Alex's figure; the judge of Alex's
-    # rename reads it (his own words, about the name), and must read it without one.
+    # Since 2026-11-23 the judge reads trust, in his case, and only that of the one who asks:
+    # the figure, how many facts it rests on, and the last facts. Alex's own word about Sam
+    # comes with Alex's figure in Sam's turns; in the case of Alex's rename it is a memory read
+    # as his own words, with no figure of its own, next to Alex's trust.
     said = "Sam wants to call Alex by the name Alex B."
     memory_id = await kept(adult_chat, said, "Sam")
     await facts_about(adult_chat, alex, "lied", "lied")
-    assert line_of(await context_of(child_chat), memory_id)["trust"] == figure(70, "lied", "lied")
+    expected = figure(70, "lied", "lied")
+    assert line_of(await context_of(child_chat), memory_id)["trust"] == expected
     first = len(adult_chat.server.calls)
     reply = await adult_chat.say_with_tool(
         "profile_rename", {"name": "Alex B"}, judge="do: they asked"
@@ -217,11 +223,15 @@ async def test_the_judge_reads_no_trust(adult_chat: ChatPilot, child_chat: ChatP
     assert any(speaker_line(call.system) for call in calls if not fakes.is_judge_call(call.system))
     for call in judged:
         case = json.loads(call.messages[0].content)
-        # The judge read that memory, and nothing of what it was worth.
+        # The judge read that memory, and the trust of Alex, who asks, in the case.
         assert [line["content"] for line in case.get("remembered", [])] == [said]
         assert all("trust" not in line for line in case["remembered"])
-        told = call.system + json.dumps(case, ensure_ascii=False)
-        assert '"trust"' not in told and TRUST_HEADING not in told and FACT_ABOUT not in told
+        trust = case["trust"]
+        assert {key: trust[key] for key in expected} == expected
+        assert [fact["outcome"] for fact in trust["lately"]] == ["lied", "lied"]
+        assert all(FACT_ABOUT in fact["about"] for fact in trust["lately"])
+        # And it is the case that holds it: the context of the turn is not copied into it.
+        assert TRUST_HEADING not in call.system + json.dumps(case, ensure_ascii=False)
 
 
 def _imports_of(path: Path, package: str) -> set[str]:
@@ -252,13 +262,22 @@ def test_no_policy_code_imports_trust():
     ]
     assert root / "llm" / "spending.py" in modules
     assert root / "confirmations" / "judge.py" in modules
+    assert root / "policy" / "barrier.py" in modules and root / "policy" / "subjects.py" in modules
     assert any(path.parent.name == "policy" for path in modules)
-    for path in modules:
-        package = ".".join(("domo_core", *path.relative_to(root).parent.parts))
-        imported = _imports_of(path, package)
-        assert not any(
-            name == "domo_core.trust" or name.startswith("domo_core.trust.") for name in imported
-        ), path
+    # The judge's case gathers the trust of the one who asks; nothing else of these reads it.
+    gathers = root / "confirmations" / "case.py"
+    assert gathers in modules
+    importers = [
+        path
+        for path in modules
+        if any(
+            name == "domo_core.trust" or name.startswith("domo_core.trust.")
+            for name in _imports_of(
+                path, ".".join(("domo_core", *path.relative_to(root).parent.parts))
+            )
+        )
+    ]
+    assert importers == [gathers]
 
 
 def test_the_import_check_sees_every_shape_of_import(tmp_path: Path):

@@ -959,3 +959,67 @@ La version suivante (0.11.0). Ce qui suit l'emporte sur « les outils ne sortent
 - un service de la machine hôte sur les deux numéros de port du gardien ne peut jamais être ouvert ;
 - les chiffres des requêtes au-dehors de `tool_look` sont lus dans le journal, sans index sur le type de ligne : à revoir si le journal devient très grand ;
 - pas encore de navigateur (étape 3), de paquets Python, ni de recherche d'appareils sur le réseau.
+
+## 18. 0.12.0 : Domo juge d'abord, ce qui reste pour après
+
+Ce que le chantier « Domo juge d'abord » (conception du 2026-11-23, `docs/superpowers/specs/2026-11-23-domo-juge-d-abord-design.md` ; plan `docs/superpowers/plans/2026-11-23-domo-juge-d-abord.md`) laisse pour la suite. Tes décisions du 2026-11-24 (D1 à D9) sont dans la partie 2 de la conception ; chaque choix fait sans toi, avec ce qu'il coûte s'il est faux, est dans sa partie 17 (102 lignes), et la partie 18 de la conception dit où le code ne fait plus comme écrit plus haut.
+
+**Ce qui est laissé tel quel** (partie 15 de la conception : chaque ligne reste une question ouverte, pour toi ou pour une autre session)
+
+- La règle « identité établie seulement par un indice fort » : avec la voix. Le dossier du juge donne déjà l'âge réel des indices et « personne n'a parlé ».
+- Les personnes, les liens, les identifiants, les rôles, et la limite de 30 jours d'un invité : la session « Domo crée les personnes ».
+- Les mots, les successeurs, le niveau d'un modèle, le fuseau.
+- Une ouverture qui demande ton oui n'est jamais une étape d'une suite : Domo fait deux appels dans la même réponse.
+- Un oui donné longtemps après repasse par les règles, pas par le juge (Domo est réveillé avant qu'une demande expire).
+- Un accord qui dure pour une personne, seulement sur ses propres mots : c'est son argent.
+- Un « oui, mais » sur une demande d'une personne qui voulait un oui explicite redemande (pour une demande de Domo, D7 : il applique s'il a compris).
+- Les formulaires et le client en ligne de commande.
+- Les deux commentaires de TLP-11 sont dans des fichiers que ce chantier ne touche pas (`packages/domo-core/src/domo_core/tools/household_read.py`, `packages/domo-core/src/domo_core/household/service.py`) : à corriger par la session qui les tient. Le refus en bloc des demandes d'une personne qu'on retire, dans `household/service.py`, ne note aucun fait : pour elle aussi.
+
+**Les choix du rédacteur qui coûtent le plus s'ils sont faux** (le reste : partie 17 de la conception)
+
+- Le dossier est borné dans l'ordre de grandeur d'aujourd'hui, et se rassemble en 5 secondes à part ; les consignes du juge sont passées de 6 000 à environ 8 000 caractères au plus : des jetons de plus par action jugée.
+- Une idée de Domo est jugée avec ses droits, et ne lève qu'un droit simplement pas donné ; ton interdiction écrite pour la personne ou pour son rôle la bloque, et le socle de la personne qui parle tient toujours.
+- La personne concernée est dite par le code, à défaut toi ; une suite n'est jamais envoyée à une personne concernée.
+- « Pour la maison », demandé par un autre que toi, va chez toi à chaque fois tant que tu n'as pas donné le droit `house.set`.
+- Dans un tour qui porte un texte du dehors (résultat d'un outil, réveil d'un programme…), Domo ne note aucun fait de confiance et ne confirme aucun souvenir.
+- Un programme lancé à la main n'a pas d'habitude de dépense : son coût est demandé sauf si tes mots le couvrent.
+- Une ligne écrite d'avance dit à la personne concernée qu'une demande envoyée chez elle est sans retour : jamais la raison du juge, qui peut contenir des mots privés.
+
+**Ce que le plan a deviné** (à confirmer)
+
+- Une idée marquée est bloquée par une interdiction écrite pour la personne *ou pour son rôle*.
+- Une demande pour une personne concernée qui n'est pas dans la discussion du tour attend dans sa propre discussion, et lui arrive comme une nouvelle.
+- La marque est un outil (`act_on_my_own`) qui couvre l'action suivante, comme `ask_before_acting`.
+- « Pour la maison » va chez toi à chaque fois tant que tu n'as pas donné le droit `house.set`.
+- `asking_agreed` est la façon de garder « voir avec elle s'il doit continuer à demander ».
+- Un message gardé est tenu en mémoire jusqu'à ce que le tour le lise ; après un redémarrage, il reste dans l'historique comme un message sans réponse.
+- « L'âge réel » de l'indice d'une session est le temps depuis la connexion, avec à côté le temps depuis qu'elle a parlé.
+- La clé générale sans remplaçante restait refusée : *renversé par ta décision D6* (prévenue puis retirée, comme la dernière clé).
+
+**Les limites connues**
+
+- Un morceau du message d'une personne peut perdre son cadre (« je doute que » + « Alex a menti », « le mail dit : » + « Alex a menti ») et être gardé comme ses propres mots, sur lesquels un fait de confiance peut s'appuyer. C'est une limite du « passage vérifié » de la mémoire (0.9.0) ; depuis R79 la marque « peut dire oui » exige en plus que le contenu du souvenir soit lui-même un passage du message ; à reprendre : exiger une phrase entière, ou garder la phrase autour du passage.
+- Oublier ce qui touche la santé est jugé par Domo dans le tour (ses consignes), pas par le juge du oui : aucun code ne le tient à la règle de la première fois, et ce qui est convenu est un souvenir ordinaire, pas `asking_agreed`.
+- Une étape d'une suite sous une limite « à juger » va encore chez toi : seule l'action seule est jugée.
+- Une limite « à juger » laisse le modèle seul t'épargner la question (aucun contrôle du code derrière son « fais »).
+- Le retrait d'un compte que Domo pèse est comparé au jour près : retiré, remis puis retiré le même jour passe pour pesé.
+- `general_when_none` ne prend pas de verrou : deux passes en même temps heurtent l'index unique (jamais deux clés générales, mais le contrôle de cette clé échoue) ; il lit le nom de rôle « owner » de celui qui a donné la clé, faute d'un droit du propriétaire à lire.
+- Retirer la dernière clé laisse plus personne pouvoir parler à Domo : la page d'une nouvelle clé est le seul chemin de retour.
+- Après une suite ou un bouton, aucune ligne ne dit ce qui a été convenu pour redemander : Domo redemande à chaque fois dans ces cas.
+- Après un redémarrage, un message gardé attend que la personne écrive de nouveau ou revienne.
+- La phrase d'un accord « pour toute la maison » qu'on retire ne dit pas lequel : la description de la demande n'a que son identifiant ; il faudrait y ajouter l'outil et l'opération.
+- Le prénom « Kim » reste dans des tests plus anciens et dans `household/succession.py`, et « Robin » dans des tests plus anciens (`test_judge.py`, `test_judge_decides.py`, `test_judge_case.py` qui a besoin de six personnes) : hors des noms convenus, à renommer quand ces fichiers seront repris.
+
+**Ce qui n'a jamais été vérifié**
+
+- Les essais sur l'installation complète (pile, bout en bout, navigateur) : aucun n'a tourné pour ce chantier, ni avant ni après les corrections de la fin.
+- L'évaluation avec un vrai modèle (les 22 cas du juge) : pas faite sur cette branche.
+- Le dernier commit (2b611518 : la demande née de ta règle garde sa personne à travers un changement et un réveil) n'a eu aucune relecture indépendante, seulement ses propres tests et la CI complète.
+- Une base de développement déjà à 0056 ou 0057 est à refaire (colonnes ajoutées dans ces deux migrations).
+- Ce que la page montre pour un message gardé (la bulle seule, la réponse qui vient comme une réponse que Domo commence).
+- Un vrai modèle : le jeu de cas de la tâche 29, et pour chaque fournisseur un essai où un texte de la personne arrive juste après des résultats d'outils (un message gardé), en particulier chez Google.
+
+**Décidé mais pas construit ici**
+
+- D3 : le journal comme une chose dont Domo décide qui peut la lire. Il faut un outil de lecture du journal, avec sa propre conception (ce qui est montré des actions des autres). En attendant, le journal reste ta page à toi seul.

@@ -1,7 +1,8 @@
 """Each member's own keys, in words (0.6.0, spec 4.2 and 4.3): ``key_add`` opens the vault form
 (the models the key opens are listed once it is in, and the key is the one who gave it's),
-``key_remove`` takes one of the person's keys away (never the last key of the household, and the
-general key only when the one who gave it has another one to hand it to), ``key_share`` says who
+``key_remove`` takes one of the person's keys away (the last key of the household, or the general
+key with no other key of its giver's, is warned about first, then removed on a yes: the owner's
+decision D6), ``key_share`` says who
 else may use it. The page ``/chat/keys/new`` shows the same form as the first launch, guarded like
 the tool, and Domo is told the keys a person may use, and which are theirs.
 
@@ -12,6 +13,7 @@ gatekeeper and ``model_lister`` the lists of models the keys open.
 import json
 import re
 import uuid
+from dataclasses import replace
 from html import unescape
 
 import pytest
@@ -20,17 +22,23 @@ from domo_common.gatekeeper_api import FORM_TEXT_KEYS, ProviderRoute, SecretRequ
 from domo_common.i18n import t
 from domo_core.accounts.models import Person
 from domo_core.audit.models import AuditEntry
+from domo_core.confirmations.chain import newly_warned
 from domo_core.confirmations.describe import describe_type
+from domo_core.confirmations.models import Confirmation
+from domo_core.confirmations.steps import PlannedStep
+from domo_core.conversation import execution
 from domo_core.llm.key_flow import KEY_NEW_PATH
-from domo_core.llm.models import ModelLesson, Provider, ProviderModel, ProviderUser
-from domo_core.llm.provider_keys import binding_for
+from domo_core.llm.models import Provider, ProviderModel, ProviderUser, new_provider_id
+from domo_core.llm.provider_keys import binding_for, general_when_none
 from domo_core.llm.router import usable_keys
 from domo_core.llm.spending_models import ModelCall
+from domo_core.policy.actions import DescribedAction
 from domo_core.texts.models import WrittenText
 from domo_core.texts.view import CatalogTexts
 from fakes import LISTED_MODELS, FakeChatModel
 from gatekeeper_support import form_texts
 from sqlalchemy import delete, select, update
+from test_judge_decides import judge_cases
 from test_spending import add_key
 from web_support import in_language, reads_in
 
@@ -313,31 +321,90 @@ async def test_a_chain_leaves_the_form_of_a_new_key_behind_its_button(adult_chat
 # --- removing a key ------------------------------------------------------------------------------
 
 
-async def test_removing_the_last_key_is_refused_until_another_is_given(owner_chat, gk_mock):
+def facts_judged(chat) -> dict:
+    """The facts of the last action the judge was given, on the pilot's server."""
+    return judge_cases(chat.server)[-1]["action"]["facts"]
+
+
+async def test_the_last_key_is_described_with_last_key_true_not_refused(owner_chat, gk_mock):
+    # The owner's decision D6: never a flat refusal. The judge reads that it is the last key.
     general = owner_chat.server.provider_id
-    reply = await owner_chat.say_with_tool("key_remove", {"key": general}, judge="do")
-    assert reply.actions == [{"tool": "key_remove", "status": "invalid", "reason": "not_possible"}]
-    assert "give another key first" in reply.model_result_text
+    reply = await owner_chat.say_with_tool(
+        "key_remove", {"key": general}, judge="warn: nobody could talk with me after it"
+    )
+    assert reply.actions == [{"tool": "key_remove", "status": "waiting"}]
+    assert facts_judged(owner_chat) == {"last_key": True, "general_key_without_heir": True}
+    assert reply.model_results[-1]["why"] == "nobody could talk with me after it"
     assert [key.id for key in await all_keys(owner_chat)] == [general]
     assert not gk_mock.providers.called
 
+    # Any other key: neither fact.
     other = await add_key(owner_chat.server.session_factory, owner_chat.person.id)
-    reply = await owner_chat.say_with_tool("key_remove", {"key": general}, judge="do")
+    reply = await owner_chat.say_with_tool("key_remove", {"key": other.id}, judge="do")
     assert reply.actions == [{"tool": "key_remove", "status": "done"}]
-    assert [(key.id, key.is_general) for key in await all_keys(owner_chat)] == [(other.id, True)]
+    assert facts_judged(owner_chat) == {"last_key": False, "general_key_without_heir": False}
 
 
-async def test_a_refused_removal_is_no_mistake_of_the_model(owner_chat, session_factory):
-    """Removing the last key is a call the household's rules refuse, not one the model got
-    wrong: the rest of the request stays on the same model, and no lesson is written."""
-    server = owner_chat.server
-    first = len(server.requested)
-    reply = await owner_chat.say_with_tool("key_remove", {"key": server.provider_id}, judge="do")
-    asked = [model_id for _, model_id in server.requested[first:]]
-    assert len(asked) >= 2 and set(asked) == {asked[0]}
-    async with session_factory() as reader:
-        assert (await reader.execute(select(ModelLesson))).first() is None
-    assert reply.actions[0]["reason"] == "not_possible"
+async def test_warned_and_still_wanted_it_is_removed(
+    owner_chat, gk_mock, confirmation_status, last_audit_entry
+):
+    general = owner_chat.server.provider_id
+    reply = await owner_chat.say_with_tool(
+        "key_remove", {"key": general}, judge="warn: nobody could talk with me after it"
+    )
+    cid = reply.pending_confirmation_id
+    card = await owner_chat.confirm_last(reply)
+    assert card.status == "executed" and await confirmation_status(cid) == "executed"
+    assert await all_keys(owner_chat) == []
+    assert (await last_audit_entry("key.removed")).details == {"provider_id": general}
+
+
+async def test_a_silent_judge_on_the_last_key_asks_a_yes(owner_chat, confirmation_ask):
+    general = owner_chat.server.provider_id
+    reply = await owner_chat.say_with_tool("key_remove", {"key": general}, judge="maybe")
+    assert reply.actions == [{"tool": "key_remove", "status": "waiting"}]
+    assert await confirmation_ask(reply.pending_confirmation_id) == ("yes", "judge", None)
+    assert [key.id for key in await all_keys(owner_chat)] == [general]
+
+
+async def test_the_general_key_without_an_heir_is_warned_about_then_removed_on_a_yes(
+    owner_chat, adult_chat, gk_mock, confirmation_ask
+):
+    # The owner's decision D6 holds for the general key with no other key of its giver's too.
+    factory = owner_chat.server.session_factory
+    general = owner_chat.server.provider_id
+    alexs = await add_key(factory, adult_chat.person.id)
+    # A silent judge never lets it run at once.
+    reply = await owner_chat.say_with_tool("key_remove", {"key": general}, judge="maybe")
+    assert facts_judged(owner_chat) == {"last_key": False, "general_key_without_heir": True}
+    assert await confirmation_ask(reply.pending_confirmation_id) == ("yes", "judge", None)
+    assert general in {key.id for key in await all_keys(owner_chat)}
+    # Warned, and still wanted: it goes, and nothing takes its place.
+    reply = await owner_chat.say_with_tool(
+        "key_remove", {"key": general}, judge="warn: I could no longer answer whoever uses it"
+    )
+    card = await owner_chat.confirm_last(reply)
+    assert card.status == "executed"
+    keys = await all_keys(owner_chat)
+    assert [(key.id, key.is_general) for key in keys] == [(alexs.id, False)]
+
+
+async def test_a_key_that_became_the_last_after_the_yes_is_not_removed(
+    owner_chat, gk_mock, session_factory, confirmation_status
+):
+    # Warned about nothing, it waits for a yes; meanwhile the other key goes: the yes was not
+    # given knowing it would be the last, so nothing is removed and they are asked again.
+    general = owner_chat.server.provider_id
+    other = await add_key(owner_chat.server.session_factory, owner_chat.person.id)
+    reply = await owner_chat.say_with_tool("key_remove", {"key": other.id}, judge="yes: sure?")
+    assert facts_judged(owner_chat)["last_key"] is False
+    async with session_factory() as writer:
+        # The general key lists no model any more: it no longer counts as a key that works.
+        await writer.execute(delete(ProviderModel).where(ProviderModel.provider_id == general))
+        await writer.commit()
+    card = await owner_chat.confirm_last(reply)
+    assert card.status != "executed"
+    assert other.id in {key.id for key in await all_keys(owner_chat)}
 
 
 async def test_removing_the_general_key_hands_it_to_the_owners_other_key(
@@ -346,15 +413,11 @@ async def test_removing_the_general_key_hands_it_to_the_owners_other_key(
     factory = owner_chat.server.session_factory
     general = owner_chat.server.provider_id
     await add_key(factory, adult_chat.person.id)
-    # Alex's key is not the owner's: the general key cannot go to it.
-    reply = await owner_chat.say_with_tool("key_remove", {"key": general}, judge="do")
-    assert reply.actions == [{"tool": "key_remove", "status": "invalid", "reason": "not_possible"}]
-    assert "general key" in reply.model_result_text
-
     older = await add_key(factory, owner_chat.person.id)
     newer = await add_key(factory, owner_chat.person.id)
     reply = await owner_chat.say_with_tool("key_remove", {"key": general}, judge="do")
     assert reply.actions == [{"tool": "key_remove", "status": "done"}]
+    assert facts_judged(owner_chat) == {"last_key": False, "general_key_without_heir": False}
     generals = {key.id: key.is_general for key in await all_keys(owner_chat)}
     assert general not in generals
     assert (generals[older.id], generals[newer.id]) == (True, False)
@@ -376,10 +439,9 @@ async def test_the_general_key_goes_to_another_key_of_the_one_who_gave_it(
     await set_role(owner_chat.person, "adult")
     await set_role(adult_chat.person, "owner")
     alexs = await add_key(factory, adult_chat.person.id)
-    reply = await owner_chat.say_with_tool("key_remove", {"key": general}, judge="do")
-    assert reply.actions == [{"tool": "key_remove", "status": "invalid", "reason": "not_possible"}]
-    assert "the one who gave it gave no other key" in reply.model_result_text
-    assert "(the owner)" not in reply.model_result_text
+    # Alex's key does not count as one to take over: the judge is told so.
+    await owner_chat.say_with_tool("key_remove", {"key": general}, judge="warn: hmm")
+    assert facts_judged(owner_chat)["general_key_without_heir"] is True
 
     theirs = await add_key(factory, owner_chat.person.id)
     reply = await owner_chat.say_with_tool("key_remove", {"key": general}, judge="do")
@@ -676,3 +738,185 @@ def error_of(reply) -> str:
 
 def context_lines(system: str) -> list[str]:
     return system.split("\n\nContext\n", 1)[1].splitlines()
+
+
+# --- fix round 1 of task 25 ----------------------------------------------------------------------
+
+
+async def test_a_last_key_removed_on_a_yes_leaves_a_wake_that_ends_cleanly(owner_chat, gk_mock):
+    # Review point 8: the yes runs, Domo is woken with no key left, and that wake ends without
+    # breaking anything (he cannot speak: he warned of it).
+    general = owner_chat.server.provider_id
+    reply = await owner_chat.say_with_tool(
+        "key_remove", {"key": general}, judge="warn: nobody could talk with me after it"
+    )
+    card = await owner_chat.confirm_last(reply)
+    assert card.status == "executed"
+    await owner_chat.server.wait_for_wakes()
+    assert await all_keys(owner_chat) == []
+    assert (await owner_chat.get("/chat")).status_code == 200
+
+
+async def test_a_chain_never_removes_what_became_the_last_key_at_once(
+    owner_chat, gk_mock, confirmation_ask
+):
+    # Review point 1: at plan time neither key is the last; once the first goes, the second is.
+    # It is sent back for a plain yes, never removed at once.
+    general = owner_chat.server.provider_id
+    other = await add_key(owner_chat.server.session_factory, owner_chat.person.id)
+    steps = [
+        {"tool": "key_remove", "arguments": {"key": other.id}},
+        {"tool": "key_remove", "arguments": {"key": general}},
+    ]
+    reply = await owner_chat.say_with_tool("do_in_order", {"steps": steps}, judge="do")
+    assert [key.id for key in await all_keys(owner_chat)] == [general]
+    cid = reply.pending_confirmation_id
+    assert cid is not None
+    assert await confirmation_ask(cid) == ("yes", "judge", None)
+    assert reply.model_results[-1]["by"] == "you"
+
+
+async def test_a_chain_said_yes_to_asks_again_when_a_step_became_the_last_key(
+    owner_chat, gk_mock, confirmation_ask, confirmation_status
+):
+    general = owner_chat.server.provider_id
+    other = await add_key(owner_chat.server.session_factory, owner_chat.person.id)
+    steps = [
+        {"tool": "key_remove", "arguments": {"key": other.id}},
+        {"tool": "key_remove", "arguments": {"key": general}},
+    ]
+    reply = await owner_chat.say_with_tool(
+        "do_in_order", {"steps": steps}, judge="yes: two keys at once?"
+    )
+    cid = reply.pending_confirmation_id
+    await owner_chat.confirm_last(reply)
+    # The first step ran; the second is asked again, a plain yes, before it removes the last key.
+    assert [key.id for key in await all_keys(owner_chat)] == [general]
+    assert await confirmation_status(cid) == "pending"
+    assert await confirmation_ask(cid) == ("yes", "judge", None)
+    # Still wanted: it goes.
+    response = await owner_chat.post(f"/confirmations/{cid}/approve")
+    assert response.status_code == 200
+    assert await all_keys(owner_chat) == []
+
+
+def test_a_step_checked_in_its_turn_that_is_now_the_last_key_is_warned():
+    # A step with no stored action (checked in its turn) knew nothing: a true fact is new.
+    now = DescribedAction(
+        "core",
+        "key.remove",
+        "provider:p-x",
+        "secrets",
+        "household",
+        {"last_key": True, "general_key_without_heir": False},
+    )
+    unknown = PlannedStep("key_remove", "key.remove", {"key": "p-x"}, None)
+    assert newly_warned(now, unknown)
+    known = PlannedStep("key_remove", "key.remove", {"key": "p-x"}, now)
+    assert not newly_warned(now, known)
+    calm = replace(now, facts={"last_key": False, "general_key_without_heir": False})
+    assert not newly_warned(calm, unknown)
+
+
+async def test_a_silent_judge_under_the_owners_conditions_still_asks_a_yes(
+    owner_chat, grant, confirmation_ask
+):
+    # Review point 4: the owner's "do not ask me, unless..." is no "never ask" outright: a
+    # silent judge on the last key asks a plain yes all the same.
+    await grant("key.remove", person=owner_chat.person.id, ask="judge", ask_when="only for guests")
+    general = owner_chat.server.provider_id
+    reply = await owner_chat.say_with_tool("key_remove", {"key": general}, judge="maybe")
+    assert reply.actions == [{"tool": "key_remove", "status": "waiting"}]
+    assert await confirmation_ask(reply.pending_confirmation_id) == ("yes", "judge", None)
+    assert [key.id for key in await all_keys(owner_chat)] == [general]
+
+
+async def test_a_key_that_became_the_last_while_the_judge_answered_asks_a_yes(
+    owner_chat, gk_mock, confirmation_ask, monkeypatch
+):
+    # Review point 5: what runs is what was judged. The other key stops working between the
+    # judge's do and the run: the general key is now the last, and a plain yes is asked.
+    factory = owner_chat.server.session_factory
+    general = owner_chat.server.provider_id
+    other = await add_key(factory, owner_chat.person.id)
+    decided_again = execution._decided_again
+
+    async def other_key_stops(*args, **kwargs):
+        async with factory() as writer:
+            await writer.execute(delete(ProviderModel).where(ProviderModel.provider_id == other.id))
+            await writer.commit()
+        return await decided_again(*args, **kwargs)
+
+    monkeypatch.setattr(execution, "_decided_again", other_key_stops)
+    reply = await owner_chat.say_with_tool("key_remove", {"key": general}, judge="do")
+    assert facts_judged(owner_chat) == {"last_key": False, "general_key_without_heir": False}
+    assert reply.actions == [{"tool": "key_remove", "status": "waiting"}]
+    cid = reply.pending_confirmation_id
+    assert await confirmation_ask(cid) == ("yes", "judge", None)
+    assert general in {key.id for key in await all_keys(owner_chat)}
+    # The request holds the action as it is now: its yes is given knowing it is the last key.
+    async with factory() as reader:
+        stored = await reader.scalar(select(Confirmation).where(Confirmation.id == cid))
+        assert stored is not None and stored.action["facts"]["last_key"] is True
+
+
+async def test_the_owners_new_key_becomes_the_general_key_when_there_is_none(
+    owner_chat, gk_mock, session_factory
+):
+    # Ruling R65: once the general key went with nobody to take over, the owner's next key that
+    # works takes its place.
+    async with session_factory() as writer:
+        await writer.execute(update(Provider).values(is_general=False))
+        await writer.commit()
+    reply = await owner_chat.say_with_tool("key_add", {"kind": "openai"}, judge="do")
+    [added] = [key for key in await keys_of(owner_chat) if key.kind == "openai"]
+    assert not added.is_general
+    owner_chat.use_model(FakeChatModel(["pong"]))
+    checked = await owner_chat.get(
+        Card(uuid.uuid4(), "", reply.cards_html).status_url_after_fulfilment(gk_mock)
+    )
+    assert 'data-key-status="checked"' in checked.text
+    generals = [key.id for key in await all_keys(owner_chat) if key.is_general]
+    assert generals == [added.id]
+
+
+async def test_a_key_becomes_general_only_for_the_owner_and_only_when_there_is_none(
+    session, add_person
+):
+    owner = await add_person("Alex", "owner")
+    dana = await add_person("Dana", "adult")
+    danas = Provider(
+        id=new_provider_id(),
+        kind="openai",
+        base_url="https://api.openai.com/v1",
+        secret_ref=None,
+        given_by=dana.id,
+    )
+    alexs = Provider(
+        id=new_provider_id(),
+        kind="openai",
+        base_url="https://api.openai.com/v1",
+        secret_ref=None,
+        given_by=owner.id,
+    )
+    session.add_all([danas, alexs])
+    await session.flush()
+    # Someone else's key that works again never becomes the general key.
+    await general_when_none(session, danas)
+    assert not danas.is_general
+    # The owner's does, when there is none.
+    await general_when_none(session, alexs)
+    await session.flush()
+    assert alexs.is_general
+    # And never a second one.
+    later = Provider(
+        id=new_provider_id(),
+        kind="openai",
+        base_url="https://api.openai.com/v1",
+        secret_ref=None,
+        given_by=owner.id,
+    )
+    session.add(later)
+    await session.flush()
+    await general_when_none(session, later)
+    assert not later.is_general

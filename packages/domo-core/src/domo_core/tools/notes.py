@@ -111,7 +111,7 @@ person's turn, that person's, never his.
 import re
 import unicodedata
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from contextlib import suppress
 from datetime import UTC, date, datetime, timedelta
 from typing import Final
@@ -272,6 +272,17 @@ def _at_word_boundaries(text: str, start: int, end: int) -> bool:
     cut_before = start > 0 and _of_a_word(text[start]) and _of_a_word(text[start - 1])
     cut_after = end < len(text) and _of_a_word(text[end - 1]) and _of_a_word(text[end])
     return not cut_before and not cut_after
+
+
+def exact_text_in(messages: Sequence[str], exact: str | None) -> str | None:
+    """``exact_text_from`` for the person's messages of a turn (``ToolContext.said_messages``),
+    each on its own: the passage as it stands in the first that holds it, never across two
+    (ruling R62). ``None`` when none holds it."""
+    for message in messages:
+        found = exact_text_from(message, exact)
+        if found is not None:
+            return found
+    return None
 
 
 def exact_text_from(said: str | None, exact: str | None) -> str | None:
@@ -489,7 +500,7 @@ class NoteLeave:
         # Copied by the code from the person's message, never from the call: the words of the
         # call only say which passage of it. A note of Domo's own keeps none: the person's
         # words are never shown as his.
-        exact = None if his else exact_text_from(ctx.said, given)
+        exact = None if his else exact_text_in(ctx.said_messages, given)
         now = ctx.clock()
         async with ctx.session_factory() as session:
             recipient = await resolve_person(session, name, now=now, speaker=ctx.person.id)

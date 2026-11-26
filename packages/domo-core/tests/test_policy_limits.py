@@ -160,13 +160,14 @@ def test_a_limit_that_asks_the_owner_needs_the_owners_agreement():
 
 
 def test_a_judgement_goes_to_the_owner_with_the_question():
-    """In 1b Domo has no memory: what needs understanding goes to the owner (spec 5.7)."""
+    """What needs understanding is the judge's first, with the question; when it doubts, it goes
+    to the owner (spec 5.7, "Domo judges first" part 13)."""
     justine = Actor(uuid4(), "adult")
     action = invite("guest", 2)
     question = "Is Dana a friend of Justine?"
     rights = with_limit(justine, "household.invite", '"judge"', judge_question=question)
     assert decide(justine, action, DEFAULT_POLICY, rights, moment(justine, action)) == (
-        NeedsApproval("owner", question=question)
+        NeedsApproval("owner", question=question, judge_first=True)
     )
     # Asking the owner straight away says the question too, when the right has one.
     rights = with_limit(justine, "household.invite", '"ask_owner"', judge_question=question)

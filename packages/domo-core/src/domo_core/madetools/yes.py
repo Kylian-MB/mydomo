@@ -15,13 +15,15 @@ under a row lock of the agreement, held until the caller commits what it declare
 (``declare``): two launches at once under "once a week" pass once.
 
 What a program says an operation costs is declared (``declare``: ``declared_spending``), apart
-from what models cost; the owner's limits read it as ``spent`` (``spent_by``, ``policy.facts``)."""
+from what models cost; the owner's limits read it as ``spent`` (``spent_by``, ``policy.facts``).
+A person's own earlier spendings of the same kind (``spent_like``) and their agreements on the tool
+(``agreements_of``) are what the yes-judge weighs a cost of theirs with (``offered``)."""
 
 import hashlib
 import json
 import uuid
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Literal
 from zoneinfo import ZoneInfo
 
@@ -39,6 +41,7 @@ from domo_core.madetools.models import (
 from domo_core.policy.asks import Ask
 from domo_core.policy.program import Why
 from domo_core.policy.rights import Approver
+from domo_core.policy.settings import load_policy_settings
 
 # Whose yes, from the least demanding to the most.
 _APPROVERS: tuple[Approver, ...] = ("self", "adult", "owner")
@@ -107,19 +110,33 @@ async def agreement_covers(
     for agreement in found.all():
         if agreement.weekdays is not None and weekday not in agreement.weekdays:
             continue
-        since = period_start(agreement.per, now, zone)
-        used = await session.scalar(
-            select(func.count())
-            .select_from(DeclaredSpending)
-            .where(
-                DeclaredSpending.agreement_id == agreement.id,
-                DeclaredSpending.at >= since,
-                *([] if leaving_out is None else [DeclaredSpending.id != leaving_out]),
-            )
-        )
-        if (used or 0) < agreement.times:
+        used = await used_in_its_period(session, agreement, now, zone, leaving_out=leaving_out)
+        if used < agreement.times:
             return agreement.id
     return None
+
+
+async def used_in_its_period(
+    session: AsyncSession,
+    agreement: StandingAgreement,
+    now: datetime,
+    zone: ZoneInfo | None,
+    *,
+    leaving_out: uuid.UUID | None = None,
+) -> int:
+    """How many times ``agreement`` was used in its period of now (``period_start``): the
+    spendings declared under it since then, but ``leaving_out``. Reads only."""
+    since = period_start(agreement.per, now, zone)
+    used = await session.scalar(
+        select(func.count())
+        .select_from(DeclaredSpending)
+        .where(
+            DeclaredSpending.agreement_id == agreement.id,
+            DeclaredSpending.at >= since,
+            *([] if leaving_out is None else [DeclaredSpending.id != leaving_out]),
+        )
+    )
+    return used or 0
 
 
 async def stop(
@@ -295,3 +312,46 @@ async def spent_by(
     ).one()
     day, week, month = (int(value) for value in row)
     return {"day": day, "week": week, "month": month}
+
+
+async def spent_like(
+    session: AsyncSession,
+    *,
+    person_id: uuid.UUID,
+    tool_id: uuid.UUID | None,
+    operation: str,
+    limit: int = 5,
+) -> list[tuple[date, int]]:
+    """The person's own last ``limit`` spendings for ``operation`` of the tool ``tool_id``
+    (``None``: of programs run by hand), the latest first: each by its day in the household's
+    zone and its amount in cents. Never anyone else's: what the yes-judge weighs a cost of theirs
+    with (habit)."""
+    zone = (await load_policy_settings(session)).time_zone or UTC
+    found = await session.execute(
+        select(DeclaredSpending.at, DeclaredSpending.amount_cents)
+        .where(
+            DeclaredSpending.for_person_id == person_id,
+            _for(DeclaredSpending.tool_id, tool_id),
+            DeclaredSpending.operation == operation,
+        )
+        .order_by(DeclaredSpending.at.desc(), DeclaredSpending.id)
+        .limit(limit)
+    )
+    return [(at.astimezone(zone).date(), amount) for at, amount in found.all()]
+
+
+async def agreements_of(
+    session: AsyncSession, *, person_id: uuid.UUID, tool_id: uuid.UUID
+) -> list[StandingAgreement]:
+    """The person's own standing agreements on the tool ``tool_id`` that still count, the oldest
+    first (a program run by hand has none)."""
+    found = await session.scalars(
+        select(StandingAgreement)
+        .where(
+            StandingAgreement.tool_id == tool_id,
+            StandingAgreement.for_person_id == person_id,
+            StandingAgreement.withdrawn_at.is_(None),
+        )
+        .order_by(StandingAgreement.created_at, StandingAgreement.id)
+    )
+    return list(found.all())

@@ -64,14 +64,14 @@ async def refusal_response(request: Request, exc: Exception) -> JSONResponse:
     return refusal(exc.status, exc.error, exc.headers)
 
 
-def api_speaker(person_id: uuid.UUID, device_id: uuid.UUID, now: datetime) -> Speaker:
+def api_speaker(person_id: uuid.UUID, device_id: uuid.UUID, paired_at: datetime) -> Speaker:
     """Who speaks through the device ``device_id`` of ``person_id``: the known device is a strong
-    clue, made by the code, that it is them."""
+    clue, made by the code, that it is them, dated when it was paired (``paired_at``)."""
     return Speaker(
         person_id,
         API_CHANNEL,
         device_id=device_id,
-        clues=(Clue("device", "for", "strong", "code", now),),
+        clues=(Clue("device", "for", "strong", "code", paired_at),),
     )
 
 

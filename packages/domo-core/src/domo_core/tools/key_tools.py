@@ -14,13 +14,18 @@ card of the one who asked has a button that opens the same form as the first lau
 ``KEY_NEW_PATH`` (``"key_new"`` on the card). A server without a key has no form: the key is
 recorded and its card has a button that checks it (``"key_check"``, the key's id).
 
-``key_remove`` (``key.remove``, effect ``secrets``) removes one of the person's own keys. Never the
-last key of the household: nobody could talk with Domo any more, so they give another key first.
-The general key goes only when the one who gave it has another key: the oldest one becomes the
-general key (a key that lists models). Before the row goes, the key's route and its admin route are
-declared to the gatekeeper again without a secret (``secret_ref=None``), so that no call can use the
-secret again, and once more after the row is gone (a pass that declared a route with its secret in
-between, ``provider_keys.key_still_there``, is undone); the secret itself stays in the vault (the
+``key_remove`` (``key.remove``, effect ``secrets``) removes one of the person's own keys. When it is
+the last key of the household that works (``last_key``), or the general key and the one who gave
+it has no other key that works (``general_key_without_heir``), it says so in its facts: the judge
+weighs them (a silent judge asks a plain yes, ``catalog.WARNED_FACTS``), Domo tells them he could
+no longer answer whoever depends on it, and if they still want it, it is removed (the owner's
+decision D6: never a flat refusal). One that became so after the yes or the judge was given what
+it knew is not removed (``changed``): they are asked again. Otherwise the general key goes to the
+oldest other key of the one who gave it (a key that lists models). Before the row goes, the key's
+route and its admin route are declared to the gatekeeper again without a secret
+(``secret_ref=None``), so that no call can use the secret again, and once more after the row is
+gone (a pass that declared a route with its secret in between, ``provider_keys.key_still_there``,
+is undone); the secret itself stays in the vault (the
 gatekeeper can remove none), which the result says, with the advice to revoke the key at the
 provider. The row's models, lines of access, limits and choices go with it; the calls counted on it
 keep their cost, with no key (``model_calls``).
@@ -148,23 +153,29 @@ _NOT_THE_SAME: Final = (
     "that key is no longer the one the yes was given for, or no longer theirs, so nothing was "
     "done: ask again"
 )
-_LAST_KEY: Final = (
-    "this is the last key of the household that works: without it nobody could talk with the "
-    "assistant "
-    "any more, so it was not removed. Say so, and ask them to give another key first (key_add), "
-    "then to remove this one"
-)
-_GENERAL_KEY: Final = (
-    "this is the household's general key, and the one who gave it gave no other key that works "
-    "to hand it to, so it was not removed: they give another key first (key_add)"
+_BECAME_WARNED: Final = (
+    "since it was asked, this key became the last one of the household that works, or the "
+    "general key with no other key of its giver's to take over, so it was not removed: tell them "
+    "that you could no longer answer whoever depends on it, and ask again if they still want it"
 )
 _STILL_IN_THE_VAULT: Final = (
     "the key itself stays in the vault, but nothing can use it any more; to be sure, revoke it "
     "at the provider"
 )
+_NO_KEY_LEFT: Final = (
+    "no key that works is left: nobody can talk with you until someone gives one (key_add, or "
+    "the page of a new key)"
+)
+_NO_GENERAL_KEY: Final = (
+    "the household has no general key any more: whoever used it can talk with you only once a "
+    "key is given for them"
+)
 
-Refusal = Literal["last_key", "general_key"]
-_REFUSALS: Final[Mapping[Refusal, str]] = {"last_key": _LAST_KEY, "general_key": _GENERAL_KEY}
+# What removing a key warns about (facts of ``key.remove``, ``catalog.WARNED_FACTS``): the last
+# key of the household that works, or the general key with no other key of its giver's to take
+# over. Never a refusal: the judge weighs them, and a yes removes it all the same.
+RemovalWarning = Literal["last_key", "general_key_without_heir"]
+_WARNINGS: Final[tuple[RemovalWarning, ...]] = ("last_key", "general_key_without_heir")
 
 
 def key_add_action() -> DescribedAction:
@@ -438,15 +449,27 @@ async def _heir(session: AsyncSession, provider: Provider) -> Provider | None:
     return found.scalars().first()
 
 
-async def _refusal(session: AsyncSession, provider: Provider) -> Refusal | None:
-    """Why ``provider`` may not go, whatever the rights: the last key of the household that works,
-    or the general key with no other key of its giver's to hand it to."""
+async def _warnings(session: AsyncSession, provider: Provider) -> frozenset[RemovalWarning]:
+    """What removing ``provider`` warns about: it is the last key of the household that works
+    (``last_key``), or the general key with no other key of its giver's to hand it to
+    (``general_key_without_heir``). Neither stops it: they are facts for the judge."""
+    found: set[RemovalWarning] = set()
     other = await session.execute(_working_keys_but(provider).limit(1))
     if other.first() is None:
-        return "last_key"
+        found.add("last_key")
     if provider.is_general and await _heir(session, provider) is None:
-        return "general_key"
-    return None
+        found.add("general_key_without_heir")
+    return frozenset(found)
+
+
+def _warned_of(ctx: ToolContext, now: frozenset[RemovalWarning]) -> frozenset[RemovalWarning]:
+    """What the yes, or the judge, was given to know: the facts of the action described when the
+    request was made (``ToolContext.described_action``), else, for a call that runs right after
+    it was described, what holds as it starts (``now``)."""
+    described = ctx.described_action
+    if described is None:
+        return now
+    return frozenset(fact for fact in _WARNINGS if described.facts.get(fact) is True)
 
 
 def _remove_args(arguments: JsonObject) -> str:
@@ -486,11 +509,13 @@ async def _give_back_the_routes(gatekeeper: GatekeeperClient, provider: Provider
         await _declare_routes(gatekeeper, provider, keyless=False)
 
 
-def _remove_refused(refusal: Refusal) -> ToolOutcome:
+def _remove_changed() -> ToolOutcome:
+    """The key became the last one, or the general key with nobody to take over, after the yes
+    or the judge was given what it knew: nothing is removed, and they are asked again."""
     return ToolOutcome(
         status="failed",
-        model_result={"reason": refusal, "detail": _REFUSALS[refusal]},
-        card={"key": f"action.card.failed.key.remove.{refusal}", "params": {}, "reason": refusal},
+        model_result={"reason": "changed", "detail": _BECAME_WARNED},
+        card={"key": "action.card.failed.key.remove.changed", "params": {}, "reason": "changed"},
     )
 
 
@@ -502,11 +527,12 @@ class KeyRemove:
         description=(
             "Remove one of the keys the person you are talking with gave (key: its id, from the "
             "Keys line of the context), when that is what they want: only the one who gave a key "
-            "removes it. Never the last key of the household that works: nobody could talk with "
-            "you any more, so ask them to give another key first. The household's general key "
-            "goes only when the one who gave it gave another key that works, which becomes the "
-            "general one. The key stays in the vault, unused: tell them to revoke it at the "
-            "provider."
+            "removes it. When it is the last key of the household that works, or the household's "
+            "general key and they gave no other key that works to take over, tell them first "
+            "that you could no longer answer whoever depends on it, and offer to give another "
+            "key first; if they still want it, it is removed. Otherwise the general key goes to "
+            "another key that works of the one who gave it. The key stays in the vault, unused: "
+            "tell them to revoke it at the provider."
         ),
         parameters={
             "type": "object",
@@ -528,16 +554,14 @@ class KeyRemove:
         key_id = _remove_args(arguments)
         async with ctx.session_factory() as session:
             provider = await _own_key(session, key_id, ctx.person)
-            refusal = await _refusal(session, provider)
-        if refusal is not None:
-            # A right call that the household's state refuses: no mistake of the model's form.
-            raise InvalidArguments("not_possible", _REFUSALS[refusal])
+            warnings = await _warnings(session, provider)
         return DescribedAction(
             connector="core",
             action_type=KEY_REMOVE_ACTION_TYPE,
             target=_key_target(provider),
             effect="secrets",
             destination="household",
+            facts={warning: warning in warnings for warning in _WARNINGS},
         )
 
     async def execute(self, arguments: JsonObject, ctx: ToolContext) -> ToolOutcome:
@@ -545,9 +569,10 @@ class KeyRemove:
         async with ctx.session_factory() as session:
             provider = await _own_key(session, key_id, ctx.person)
             _same_as_described(ctx, provider)
-            refusal = await _refusal(session, provider)
-        if refusal is not None:
-            return _remove_refused(refusal)
+            first = await _warnings(session, provider)
+        warned = _warned_of(ctx, first)
+        if first - warned:
+            return _remove_changed()
         # First, no call can use the secret any more: the routes go without it. The vault is
         # asked before the database, so that no transaction waits for it.
         try:
@@ -563,16 +588,17 @@ class KeyRemove:
                 card={"key": "action.card.failed.key.remove.gatekeeper", "params": {}},
             )
         async with ctx.session_factory() as session:
-            # The keys are locked: two removals at once never leave the household without one.
+            # The keys are locked: two removals at once never leave the household without a key,
+            # or without a general key, unless what was asked or judged said so.
             await session.execute(select(Provider.id).with_for_update())
             still = await session.get(Provider, provider.id, populate_existing=True)
-            refusal = None if still is None else await _refusal(session, still)
-            if still is None or refusal is not None:
+            now = frozenset[RemovalWarning]() if still is None else await _warnings(session, still)
+            if still is None or now - warned:
                 await session.rollback()
                 if still is not None:
                     # It stays: its routes get their secrets back.
                     await _give_back_the_routes(ctx.gatekeeper, still)
-                    return _remove_refused(refusal or "last_key")
+                    return _remove_changed()
                 raise InvalidArguments("not_found", _NOT_THEIRS)
             heir = await _heir(session, still) if still.is_general else None
             await session.execute(
@@ -598,6 +624,10 @@ class KeyRemove:
         result: JsonObject = {"removed": provider.id, "note": _STILL_IN_THE_VAULT}
         if heir is not None:
             result["general_key_now"] = heir.id
+        if "last_key" in now:
+            result["no_key_left"] = _NO_KEY_LEFT
+        elif "general_key_without_heir" in now:
+            result["no_general_key"] = _NO_GENERAL_KEY
         return ToolOutcome(
             status="done",
             model_result=result,

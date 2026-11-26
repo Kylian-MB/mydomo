@@ -374,11 +374,26 @@ def test_a_message_that_is_refused_is_said_and_the_talk_goes_on(
     config.save(SAVED)
     nothing_heard()
     respx.get(f"{API}/since").respond(json={"messages": []})
-    post = respx.post(f"{API}/messages").respond(409, json={"error": "busy"})
+    post = respx.post(f"{API}/messages").respond(409, json={"error": "no_key"})
     typed(monkeypatch, "one", "two")
     assert main([]) == 0
     assert post.call_count == 2
     assert capsys.readouterr().err.strip()
+
+
+@respx.mock
+def test_a_message_kept_while_a_reply_is_written_is_no_problem(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Spec 11.3: what answers it comes as what Domo says on his own, on the listening stream.
+    config.save(SAVED)
+    nothing_heard()
+    respx.get(f"{API}/since").respond(json={"messages": []})
+    post = respx.post(f"{API}/messages").respond(202, json={"reply_id": None, "kept": True})
+    typed(monkeypatch, "and also this")
+    assert main([]) == 0
+    assert post.call_count == 1
+    assert capsys.readouterr().err.strip() == ""  # nothing to complain about
 
 
 @respx.mock
@@ -705,10 +720,10 @@ def test_a_sentence_of_the_program_says_the_name_the_person_gave_domo() -> None:
     # F8 (the owner's trial of 0.9.0): where the program's own sentence names Domo.
     out, err = io.StringIO(), io.StringIO()
     screen = talk.Screen(out, err)
-    screen.problem("The assistant is still writing a reply. Try again in a moment.")
+    screen.problem("The assistant cannot take that message.")
     screen.domo_name = "Friday"
-    screen.problem("The assistant is still writing a reply. Pair it again: domo-talk pair <url>")
+    screen.problem("The assistant does not know this computer. Pair it again: domo-talk pair <url>")
     assert err.getvalue().splitlines() == [
-        "The assistant is still writing a reply. Try again in a moment.",
-        "Friday is still writing a reply. Pair it again: domo-talk pair <url>",
+        "The assistant cannot take that message.",
+        "Friday does not know this computer. Pair it again: domo-talk pair <url>",
     ]

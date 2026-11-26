@@ -105,6 +105,10 @@ class Confirmation(Base):
         CheckConstraint("char_length(ask_reason) <= 300", name="ask_reason_length"),
         # An approver's note (``confirmations.service.MAX_APPROVER_NOTE_LENGTH``).
         CheckConstraint("char_length(approver_note) <= 300", name="approver_note_length"),
+        # The assistant's reason (``confirmations.judge.MAX_JUDGE_REASON_LENGTH``).
+        CheckConstraint("char_length(idea_reason) <= 200", name="idea_reason_length"),
+        # What a person said when they refused it.
+        CheckConstraint("char_length(refusal_words) <= 300", name="refusal_words_length"),
         # "The requests of this person that are still waiting".
         Index("ix_confirmations_requester_id_status", "requester_id", "status"),
         # "The requests that wait in this conversation" (every turn of the chat).
@@ -179,6 +183,21 @@ class Confirmation(Base):
     # they must know first, which ``ask_why`` tells. Their answer to it is remembered as what
     # Domo told them (``memory.told``, spec 6.8).
     warned: Mapped[bool] = mapped_column(server_default=text("false"))
+    # What the request is about (``policy.subjects.subject_of``); ``None``: not known.
+    subject_key: Mapped[str | None]
+    # Why the assistant asks, when it was his own idea; ``None`` for what a person asked.
+    idea_reason: Mapped[str | None]
+    # The person the thing concerns: they alone answer the request (``confirmations.service``,
+    # ``may_decide``); ``None``: its approver kind says who answers.
+    concerned_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("persons.id"))
+    # What the person said when they refused it.
+    refusal_words: Mapped[str | None]
+    # When its expiry woke the assistant, who is told once.
+    expiry_woken_at: Mapped[datetime | None]
+    # A request of his (``by_domo``) born of the owner's rule on his act in a person's turn: the
+    # owner answers it, and it is replayed in that turn, for that person, never on his own
+    # (``store.replayed_on_his_own``).
+    in_their_turn: Mapped[bool] = mapped_column(server_default=text("false"), default=False)
 
 
 class ConfirmationStep(Base):

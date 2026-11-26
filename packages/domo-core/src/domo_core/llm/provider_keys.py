@@ -56,7 +56,7 @@ from domo_common.gatekeeper_api import (
 )
 from domo_common.text_rules import LANGUAGE_TAG
 from pydantic import ValidationError
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domo_core.accounts.models import Person
@@ -255,6 +255,24 @@ class KeyCheck:
     checked_with: str | None
 
 
+async def general_when_none(session: AsyncSession, provider: Provider) -> None:
+    """``provider``, a key that works (it lists models), becomes the household's general key when
+    there is none and the one who gave it is the owner of now (ruling R65: the general key removed
+    with no other key of its giver's to take over leaves none, and the next key of the owner's that
+    works takes its place). Never a key of anyone else. In the caller's transaction, uncommitted."""
+    if provider.is_general:
+        return
+    general = await session.scalar(select(Provider.id).where(Provider.is_general).limit(1))
+    if general is not None:
+        return
+    giver_role = await session.scalar(select(Person.role).where(Person.id == provider.given_by))
+    if giver_role == "owner":
+        await session.execute(
+            update(Provider).where(Provider.id == provider.id).values(is_general=True)
+        )
+        provider.is_general = True
+
+
 async def check_key(
     session: AsyncSession,
     gatekeeper: GatekeeperClient,
@@ -272,7 +290,9 @@ async def check_key(
     ``now``) and ask the cheapest one that calls tools one question through the relay.
 
     A server that gives no list is given ``named_model`` instead; without a name it gives
-    ``KeyCheck(None, (), None)`` and nothing is asked. A list with no model that calls tools is
+    ``KeyCheck(None, (), None)`` and nothing is asked. A key of the owner's that lists models
+    becomes the general key when there is none (``general_when_none``). A list with no model that
+    calls tools is
     ``no_model``. Otherwise the error is the kind of the failure of the listing or of the question
     (``auth`` for a key the provider refuses, ``limit_reached`` for a question that would pass a
     firm limit of the key: it is not asked). Raises ``GatekeeperError`` when the gatekeeper
@@ -298,6 +318,7 @@ async def check_key(
         ProviderModel(provider_id=provider.id, model_id=model_id, listed_at=now)
         for model_id in models
     )
+    await general_when_none(session, provider)
     levels = await owner_levels(session, provider.id)
     await session.commit()
     chosen = pick_model(candidates(catalog, provider, models, levels), "key_check", wanted="small")

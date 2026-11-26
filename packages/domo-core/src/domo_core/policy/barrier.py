@@ -27,9 +27,12 @@ The rules, in this order (spec 4.4, 5.8):
 4. the limit, if one applies (the person's right's, else their role's, else the catalog's:
    ``catalog.DEFAULT_LIMITS``), evaluated on the facts of the moment (``policy.limits``):
    ``"refuse"`` refuses (``limit``, with the limit's summary, which Domo may tell the person);
-   ``"ask_owner"`` and ``"judge"`` need the owner's agreement (``judge``: in 1b Domo has no
-   memory to judge with, spec 5.4), with the right's question, when it has one, for the owner to
-   read; the owner's own request goes on (asking is the owner's agreement); ``"allow"`` goes on. A
+   ``"ask_owner"`` needs the owner's agreement, always: the owner wrote it. ``"judge"`` needs it
+   too, but is left to the yes-judge first (``NeedsApproval.judge_first``): when the judge knows
+   the answer to the right's question, the action is done without the owner; when it doubts, the
+   owner is asked, with the question, as for ``"ask_owner"`` (a limit that also needs someone's
+   agreement by rule 5 is never left to the judge: it goes to the owner). The owner's own request
+   goes on (asking is the owner's agreement); ``"allow"`` goes on. A
    limit that cannot answer (it does not compile, it fails, it answers something else, or no facts
    were given) refuses (``limit_error``): a limit fails closed;
 5. whose agreement is needed (``approval_needed``, which the plan of a chain uses too): an
@@ -37,6 +40,10 @@ The rules, in this order (spec 4.4, 5.8):
    request), and, when no right names anyone, an adult's for a child on the types of
    ``catalog.ADULT_AGREES_FOR_A_CHILD`` (a right that opens such a type to a child keeps the adult,
    unless it says the child agrees for themselves, ``self``); otherwise the action is allowed.
+   An adult's agreement for a child that no right asks for (the catalog's default) is left to the
+   yes-judge first too (``judge_first``): an adult's yes already heard for this very request lets
+   it through; otherwise the adult is asked. An approver a right names is the owner's word: never
+   left to the judge.
 
 Acknowledged divergences from spec section 10 (decided for 1b):
 
@@ -63,10 +70,11 @@ from domo_core.audit.log import append_audit
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.asks import Ask, NeverAsk, most_demanding
 from domo_core.policy.catalog import (
-    ADULT_AGREES_FOR_A_CHILD,
     DEFAULT_POLICY,
     OWNER_ONLY_ACTIONS,
     PolicyTables,
+    an_adult_agrees_for,
+    rights_type,
 )
 from domo_core.policy.limits import (
     InvalidLimit,
@@ -76,7 +84,7 @@ from domo_core.policy.limits import (
     evaluate_limit,
 )
 from domo_core.policy.rights import NO_RIGHTS, Limit, Resolved, RightsTable
-from domo_core.policy.roles import Actor, actor_label, domo_actor
+from domo_core.policy.roles import Actor, Role, actor_label, domo_actor
 
 # ``limit``: a limit refused it; ``limit_error``: a limit could not say (refused all the same).
 RefusalReason = Literal["not_allowed", "untrusted_identity", "limit", "limit_error"]
@@ -101,12 +109,16 @@ class NeedsApproval:
     """Someone else must agree first: an adult (a child's request on a type of
     ``ADULT_AGREES_FOR_A_CHILD``, or a right that says so) or the owner (a right, or a limit that
     sends to the owner); ``question`` is the right's, when a limit asked it; ``rule`` and
-    ``never_ask`` as for ``Allow``."""
+    ``never_ask`` as for ``Allow``. ``judge_first``: the yes-judge decides first, and its ``do``
+    lets the action through without that agreement (a limit that says ``"judge"``, and an adult's
+    agreement for a child that only the catalog asks for); any other verdict asks for it. Only
+    for a single action: a chain's step asks for the agreement as it says."""
 
     approver: Literal["adult", "owner"]
     question: str | None = None
     rule: Ask | None = None
     never_ask: NeverAsk | None = None
+    judge_first: bool = False
 
 
 @dataclass(frozen=True)
@@ -145,7 +157,25 @@ def stricter(person: Decision, domo: Decision) -> Decision:
     if not asking:
         return Allow(rule=rule, never_ask=never_ask)
     most = max(asking, key=lambda d: _APPROVERS.index(d.approver))
-    return NeedsApproval(most.approver, question=most.question, rule=rule, never_ask=never_ask)
+    # Left to the judge only when every side that asks leaves the same agreement to it.
+    judge_first = all(d.judge_first and d.approver == most.approver for d in asking)
+    return NeedsApproval(
+        most.approver,
+        question=most.question,
+        rule=rule,
+        never_ask=never_ask,
+        judge_first=judge_first,
+    )
+
+
+def given_for_an_idea(policy: PolicyTables, role: Role, action_type: str) -> PolicyTables:
+    """``policy`` with ``action_type`` given by the catalog to ``role`` (ruling R26): the barrier
+    decides so for the person of the turn when the assistant marked a call as his own idea, so
+    that only a right not given is lifted. A right the owner wrote (a deny, an approver, a limit,
+    "ask me first") and the rules of the barrier still count, and the stricter of that decision
+    and the assistant's applies (``stricter``)."""
+    given = policy.allowed.get(role, frozenset()) | {action_type, rights_type(action_type)}
+    return replace(policy, allowed={**policy.allowed, role: given})
 
 
 def approval_needed(actor: Actor, resolved: Resolved, action_type: str) -> NeedsApproval | None:
@@ -163,8 +193,7 @@ def approval_needed(actor: Actor, resolved: Resolved, action_type: str) -> Needs
         case "self":
             approver = None
         case None:
-            needs_an_adult = actor.role == "child" and action_type in ADULT_AGREES_FOR_A_CHILD
-            approver = "adult" if needs_an_adult else None
+            approver = "adult" if an_adult_agrees_for(actor.role, action_type) else None
     if approver is None:
         return None
     return NeedsApproval(approver, None, resolved.ask, resolved.never_ask)
@@ -192,26 +221,32 @@ def decide(
     if not resolved.allowed:
         return Refuse("not_allowed")
     decision: Decision | None = None
+    needed = approval_needed(actor, resolved, action_type)
     if resolved.limit is not None:
         match _limit_says(resolved.limit, facts):
             case None:
                 return Refuse("limit_error")
             case "refuse":
                 return Refuse("limit", limit=resolved.limit.summary)
-            case "ask_owner" | "judge" if actor.role != "owner":
+            case ("ask_owner" | "judge") as says if actor.role != "owner":
                 decision = NeedsApproval(
                     "owner",
                     resolved.limit.judge_question or None,
                     resolved.ask,
                     resolved.never_ask,
+                    # "ask_owner" is the owner's own word: always his. "judge" is the judge's
+                    # first, unless someone's agreement is needed anyway.
+                    judge_first=says == "judge" and needed is None,
                 )
             case "ask_owner" | "judge" | "allow":
                 # (The owner's own request: asking is the owner's agreement.)
                 pass
+    if decision is None and needed is not None:
+        # The catalog's adult for a child (no right names anyone) is left to the judge first;
+        # an approver a right names is the owner's word.
+        decision = replace(needed, judge_first=resolved.approver is None)
     if decision is None:
-        decision = approval_needed(actor, resolved, action_type) or Allow(
-            resolved.ask, resolved.never_ask
-        )
+        decision = Allow(resolved.ask, resolved.never_ask)
     if not actor.trusted and isinstance(decision, NeedsApproval):
         # Nobody's agreement makes an identity that cannot be trusted more than it may do alone.
         return Refuse("untrusted_identity")

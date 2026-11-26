@@ -2,18 +2,29 @@
 the classifier of the replies, and what is asked in the end, the most demanding of what the judge,
 the owner's rules and Domo ask."""
 
-import inspect
 import json
-from dataclasses import fields, replace
+import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import fakes
 import pytest
 from chat_support import last_audit
-from domo_core.accounts.models import Person
-from domo_core.chat.models import MessageAction
+from domo_core.accounts.models import Person, WebSession
+from domo_core.channels.page.speaker import page_speaker
+from domo_core.chat.models import Conversation, Message, MessageAction
+from domo_core.confirmations import case as case_module
 from domo_core.confirmations import judge as judge_module
+from domo_core.confirmations.case import (
+    Gathered,
+    IdeaTold,
+    KnownLine,
+    SubjectState,
+    WentWrongLine,
+    history_told,
+)
 from domo_core.confirmations.chain import ago
 from domo_core.confirmations.describe import describe_for_people, step_sentence
 from domo_core.confirmations.judge import (
@@ -25,7 +36,6 @@ from domo_core.confirmations.judge import (
     VERDICTS,
     JudgeCase,
     Judgement,
-    RememberedLine,
     RequestTold,
     RightsSay,
     StepTold,
@@ -46,16 +56,25 @@ from domo_core.confirmations.judge import (
 from domo_core.confirmations.models import Confirmation, ConfirmationStep
 from domo_core.confirmations.steps import PlannedStep
 from domo_core.conversation import execution as execution_module
-from domo_core.llm.types import ChatMessage, ToolCall
+from domo_core.conversation.execution import consult_the_judge
+from domo_core.conversation.speaker import Clue, Speaker, established
+from domo_core.conversation.starts import unasked
+from domo_core.learning.record import note_went_wrong
+from domo_core.llm.types import ChatMessage, JsonObject, ToolCall
 from domo_core.memory.models import Memory
+from domo_core.memory.service import keep
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.asks import Asked, NeverAsk
+from domo_core.policy.catalog import DEFAULT_POLICY, WARNED_FACTS
 from domo_core.policy.facts import PersonHistory, person_history
-from domo_core.policy.roles import Actor
+from domo_core.policy.roles import Actor, as_role, domo_actor
 from domo_core.texts.view import CatalogTexts
+from domo_core.tools.context import OwnIdea, ToolContext
+from domo_core.tools.registry import TOOLS
+from domo_core.trust.service import Trust
 from domo_core.trust.service import note as note_fact
 from fakes import FakeChatModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from tests.fakes.fake_llm.app import JUDGE_FIRST_LINE as FAKE_LLM_JUDGE_FIRST_LINE
 
@@ -68,7 +87,12 @@ INVITE = DescribedAction(
     {"role": "guest", "days": 2, "display_name": "Robin"},
 )
 ALLOWED = RightsSay(allowed=True, needs=None, question=None)
-NO_HISTORY = PersonHistory(0, 0, 0, 0, None, 0)
+NO_HISTORY = PersonHistory(0, 0, 0, 0, None, 0, 0)
+NOTHING_GATHERED = Gathered((), (), (), (), None, (), None, ())
+LIVE = datetime.now(UTC)
+TV_ON = DescribedAction(
+    "core", "net.open", None, "permissions", "household", {"host": "tv", "port": 8080}
+)
 
 
 def a_case(**changes: object) -> JudgeCase:
@@ -123,7 +147,8 @@ def test_the_fixed_values_are_the_plans():
         ("Sure.\ndo: fine", "do", "fine", None),
         ("They did not ask.\n\nyes: tu confirmes ?\n", "yes", "tu confirmes ?", None),
         ("Sure.\nmaybe: fine", "do", "", "unreadable"),
-        ("yes: first\ndo_not: last", "yes", "first", None),
+        # Two verdicts that differ: the more demanding is read (final review A4).
+        ("yes: first\ndo_not: last", "do_not", "last", None),
         ("explicit yes: spelled apart", "do", "", "unreadable"),
     ],
 )
@@ -290,12 +315,15 @@ async def test_the_judge_sees_only_the_persons_words_of_this_conversation(
     case = await build_case(
         session,
         actor=actor,
+        asks=alex,
         action=INVITE,
         says="Invite Robin as a guest for 2 days.",
         rights=ALLOWED,
         conversation_id=here.id,
         now=now,
         zone=ZoneInfo("Europe/Paris"),
+        idea=IdeaTold("person"),
+        gathered=NOTHING_GATHERED,
     )
     assert case.words == ("message 2", "message 3", "message 4", "message 5", "y" * 1000)
     # Of Domo's replies, only the last one before their last message: what they answered.
@@ -324,12 +352,15 @@ async def test_the_judge_sees_only_the_persons_words_of_this_conversation(
     in_utc = await build_case(
         session,
         actor=actor,
+        asks=alex,
         action=INVITE,
         says="Invite Robin.",
         rights=ALLOWED,
         conversation_id=here.id,
         now=now,
         zone=None,
+        idea=IdeaTold("person"),
+        gathered=NOTHING_GATHERED,
     )
     assert in_utc.now == {
         "weekday": "Saturday",
@@ -343,12 +374,15 @@ async def test_the_judge_sees_only_the_persons_words_of_this_conversation(
     not_theirs = await build_case(
         session,
         actor=actor,
+        asks=alex,
         action=INVITE,
         says="Invite Robin.",
         rights=ALLOWED,
         conversation_id=sams.id,
         now=now,
         zone=None,
+        idea=IdeaTold("person"),
+        gathered=NOTHING_GATHERED,
     )
     assert not_theirs.words == () and not_theirs.asked_them is None
 
@@ -363,12 +397,15 @@ async def test_the_case_holds_what_domo_had_just_said_to_the_person(
         return await build_case(
             session,
             actor=Actor(alex.id, "adult"),
+            asks=alex,
             action=INVITE,
             says="Invite Robin.",
             rights=ALLOWED,
             conversation_id=conversation.id,
             now=datetime(2030, 1, 5, 12, 30, tzinfo=UTC),
             zone=None,
+            idea=IdeaTold("person"),
+            gathered=NOTHING_GATHERED,
         )
 
     # Nothing said yet, then their first message: Domo had asked them nothing.
@@ -412,12 +449,15 @@ async def test_a_reply_that_relayed_someone_is_in_the_case_and_says_so(
         return await build_case(
             session,
             actor=Actor(alex.id, "owner"),
+            asks=alex,
             action=INVITE,
             says="Invite Robin.",
             rights=ALLOWED,
             conversation_id=conversation.id,
             now=datetime(2030, 1, 5, 12, 30, tzinfo=UTC),
             zone=None,
+            idea=IdeaTold("person"),
+            gathered=NOTHING_GATHERED,
         )
 
     # A plain question of Domo, in answer to them: it is in the case.
@@ -473,12 +513,15 @@ async def test_the_judge_never_reads_whether_domo_sends_an_invitation_to_the_own
     case = await build_case(
         session,
         actor=Actor(alex.id, "adult"),
+        asks=alex,
         action=invite,
         says="Invite Robin.",
         rights=ALLOWED,
         conversation_id=conversation.id,
         now=datetime(2030, 1, 5, 12, 30, tzinfo=UTC),
         zone=None,
+        idea=IdeaTold("person"),
+        gathered=NOTHING_GATHERED,
     )
     assert case.action["facts"] == {"role": "guest", "days": 2, "display_name": "Robin"}
     assert "owner_first" not in json.dumps(case.as_json())
@@ -499,12 +542,15 @@ async def test_a_turn_a_plan_woke_reads_neither_what_domo_said_nor_relayed(
     case = await build_case(
         session,
         actor=Actor(alex.id, "owner"),
+        asks=alex,
         action=INVITE,
         says="Invite Robin.",
         rights=ALLOWED,
         conversation_id=conversation.id,
         now=datetime(2030, 1, 5, 12, 30, tzinfo=UTC),
         zone=None,
+        idea=IdeaTold("person"),
+        gathered=NOTHING_GATHERED,
         words_override=["invite Robin at noon"],
     )
     assert case.words == ("invite Robin at noon",)
@@ -537,12 +583,15 @@ async def test_the_judge_writes_its_reason_in_the_askers_language(
         return await build_case(
             session,
             actor=Actor(sam.id, "child"),
+            asks=sam,
             action=INVITE,
             says="Invite Robin as a guest for 2 days.",
             rights=ALLOWED,
             conversation_id=conversation.id,
             now=datetime(2030, 1, 5, 12, 30, tzinfo=UTC),
             zone=None,
+            idea=IdeaTold("person"),
+            gathered=NOTHING_GATHERED,
         )
 
     # Sam has no language of his own yet: he reads the house's, English.
@@ -557,8 +606,7 @@ async def test_the_judge_writes_its_reason_in_the_askers_language(
     assert await judge(model, case) == Judgement("yes", "primeira vez")
     [call] = model.calls
     assert json.loads(call.messages[0].content)["language"] == "pt-BR"
-    prompt = judge_prompt()
-    assert '"language"' in prompt and "reason" in prompt
+    assert 'said to the person, in their language ("language"' in judge_prompt()
 
 
 async def test_the_case_says_a_first_time_and_the_counts(
@@ -567,7 +615,7 @@ async def test_the_case_says_a_first_time_and_the_counts(
     alex = await add_person("Alex", "adult")
     now = datetime.now(UTC)
     nothing = await person_history(session, alex.id, "household.invite", now)
-    assert nothing == PersonHistory(0, 0, 0, 0, None, 0)
+    assert nothing == PersonHistory(0, 0, 0, 0, None, 0, 0)
     assert nothing.first_time
 
     conversation = await add_conversation(alex)
@@ -598,7 +646,7 @@ async def test_the_case_says_a_first_time_and_the_counts(
     await session.flush()
 
     history = await person_history(session, alex.id, "household.invite", now)
-    assert history == PersonHistory(0, 0, 0, 1, decided, 3)
+    assert history == PersonHistory(0, 0, 0, 1, decided, 2, 1)
     assert not history.first_time
 
     # The last one is the newest of every kind of action done.
@@ -615,7 +663,7 @@ async def test_the_case_says_a_first_time_and_the_counts(
     )
     await session.flush()
     assert await person_history(session, alex.id, "household.invite", now) == PersonHistory(
-        1, 1, 1, 2, done_at, 3
+        1, 1, 1, 2, done_at, 2, 1
     )
 
 
@@ -668,12 +716,15 @@ async def test_the_case_names_who_is_in_the_household_and_tells_a_waiting_note_w
     case = await build_case(
         session,
         actor=Actor(sam.id, "child"),
+        asks=sam,
         action=INVITE,
         says="Invite Robin.",
         rights=RightsSay(allowed=True, needs="adult", question=None),
         conversation_id=conversation.id,
         now=datetime.now(UTC),
         zone=None,
+        idea=IdeaTold("person"),
+        gathered=NOTHING_GATHERED,
     )
     assert case.household == (
         {"name": "Owner", "role": "owner"},
@@ -743,12 +794,15 @@ async def test_the_last_time_is_told_in_the_households_day_with_how_long_ago_it_
         return await build_case(
             session,
             actor=Actor(alex.id, "adult"),
+            asks=alex,
             action=INVITE,
             says="Invite Robin.",
             rights=ALLOWED,
             conversation_id=conversation.id,
             now=now,
             zone=zone,
+            idea=IdeaTold("person"),
+            gathered=NOTHING_GATHERED,
         )
 
     in_paris = (await told(ZoneInfo("Europe/Paris"))).as_json()
@@ -773,7 +827,7 @@ async def test_the_last_time_is_told_in_the_households_day_with_how_long_ago_it_
             "minute": 0,
             "zone": "Europe/Paris",
         },
-        history=PersonHistory(1, 1, 1, 1, datetime(2030, 1, 1, 23, 30, tzinfo=UTC), 0),
+        history=PersonHistory(1, 1, 1, 1, datetime(2030, 1, 1, 23, 30, tzinfo=UTC), 0, 0),
     ).as_json()
     assert (same_day["history"]["last"], same_day["history"]["days_ago"]) == ("2030-01-02", 0)
     # Never done: no last time, and no days ago.
@@ -791,6 +845,7 @@ def test_the_case_is_data_the_judge_reads_as_json():
         "household",
         "pending",
         "language",
+        "idea",
     }
     data = a_case().as_json()
     assert set(data) == base
@@ -800,10 +855,16 @@ def test_the_case_is_data_the_judge_reads_as_json():
         "month": 0,
         "ever": 0,
         "last": None,
-        "refused_or_dropped": 0,
+        "refused": 0,
+        "expired": 0,
         "first_time": True,
     }
-    assert data["rights"] == {"allowed": True, "needs": None, "question": None}
+    assert data["rights"] == {
+        "allowed": True,
+        "needs": None,
+        "question": None,
+        "judge_decides": False,
+    }
     assert data["words"] == ["Can you invite Robin for the weekend?"]
 
     last = datetime(2030, 1, 1, 23, 30, tzinfo=UTC)
@@ -825,7 +886,7 @@ def test_the_case_is_data_the_judge_reads_as_json():
     )
     rule = {"never_ask": True, "when": None, "at_all": False}
     full = a_case(
-        history=PersonHistory(1, 2, 3, 4, last, 1),
+        history=PersonHistory(1, 2, 3, 4, last, 1, 2),
         steps=(step,),
         request=request,
         owner_rule=rule,
@@ -838,7 +899,8 @@ def test_the_case_is_data_the_judge_reads_as_json():
         "ever": 4,
         "last": "2030-01-01",
         "days_ago": 4,
-        "refused_or_dropped": 1,
+        "refused": 1,
+        "expired": 2,
         "first_time": False,
     }
     assert full["steps"] == [
@@ -876,12 +938,15 @@ async def test_the_owners_never_ask_reaches_the_case_with_its_conditions(
     case = await build_case(
         session,
         actor=Actor(owner.id, "owner"),
+        asks=owner,
         action=INVITE,
         says="Invite Robin.",
         rights=ALLOWED,
         conversation_id=conversation.id,
         now=datetime.now(UTC),
         zone=None,
+        idea=IdeaTold("person"),
+        gathered=NOTHING_GATHERED,
         owner_rule=rule,
     )
     assert case.as_json()["owner_rule"] == rule
@@ -1155,17 +1220,16 @@ def test_the_judge_prompt_says_what_it_needs_to():
         "Nobody is asked again whether they are sure",
         # What cannot be undone: only whether they know it matters (the owner, 2026-11-15).
         "what matters is whether they know that",
-        # ... and it warns them once, then what it told them is remembered (spec 6.8).
-        "if nothing does, warn, and your reason tells them",
+        # ... and it warns them once, then what it told them is remembered (spec 6.8, 14).
+        "it is the first time: warn, and your reason tells them it cannot be undone",
         "- warn: ask their yes only because of something they must know first; your reason "
         "tells it;",
-        '"remembered": what this person said before, and what you already told them; if it '
-        "shows they know, do.",
+        '"remembered": the person\'s own words, and what you told them before such an action',
         # ... and whether they asked for it is what the judge looks at, never a premise it is
         # given (review I3).
         "The assistant is about to do an action for a person",
         'Look whether this action is what the person asked for in "words"',
-        'If nothing in "words" or "asked_them" shows they asked for it, they did not: yes',
+        'nothing in "words" or "asked_them" shows they asked for it, they did not: yes',
         # ... but for what the later paragraphs say: a yes already given, the owner's "never
         # ask" (re-review m3: which one wins is said).
         'they did not: yes (never do_not for that alone), unless "request" or "never_ask" '
@@ -1205,11 +1269,10 @@ def test_the_judge_prompt_says_what_it_needs_to():
     assert "answer yes" not in prompt and "In doubt" not in prompt
     # The person having asked is never stated as a fact.
     assert "asked their assistant" not in prompt and "the assistant understood" not in prompt
-    # Raised from 3 700 on the controller's ruling (trial fix 2): "relayed" and the last message;
-    # then to 4 200 for the sentence that reads the last message with the reply (the owner's own
-    # exchange, "Oui, crée le" after a relayed word, still got a second question on a real model).
+    # The sentence that reads the last message with the reply (the owner's own exchange, "Oui,
+    # crée le" after a relayed word, still got a second question on a real model). Its length is
+    # bounded in ``test_the_prompt_stays_under_8000``, raised from 4 200 for the richer case.
     assert "Read their last message with that reply" in prompt
-    assert len(prompt) <= 4200
 
 
 async def test_the_judgement_is_audited_with_its_reason(session, add_person):
@@ -1248,6 +1311,229 @@ async def test_the_judgement_is_audited_with_its_reason(session, add_person):
     )
 
 
+# --- the two reasons: one said to the person, one kept for the journal (spec 6.2) ---------------
+
+
+def test_two_lines_give_a_said_reason_and_a_noted_one():
+    assert read_judgement("do_not: not tonight\nlog: Dana refused it twice") == Judgement(
+        "do_not", "not tonight", None, "Dana refused it twice"
+    )
+    # Read as the verdict is: case folded, spaces around, after a model reasoned aloud.
+    assert read_judgement("Thinking it over.\nyes: is it for you?\n  LOG :  first time  \n") == (
+        Judgement("yes", "is it for you?", None, "first time")
+    )
+    # Only the line right after the verdict is the journal's, cut and kept plain like a reason.
+    assert read_judgement("do: fine\nlog: " + "x" * 300).noted == "x" * MAX_JUDGE_REASON_LENGTH
+    assert read_judgement("do: fine\nlog: a\x07b").noted == "fine"
+    assert read_judgement("do\nlog: usual for them") == Judgement("do", "", None, "usual for them")
+    # A log line is known by its word, even empty or not plain: the verdict before it is read.
+    assert read_judgement("Thinking.\nyes: x\nlog:") == Judgement("yes", "x")
+    assert read_judgement("Thinking.\ndo_not: no\nlog: a\x07b") == Judgement("do_not", "no")
+    # A log line alone is no verdict.
+    assert read_judgement("log: something") == Judgement("do", "", "unreadable")
+    assert read_judgement("Sure.\nlog: something") == Judgement("do", "", "unreadable")
+
+
+def test_one_line_is_both():
+    judged = read_judgement("yes: a first time")
+    assert (judged.reason, judged.noted) == ("a first time", "a first time")
+    assert read_judgement("do: fine\nlog:").noted == "fine"
+    assert read_judgement("yes: first\ndo_not: last").noted == "last"
+    assert Judgement("warn", "no way back").noted == "no way back"
+    assert fallback("timeout").noted == ""
+
+
+async def test_the_audit_keeps_the_noted_reason_and_the_card_the_said_one(session, add_person):
+    owner = await add_person("Owner", "owner")
+    refused = read_judgement("do_not: not like this\nlog: Dana said the last guest broke a window")
+    await audit_judgement(
+        session,
+        actor=Actor(owner.id, "owner"),
+        tool_name="household_invite",
+        action=INVITE,
+        judgement=refused,
+    )
+    entry = await last_audit(session, "judge.verdict")
+    assert entry.details["reason"] == "Dana said the last guest broke a window"
+    record = execution_module.refused_by_the_judge(
+        "household_invite", "household.invite", refused.reason
+    )
+    assert record.card is not None and record.card["params"] == {"reason": "not like this"}
+    assert record.model_result is not None and record.model_result["why"] == "not like this"
+    # What a request asks, and the card that shows it, read the said reason only.
+    asked = read_judgement("yes: is it for tonight?\nlog: trust is low lately")
+    assert what_to_ask(asked, rule=None, raised=None) == Asked("yes", "judge", "is it for tonight?")
+
+
+def _keys_of(value: object, *, inside: str = "") -> set[str]:
+    """Every key of ``value`` (a case as JSON), at any depth; not those of an action's own facts,
+    which are the action's."""
+    keys: set[str] = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            keys.add(key)
+            if (inside, key) != ("action", "facts"):
+                keys |= _keys_of(item, inside=key)
+    elif isinstance(value, list):
+        for item in value:
+            keys |= _keys_of(item, inside=inside)
+    return keys
+
+
+def test_the_prompt_names_every_key_of_the_case():
+    now = datetime(2030, 1, 5, 10, tzinfo=UTC)
+    clue = Clue("session", "for", "strong", "code", now)
+    # (``may_agree`` and ``concerned``, the code's marks, only when set: tasks 25 and 26.)
+    line = KnownLine(
+        "c", "2030-01-01", "other", "Dana", True, "yes", True, may_agree=True, concerned=True
+    )
+    full = a_case(
+        history=PersonHistory(1, 1, 1, 2, now, 1, 1),
+        steps=(
+            StepTold("note.leave", "Leave a note.", True, "Tom", owner_rule_of(NeverAsk(None))),
+            StepTold(
+                "net.close",
+                "Close a site.",
+                False,
+                None,
+                facts={"role": "guest"},
+                history=history_told(PersonHistory(1, 1, 1, 2, now, 1, 1), a_case().now),
+                went_wrong=(
+                    WentWrongLine("refused", "2030-01-01 10:00", "Dana", True, "no", True),
+                ),
+                lessons=(line,),
+                remembered=(line,),
+                subject=SubjectState("k", "net.close", "Dana", "2030-01-01 10:00", "no"),
+            ),
+        ),
+        request=RequestTold(
+            YesTold("just now", "the person", "words"),
+            ("one",),
+            "two",
+            "it failed",
+            True,
+            ("a",),
+            ("b",),
+            "yes",
+        ),
+        owner_rule=owner_rule_of(NeverAsk("at night", at_all=True)),
+        speaker=Speaker(None, "page", clues=(clue,), last_heard_at=now).as_json(now),
+        asked_them="Shall I?",
+        relayed=True,
+        remembered=(line,),
+        others_said=(line,),
+        owner_said=(line,),
+        lessons=(line,),
+        trust={
+            **Trust(82, 1).as_json(),
+            "lately": [{"outcome": "kept", "about": "x", "when": "2030-01-01"}],
+        },
+        went_wrong=(WentWrongLine("refused", "2030-01-01 10:00", "Dana", True, "no", True),),
+        subject=SubjectState("k", "net.open", "Dana", "2030-01-01 10:00", "no"),
+        idea=IdeaTold("domo", "it is time", "Sam", True),
+        cost={
+            "amount_cents": 2000,
+            "tool": "order",
+            "operation": "order",
+            "agreements": [
+                {
+                    "operation": "order",
+                    "amount_cents_at_most": 1000,
+                    "times": 1,
+                    "per": "week",
+                    "weekdays": [5],
+                }
+            ],
+            "spent_before": [{"day": "2030-01-04", "amount_cents": 1900}],
+        },
+        missing=("trust",),
+    ).as_json()
+    nobody = Speaker(None, "wake", nobody_spoke=True).as_json(now)
+    prompt = judge_prompt()
+    for key in sorted(_keys_of(full) | _keys_of(nobody)):
+        assert f'"{key}"' in prompt, key
+
+
+def test_the_prompt_says_how_a_cost_is_weighed():
+    # Task 24, fix round 1: an agreement in the case does not cover the cost, and a cost is done
+    # only when it is like what they usually spend or their own words of now cover it.
+    prompt = judge_prompt()
+    assert "close to this, not to this" in prompt
+    assert "do only when it is like what they usually spend" in prompt
+    assert "or their own words of now name it and its amount" in prompt
+    assert "even when nobody asked" in prompt
+
+
+def test_the_prompt_names_every_fact_a_silent_judge_cannot_pass():
+    # Task 25: the facts that make a silent judge ask a yes are the judge's to warn about.
+    prompt = judge_prompt()
+    for facts in WARNED_FACTS.values():
+        for fact in facts:
+            assert f'"{fact}"' in prompt, fact
+    assert '"judge_decides"' in prompt and '"may_agree"' in prompt
+
+
+def test_the_prompt_stays_under_8000():
+    # Raised from 7 500 for the agreement left to the judge and the general key without an heir
+    # (task 25, ruling R64): 8 000 at most.
+    assert len(judge_prompt()) < 8000
+
+
+def test_the_prompt_says_how_to_weigh_the_case():
+    prompt = judge_prompt()
+    for needed in (
+        # Only their own words show that they asked or know; the rest sheds light (spec 6.2).
+        'Only "words", "asked_them" and "remembered" can show that the person asked or knows',
+        "ask less when all of it agrees, ask or refuse when something does not",
+        # The keys only named are given a meaning.
+        '"of_domo" (',
+        '"same_subject" (',
+        '"checked_in_turn":',
+        '"waits_for":',
+        '"weighs":',
+        '"unconfirmed":',
+        # A silence is not a no (spec 9).
+        "a silence is not a no",
+        # An idea of his: nobody asking is no reason to ask (spec 7).
+        "nobody asked, and that alone is no reason to ask",
+        # "They did not ask: yes" is for the person's own idea only (task review, finding 1).
+        'When the idea is the person\'s ("of": "person") and nothing in "words" or "asked_them" '
+        "shows they asked for it, they did not: yes",
+        # What cannot be undone: one rule, in order (task review, finding 2).
+        "In this order:",
+        "With no such line, it is the first time: warn",
+        'unless their "words", "asked_them" or "remembered" plainly show they know it: then do.',
+        # It holds whatever they said before being told (Task 26).
+        "and what was agreed with them, even when they asked for it or said yes.",
+        'null: weigh their "answer" (a no weighs toward warn)',
+        # The fixes of the trials with a real model (task review, finding 3).
+        "whatever question the reply ended on",
+        "even when their earlier messages were about something else",
+        "before their last message",
+        # The socle as it was said (task review).
+        "(an adult, or the owner)",
+        "and says how they say yes",
+        "If the person who asks insists that the other decides",
+        # The answer: an optional second line, in English, with an example.
+        "log: <reason kept>",
+        "in English",
+        "do: they asked for it\nlog: ",
+        "the person the thing belongs to",
+        # A lesson is weighed, not obeyed (spec 9.4).
+        "weighed, not obeyed",
+        "unless the case shows what changed",
+        # What cannot be undone: warned once, then as agreed (spec 14).
+        '"keep_asking" false: do; true: warn',
+        # The reason said never tells what another said, refused or did, nor trust (spec 6.2).
+        "never tells what another person said, refused or did, nor anything of",
+    ):
+        assert needed in prompt, needed
+    # The code says who answers a doubt, never the judge (spec 6.2): no name to give.
+    assert "name who" not in prompt and "ask Alex" not in prompt
+    # A do keeps nothing of what was told (Task 26): the prompt never says that it does.
+    assert "counts as told" not in prompt
+
+
 # --- a warning, and what the judge remembers (spec 6.8) -----------------------------------------
 
 
@@ -1283,9 +1569,17 @@ def test_warn_asks_a_yes_like_yes():
 
 def test_the_case_tells_what_the_judge_remembers_only_when_there_is_some():
     assert "remembered" not in a_case().as_json()
-    line = RememberedLine("no way back", "2030-01-01", "told_by_domo")
+    line = KnownLine("no way back", "2030-01-01", "them", None, answer="yes")
     assert a_case(remembered=(line,)).as_json()["remembered"] == [
-        {"content": "no way back", "when": "2030-01-01", "origin": "told_by_domo"}
+        {
+            "content": "no way back",
+            "when": "2030-01-01",
+            "by": "them",
+            "who": None,
+            "unconfirmed": False,
+            "answer": "yes",
+            "keep_asking": None,
+        }
     ]
 
 
@@ -1311,7 +1605,11 @@ async def test_the_judge_reads_what_it_told_them_before(adult_chat, chat_server)
         {
             "content": "you cannot take it back",
             "when": memory.changed_at.astimezone(UTC).date().isoformat(),
-            "origin": "told_by_domo",
+            "by": "them",
+            "who": None,
+            "unconfirmed": False,
+            "answer": "yes",
+            "keep_asking": None,
         }
     ]
 
@@ -1322,7 +1620,7 @@ async def test_memories_that_cannot_be_read_never_stop_the_judge(
     async def broken(*_: object, **__: object) -> list[Memory]:
         raise RuntimeError("the memories are gone")
 
-    monkeypatch.setattr(execution_module, "for_judge", broken)
+    monkeypatch.setattr(case_module, "search_for_case", broken)
     reply = await adult_chat.say_with_tool(
         "profile_rename", {"name": "Alex B"}, judge="do: they asked"
     )
@@ -1333,33 +1631,621 @@ async def test_memories_that_cannot_be_read_never_stop_the_judge(
         if fakes.is_judge_call(call.system)
     ]
     assert "remembered" not in case
+    # The case says what it could not read, and the rest is there.
+    assert case["missing"] == ["remembered"] and case["trust"]["facts"] == 0
 
 
-async def test_the_judge_reads_no_trust(session, add_person, add_conversation, add_message):
-    """Trust per person (spec 6.4): what a person's word has been worth is Domo's to weigh,
-    never the judge's. Nothing of what it reads has room for a figure or a fact, and a case built
-    for someone with facts holds none."""
-    names = {field.name for field in (*fields(JudgeCase), *fields(RememberedLine))}
-    names |= set(inspect.signature(build_case).parameters)
-    assert not any("trust" in name for name in names), names
-    alex = await add_person("Alex", "adult")
-    here = await add_conversation(alex)
-    await add_message(here, content="rename me")
-    now = datetime(2030, 1, 5, 12, 30, tzinfo=UTC)
+async def test_the_judge_reads_trust(session_factory, monkeypatch):
+    """Trust per person (spec 6.4): the owner decided on 2026-11-23 that the judge reads it too:
+    the figure, how many facts it rests on, and the last facts, in the case of the one who asks."""
+    alex, conversation = await _committed_person(session_factory, "Alex", "adult")
     about = "said the boiler was fixed and it was not"
-    for outcome in ("lied", "held"):
-        await note_fact(
-            session, person_id=alex.id, outcome=outcome, established="seen", about=about, now=now
-        )
-    case = await build_case(
-        session,
+    async with session_factory() as writer:
+        for outcome in ("lied", "held"):
+            await note_fact(
+                writer,
+                person_id=alex.id,
+                outcome=outcome,
+                established="seen",
+                about=about,
+                now=LIVE - timedelta(days=1),
+            )
+        await writer.commit()
+    cases = _judged_cases(monkeypatch)
+    await consult_the_judge(
+        _ctx(session_factory, alex, conversation),
         actor=Actor(alex.id, "adult"),
         action=INVITE,
         says="Invite Robin.",
         rights=ALLOWED,
-        conversation_id=here.id,
-        now=now,
-        zone=None,
     )
-    shown = json.dumps(case.as_json(), ensure_ascii=False)
-    assert '"trust"' not in shown and about not in shown
+    [case] = cases
+    trust = case.as_json()["trust"]
+    assert trust["facts"] == 2
+    assert [fact["about"] for fact in trust["lately"]] == [about, about]
+    assert case.missing == ()
+
+
+# --- one case for every judged action ------------------------------------------------------------
+
+
+async def _committed_person(session_factory, name: str, role: str) -> tuple[Person, Conversation]:
+    """A person of the household and a conversation of theirs, committed."""
+    async with session_factory() as writer:
+        person = Person(display_name=name, role=role)
+        writer.add(person)
+        await writer.flush()
+        conversation = Conversation(person_id=person.id)
+        writer.add(conversation)
+        await writer.commit()
+    return person, conversation
+
+
+def _ctx(
+    session_factory, person: Person, conversation: Conversation, **changes: object
+) -> ToolContext:
+    ctx = ToolContext(
+        session_factory=session_factory,
+        actor=Actor(person.id, as_role(person.role)),
+        person=person,
+        conversation_id=conversation.id,
+        origin="",
+        gatekeeper=None,  # type: ignore[arg-type]
+        clock=lambda: LIVE,
+        registry=TOOLS,
+        policy=DEFAULT_POLICY,
+        reply_message_id=uuid.uuid4(),
+    )
+    return replace(ctx, **changes)  # type: ignore[arg-type]
+
+
+def _judged_cases(monkeypatch) -> list[JudgeCase]:
+    """The cases the judge is given from now on (it answers ``do``)."""
+    cases: list[JudgeCase] = []
+
+    async def judged(model: object, case: JudgeCase, **_: object) -> Judgement:
+        cases.append(case)
+        return Judgement("do")
+
+    monkeypatch.setattr(execution_module, "judge", judged)
+    return cases
+
+
+async def test_his_own_act_reads_what_he_knows_and_why(session_factory, monkeypatch):
+    alex, conversation = await _committed_person(session_factory, "Alex", "owner")
+    async with session_factory() as writer:
+        await keep(
+            writer,
+            said_by=alex.id,
+            subject="the TV",
+            content="Never put the TV on after ten",
+            kind="fact",
+            origin="own_words",
+            kept_private=False,
+            core=False,
+            now=LIVE - timedelta(days=1),
+        )
+        await keep(
+            writer,
+            said_by=None,
+            subject="the TV",
+            content="Opening the TV address at night woke the house",
+            kind="lesson",
+            origin="own_words",
+            kept_private=False,
+            core=False,
+            now=LIVE - timedelta(days=2),
+            by_domo=True,
+            for_everyone=True,
+            lesson_action_type="net.open",
+        )
+        writer.add(
+            Confirmation(
+                requester_id=alex.id,
+                approver_kind="owner",
+                conversation_id=conversation.id,
+                tool_name="net_open",
+                arguments={},
+                action={"action_type": "net.open"},
+                ask="yes",
+                status="refused",
+                by_domo=True,
+            )
+        )
+        await writer.commit()
+    cases = _judged_cases(monkeypatch)
+    ctx = _ctx(session_factory, alex, conversation, on_his_own=True, reply_message_id=None)
+    await consult_the_judge(
+        ctx,
+        actor=domo_actor(),
+        action=TV_ON,
+        says="Put the TV on",
+        rights=ALLOWED,
+        idea=OwnIdea("the match starts at nine", born_of=alex.id),
+    )
+    [case] = cases
+    assert case.person == {"name": "Domo", "role": "adult"}
+    assert case.idea == IdeaTold(
+        "domo", "the match starts at nine", born_of_words_of="Alex", they_lack_the_right=False
+    )
+    assert [line.content for line in case.owner_said] == ["Never put the TV on after ten"]
+    assert [line.content for line in case.lessons] == [
+        "Opening the TV address at night woke the house"
+    ]
+    assert case.history.refused == 1
+    assert (case.words, case.pending, case.asked_them) == ((), (), None)
+    shown = case.as_json()
+    assert shown["idea"]["of"] == "domo" and shown["history"]["refused"] == 1
+    assert "trust" not in shown and "missing" not in shown
+
+
+async def test_a_person_s_case_and_his_own_are_built_by_the_same_function(
+    session, add_person, add_conversation, add_message
+):
+    assert not hasattr(case_module, "_domo_case")
+    alex = await add_person("Alex", "owner")
+    conversation = await add_conversation(alex)
+    await add_message(conversation, content="put the TV on")
+    gathered = replace(
+        NOTHING_GATHERED,
+        owner_said=(KnownLine("Never after ten", "2030-01-04", "owner", "Alex"),),
+    )
+
+    async def case_of(actor: Actor, asks: Person | None, idea: IdeaTold) -> JudgeCase:
+        return await build_case(
+            session,
+            actor=actor,
+            asks=asks,
+            action=TV_ON,
+            says="Put the TV on",
+            rights=ALLOWED,
+            conversation_id=conversation.id,
+            now=datetime(2030, 1, 5, 12, 30, tzinfo=UTC),
+            zone=None,
+            idea=idea,
+            gathered=gathered,
+        )
+
+    theirs = (await case_of(Actor(alex.id, "owner"), alex, IdeaTold("person"))).as_json()
+    his = (await case_of(domo_actor(), None, IdeaTold("domo", "it is time"))).as_json()
+    assert set(his) == set(theirs)
+    assert theirs["words"] == ["put the TV on"] and his["words"] == []
+    assert theirs["person"] == {"name": "Alex", "role": "owner"}
+    assert his["person"] == {"name": "Domo", "role": "adult"}
+    assert his["owner_said"] == theirs["owner_said"]
+    assert his["idea"] == {
+        "of": "domo",
+        "reason": "it is time",
+        "born_of_words_of": None,
+        "they_lack_the_right": False,
+        "after_outside_words": False,
+    }
+
+
+@pytest.mark.parametrize("action_type", ["net.open", "account.ask", "tool.build"])
+async def test_an_act_of_his_in_a_person_s_turn_reads_their_words(
+    session_factory, monkeypatch, action_type
+):
+    dana, conversation = await _committed_person(session_factory, "Dana", "adult")
+    async with session_factory() as writer:
+        writer.add(
+            Message(
+                conversation_id=conversation.id,
+                role="user",
+                content="open the TV for the match",
+                status="complete",
+                provenance="person",
+            )
+        )
+        await writer.commit()
+    cases = _judged_cases(monkeypatch)
+    action = DescribedAction("core", action_type, None, "permissions", "household", {})
+    await consult_the_judge(
+        _ctx(session_factory, dana, conversation),
+        actor=domo_actor(),
+        action=action,
+        says="Open the TV.",
+        rights=ALLOWED,
+    )
+    [case] = cases
+    assert case.words == ("open the TV for the match",)
+    assert case.person == {"name": "Dana", "role": "adult"}
+    assert case.idea == IdeaTold("person")
+
+
+async def test_a_session_clue_tells_its_real_age(adult_chat, chat_server):
+    async with chat_server.session_factory() as reader:
+        signed_in = await reader.scalar(select(func.max(WebSession.created_at)))
+    assert signed_in is not None
+    chat_server.clock.advance(signed_in + timedelta(hours=3) - chat_server.clock())
+    await adult_chat.say_with_tool("profile_rename", {"name": "Alex B"}, judge="do")
+    [case] = [
+        json.loads(call.messages[0].content)
+        for call in chat_server.calls
+        if fakes.is_judge_call(call.system)
+    ]
+    [clue] = case["speaker"]["clues"]
+    assert (clue["kind"], clue["minutes_ago"]) == ("session", 180)
+
+
+async def test_the_judge_reads_when_they_last_spoke_here(adult_chat, chat_server):
+    await adult_chat.say("hello")
+    async with chat_server.session_factory() as reader:
+        said = await reader.scalar(
+            select(func.max(Message.created_at)).where(
+                Message.role == "user", Message.provenance == "person"
+            )
+        )
+    assert said is not None
+    chat_server.clock.advance(said + timedelta(minutes=30) - chat_server.clock())
+    await adult_chat.say_with_tool("profile_rename", {"name": "Alex B"}, judge="do")
+    [case] = [
+        json.loads(call.messages[0].content)
+        for call in chat_server.calls
+        if fakes.is_judge_call(call.system)
+    ]
+    assert case["speaker"]["last_heard_minutes_ago"] == 30
+
+
+async def test_a_turn_nobody_spoke_in_says_so(session, add_person, add_conversation):
+    alex = await add_person("Alex", "owner")
+    conversation = await add_conversation(alex)
+    now = datetime(2030, 1, 5, 12, 30, tzinfo=UTC)
+    speaker = unasked(SimpleNamespace(clock=lambda: now), alex).speaker  # type: ignore[arg-type]
+    # Who it is stays the barrier's reading, unchanged.
+    assert speaker.nobody_spoke and established(speaker)
+    case = await build_case(
+        session,
+        actor=Actor(alex.id, "owner"),
+        asks=alex,
+        action=INVITE,
+        says="Invite Robin.",
+        rights=ALLOWED,
+        conversation_id=conversation.id,
+        now=now + timedelta(hours=2),
+        zone=None,
+        idea=IdeaTold("person"),
+        gathered=NOTHING_GATHERED,
+        speaker=speaker,
+    )
+    assert case.speaker == {"channel": "unasked", "nobody_spoke": True}
+
+
+async def test_a_gathering_that_fails_still_gives_a_case(session_factory, monkeypatch):
+    alex, conversation = await _committed_person(session_factory, "Alex", "adult")
+
+    async def broken(*_: object, **__: object) -> Gathered:
+        raise RuntimeError("nothing could be read")
+
+    monkeypatch.setattr(execution_module, "gather", broken)
+    cases = _judged_cases(monkeypatch)
+    judgement = await consult_the_judge(
+        _ctx(session_factory, alex, conversation),
+        actor=Actor(alex.id, "adult"),
+        action=INVITE,
+        says="Invite Robin.",
+        rights=ALLOWED,
+    )
+    # The model is called all the same: no fallback because the gathering failed.
+    [case] = cases
+    assert judgement == Judgement("do")
+    assert case.missing == ("everything",)
+    assert case.as_json()["missing"] == ["everything"]
+    assert case.person == {"name": "Alex", "role": "adult"}
+
+
+# --- a step of a chain is judged on what is known of it ------------------------------------------
+
+THE_CHAIN = DescribedAction("core", "chain.run", None, "permissions", "household", {"steps": 2})
+CLOSE_A_SITE = DescribedAction(
+    "core", "net.close", None, "permissions", "household", {"host": "a-site", "port": 80}
+)
+A_SITE = "address:a-site:80"
+LEAVE_A_NOTE = DescribedAction(
+    "core", "note.leave", None, "permissions", "household", {"recipient": "Dana"}
+)
+
+
+def _close_then_note() -> list[PlannedStep]:
+    return [
+        PlannedStep(
+            "net_close", "net.close", {"host": "a-site", "port": 80}, CLOSE_A_SITE, "confirm"
+        ),
+        PlannedStep(
+            "note_leave", "note.leave", {"recipient": "Dana", "text": "done"}, LEAVE_A_NOTE
+        ),
+    ]
+
+
+async def _judge_the_chain(
+    session_factory, monkeypatch, steps: list[PlannedStep], *, person: Person, conversation
+) -> JudgeCase:
+    cases = _judged_cases(monkeypatch)
+    # These tests read what is gathered, not how long it may take: the five seconds the chain and
+    # its steps share are split down to under a second per element, which a loaded build machine
+    # can use up, leaving a step empty. Cuts are tested where they are meant to happen.
+    monkeypatch.setattr(execution_module, "_REMEMBERED_SECONDS", 120.0)
+    await consult_the_judge(
+        _ctx(session_factory, person, conversation),
+        actor=Actor(person.id, as_role(person.role)),
+        action=THE_CHAIN,
+        says="Close a site, then leave a note.",
+        rights=ALLOWED,
+        steps=steps,
+    )
+    [case] = cases
+    return case
+
+
+async def test_a_step_carries_the_facts_and_history_of_its_own_type(session_factory, monkeypatch):
+    alex, conversation = await _committed_person(session_factory, "Alex", "owner")
+    async with session_factory() as writer:
+        reply = Message(
+            conversation_id=conversation.id,
+            role="assistant",
+            content="ok",
+            status="complete",
+            provenance="model",
+        )
+        writer.add(reply)
+        await writer.flush()
+        writer.add(
+            MessageAction(
+                message_id=reply.id,
+                tool_name="net_close",
+                action_type="net.close",
+                status="done",
+                summary={},
+                created_at=LIVE - timedelta(days=2),
+            )
+        )
+        await keep(
+            writer,
+            said_by=None,
+            subject="a site",
+            content="Closing a site at night woke the house",
+            kind="lesson",
+            origin="own_words",
+            kept_private=False,
+            core=False,
+            now=LIVE - timedelta(days=3),
+            by_domo=True,
+            for_everyone=True,
+            lesson_action_type="net.close",
+        )
+        await writer.commit()
+    case = await _judge_the_chain(
+        session_factory, monkeypatch, _close_then_note(), person=alex, conversation=conversation
+    )
+    close, note = case.steps
+    assert close.facts == {"host": "a-site", "port": 80}
+    assert close.history is not None
+    # The step's own type, never the chain's: the chain was never run, the closing was, once.
+    assert (close.history["ever"], case.history.ever) == (1, 0)
+    assert [line.content for line in close.lessons] == ["Closing a site at night woke the house"]
+    assert note.facts == {"recipient": "Dana"}
+    assert note.history is not None and note.history["ever"] == 0
+    shown = case.as_json()["steps"][0]
+    assert shown["facts"] == {"host": "a-site", "port": 80} and shown["history"]["ever"] == 1
+    assert "went_wrong" not in shown and "subject" not in shown
+
+
+async def test_a_refusal_of_the_same_action_alone_is_seen_in_the_chain(
+    session_factory, monkeypatch
+):
+    alex, conversation = await _committed_person(session_factory, "Alex", "owner")
+    dana, _ = await _committed_person(session_factory, "Dana", "adult")
+    async with session_factory() as writer:
+        await note_went_wrong(
+            writer,
+            kind="refused",
+            action_type="net.close",
+            subject_key=A_SITE,
+            by=dana.id,
+            about=alex.id,
+            reason="the match was on",
+            now=LIVE - timedelta(days=1),
+        )
+        await writer.commit()
+    case = await _judge_the_chain(
+        session_factory, monkeypatch, _close_then_note(), person=alex, conversation=conversation
+    )
+    close, note = case.steps
+    [refused] = close.went_wrong
+    # Dana's words stay hers: that she refused, and on what, is told (ruling R76).
+    assert (refused.kind, refused.by, refused.reason, refused.same_subject) == (
+        "refused",
+        "Dana",
+        None,
+        True,
+    )
+    assert note.went_wrong == ()
+    # It is the step's own type that was refused: the chain's own case holds none.
+    assert case.went_wrong == ()
+    assert case.as_json()["steps"][0]["went_wrong"][0]["by"] == "Dana"
+    assert "the match was on" not in json.dumps(case.as_json())
+
+
+async def test_only_the_person_s_own_words_are_remembered_in_a_step(session_factory, monkeypatch):
+    alex, conversation = await _committed_person(session_factory, "Alex", "owner")
+    dana, _ = await _committed_person(session_factory, "Dana", "adult")
+    async with session_factory() as writer:
+        for said_by, content in (
+            (dana.id, "Dana says closing a site is fine"),
+            (alex.id, "Alex says closing a site is fine"),
+        ):
+            await keep(
+                writer,
+                said_by=said_by,
+                subject="a site",
+                content=content,
+                kind="fact",
+                origin="own_words",
+                kept_private=False,
+                core=False,
+                now=LIVE - timedelta(days=1),
+                about_id=None if said_by == dana.id else dana.id,
+            )
+        await writer.commit()
+    # Dana asks: Alex's words about her and her own are told apart, never put under one key.
+    case = await _judge_the_chain(
+        session_factory, monkeypatch, _close_then_note(), person=dana, conversation=conversation
+    )
+    for step in case.steps:
+        assert {line.by for line in step.remembered} <= {"them"}
+        assert "Alex says closing a site is fine" not in [line.content for line in step.remembered]
+    assert [line.content for line in case.steps[0].remembered] == [
+        "Dana says closing a site is fine"
+    ]
+
+
+async def test_a_step_checked_in_its_turn_has_only_its_sentence(session_factory, monkeypatch):
+    alex, conversation = await _committed_person(session_factory, "Alex", "owner")
+    in_its_turn = PlannedStep(
+        "profile_rename", "profile.rename", {"name": "Sam"}, None, after_arrival_of="Tom"
+    )
+    case = await _judge_the_chain(
+        session_factory,
+        monkeypatch,
+        [_close_then_note()[0], in_its_turn],
+        person=alex,
+        conversation=conversation,
+    )
+    told = case.steps[1]
+    assert told == planned_step_told(in_its_turn)
+    assert (told.facts, told.history, told.went_wrong, told.lessons, told.remembered) == (
+        {},
+        None,
+        (),
+        (),
+        (),
+    )
+    assert told.subject is None
+    assert set(case.as_json()["steps"][1]) == {"type", "says", "checked_in_turn", "waits_for"}
+
+
+async def test_a_long_chain_gathers_for_its_first_eight_steps(session_factory, monkeypatch):
+    alex, conversation = await _committed_person(session_factory, "Alex", "owner")
+    gathered_for: list[str] = []
+    real = execution_module.gather
+
+    async def counting(*args: object, **kwargs: object) -> Gathered:
+        gathered_for.append(kwargs["says"])  # type: ignore[arg-type]
+        return await real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(execution_module, "gather", counting)
+    case = await _judge_the_chain(
+        session_factory,
+        monkeypatch,
+        _close_then_note() * 5,
+        person=alex,
+        conversation=conversation,
+    )
+    # The chain's own, then one for each of its first eight steps.
+    assert len(gathered_for) == 1 + 8
+    assert len(case.steps) == 10
+    assert [step.history is not None for step in case.steps] == [True] * 8 + [False] * 2
+    assert all(step.facts == {} for step in case.steps[8:])
+
+
+async def _keep_committed(session_factory, said_by: Person, content: str, *, private: bool):
+    async with session_factory() as writer:
+        await keep(
+            writer,
+            said_by=said_by.id,
+            subject="the TV",
+            content=content,
+            kind="fact",
+            origin="own_words",
+            kept_private=private,
+            core=False,
+            now=LIVE - timedelta(days=1),
+        )
+        await writer.commit()
+
+
+async def test_on_his_own_only_the_private_memories_of_the_one_concerned_enter(
+    session_factory, monkeypatch
+):
+    alex, _ = await _committed_person(session_factory, "Alex", "owner")
+    dana, conversation = await _committed_person(session_factory, "Dana", "adult")
+    await _keep_committed(session_factory, alex, "Put the TV on only for the match", private=True)
+    await _keep_committed(session_factory, dana, "Dana says the TV stays off", private=True)
+    cases = _judged_cases(monkeypatch)
+    # On his own in Dana's conversation, about a thing of the house: the owner answers for it.
+    ctx = _ctx(session_factory, dana, conversation, on_his_own=True, reply_message_id=None)
+    await consult_the_judge(
+        ctx, actor=domo_actor(), action=TV_ON, says="Put the TV on", rights=ALLOWED
+    )
+    [case] = cases
+    seen = [line.content for line in (*case.remembered, *case.others_said, *case.owner_said)]
+    assert "Put the TV on only for the match" in seen
+    assert "Dana says the TV stays off" not in seen
+
+
+async def test_with_nobody_concerned_no_private_memory_enters_his_case(
+    session_factory, monkeypatch
+):
+    dana, conversation = await _committed_person(session_factory, "Dana", "adult")
+    await _keep_committed(session_factory, dana, "Dana says the TV stays off", private=True)
+    await _keep_committed(session_factory, dana, "Dana watches the TV news", private=False)
+    cases = _judged_cases(monkeypatch)
+    for ctx, idea in (
+        (_ctx(session_factory, dana, conversation, on_his_own=True, reply_message_id=None), None),
+        (_ctx(session_factory, dana, conversation), OwnIdea("the news starts")),
+    ):
+        await consult_the_judge(
+            ctx, actor=domo_actor(), action=TV_ON, says="Put the TV on", rights=ALLOWED, idea=idea
+        )
+    for case in cases:
+        # The household has no owner now: nobody is known to answer for the thing.
+        assert case.missing[:1] == ("concerned",)
+        seen = [line.content for line in (*case.remembered, *case.others_said, *case.owner_said)]
+        assert "Dana watches the TV news" in seen
+        assert "Dana says the TV stays off" not in seen
+
+
+async def test_in_a_person_s_turn_their_own_private_memories_stay_theirs(
+    session_factory, monkeypatch
+):
+    dana, conversation = await _committed_person(session_factory, "Dana", "adult")
+    await _keep_committed(session_factory, dana, "Dana says the TV stays off", private=True)
+    cases = _judged_cases(monkeypatch)
+    await consult_the_judge(
+        _ctx(session_factory, dana, conversation),
+        actor=domo_actor(),
+        action=TV_ON,
+        says="Put the TV on",
+        rights=ALLOWED,
+    )
+    [case] = cases
+    assert [line.content for line in case.remembered] == ["Dana says the TV stays off"]
+    assert case.missing == ()
+
+
+async def test_a_case_nobody_asks_in_tells_no_one_s_session(session, add_person, add_conversation):
+    alex = await add_person("Alex", "owner")
+    conversation = await add_conversation(alex)
+    now = datetime(2030, 1, 5, 12, 30, tzinfo=UTC)
+
+    async def told(speaker: Speaker) -> JsonObject | None:
+        case = await build_case(
+            session,
+            actor=domo_actor(),
+            asks=None,
+            action=TV_ON,
+            says="Put the TV on",
+            rights=ALLOWED,
+            conversation_id=conversation.id,
+            now=now,
+            zone=None,
+            idea=IdeaTold("domo"),
+            gathered=NOTHING_GATHERED,
+            speaker=speaker,
+        )
+        return case.speaker
+
+    # Someone's page session, left in a context he acts in on his own: never told beside him.
+    assert await told(page_speaker(alex.id, now)) is None
+    nobody = Speaker(alex.id, "unasked", nobody_spoke=True)
+    assert await told(nobody) == {"channel": "unasked", "nobody_spoke": True}

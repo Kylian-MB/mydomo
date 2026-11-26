@@ -116,6 +116,7 @@ from domo_core.confirmations.service import (
     requester_context,
 )
 from domo_core.confirmations.store import (
+    CANNOT_BE_UNDONE_REASON,
     action_type_of,
     approves,
     ask_of,
@@ -289,7 +290,10 @@ def _state_of(
             # The requester's own yes is "your yes" to them only: to anyone else who sees the
             # card (the one whose yes it waited for before, Ruling R27), it is the requester's.
             waits_for = (
-                "requester"
+                # The person it concerns answers it alone: to anyone else, whose yes it is.
+                ("self" if viewer.id == c.concerned_id else "the_concerned")
+                if c.concerned_id is not None
+                else "requester"
                 if c.approver_kind == "self" and viewer.id != requester_of(c)
                 else c.approver_kind
             )
@@ -429,7 +433,9 @@ def _asked(c: Confirmation, viewer: Person, texts: Texts, *, holed: bool = False
         return None
     # The one who asked, when an adult or the owner answers: what is asked is theirs, not his.
     to_whom = (
-        texts(f"confirmation.asked.to.{c.approver_kind}")
+        texts("confirmation.asked.to.concerned")
+        if c.concerned_id is not None and viewer.id != c.concerned_id
+        else texts(f"confirmation.asked.to.{c.approver_kind}")
         if viewer.id == requester_of(c) and c.approver_kind in ("adult", "owner")
         else None
     )
@@ -445,6 +451,8 @@ def _asked(c: Confirmation, viewer: Person, texts: Texts, *, holed: bool = False
                 reason = (
                     texts("confirmation.asked.domo.not_sure")
                     if c.ask_why == NOT_SURE_REASON
+                    else texts("confirmation.asked.domo.cannot_be_undone")
+                    if c.ask_why == CANNOT_BE_UNDONE_REASON
                     else cards.hole(cards.REASON)
                     if holed
                     else c.ask_why
@@ -608,7 +616,11 @@ def _head_source(c: Confirmation, *, words: str | None, words_before: str | None
         else {}
     )
     target = action.get("target")
-    reason = c.ask_why if c.ask_why and c.ask_why != NOT_SURE_REASON else None
+    reason = (
+        c.ask_why
+        if c.ask_why and c.ask_why not in (NOT_SURE_REASON, CANNOT_BE_UNDONE_REASON)
+        else None
+    )
     holes = {
         cards.REASON: reason,
         cards.QUESTION: domo_question_of(c),

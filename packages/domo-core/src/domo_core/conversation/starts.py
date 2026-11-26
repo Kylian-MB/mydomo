@@ -60,25 +60,25 @@ meets.
 An arrival
 ----------
 
-Not to be confused with ``confirmations.arrivals``, which resumes a chain paused until someone
-joins the household: here, a member of the household comes back (``came_back``: a channel says so,
+Not to be confused with ``confirmations.arrivals``, which resumes a chain paused until someone joins
+the household: here, a member of the household comes back (``came_back``: a channel says so,
 ``Conversation.seen`` with ``came_back``; the chat page that opens, say). When that counts as an
-arrival (``conversation.visits.arrival_is_due``, which notes the time of the visit), Domo is
-offered a turn: its reply is opened in the person's conversation (``open_reply``), held in
-``ArrivalTurns`` from before it is committed, so that a message of the person stops it (it steps
-aside). The turn (``prepare_turn`` with an ``ArrivalNote``) has no message of the person: the
-conversation it is sent ends with a line of the code (``ARRIVAL_MARKER``), never shown, and its
-context says how long the person was away and what is new. Its main calls are of the kind
-``arrival`` (a small model to begin with), it is offered only the tools whose action changes
-nothing (``conversation.prepare.ARRIVAL_ACTIONS``: read, show, tell), and it may answer nothing at
-all; so is the reply of an arrival stopped before its end taken away, whatever it began to say,
-unless it acted. The news told once (who began using a key the person gave, a threshold passed)
-count as told only once it answered in words. It is dropped when a reply is being written in the
-conversation already (the person's message came first: it answers nothing), and for someone who
-left meanwhile. Someone without a key Domo may use for them gets an upkeep turn instead, on the
-general key, when the rules of the house let it serve for that (spec 4.11): its one tool is
-``key_add``, and it may answer nothing too; without that, no arrival turn. When their coming back
-is no arrival, the news that wait for them are considered (a news turn).
+arrival (``conversation.visits.arrival_is_due``, which notes the time of the visit), Domo is offered
+a turn: its reply is opened in the person's conversation (``open_reply``), held in ``ArrivalTurns``
+from before it is committed, so that a message of the person stops it (it steps aside). The turn
+(``prepare_turn`` with an ``ArrivalNote``) has no message of the person: the conversation it is sent
+ends with a line of the code (``ARRIVAL_MARKER``), never shown, and its context says how long the
+person was away and what is new. Its main calls are of the kind ``arrival`` (a small model to begin
+with), it is offered the person's tools and may act when it is worth it, each call going through the
+barrier and the judge as in any turn he starts, and it may answer nothing at all; so is the reply of
+an arrival stopped before its end taken away, whatever it began to say, unless it acted. The news
+told once (who began using a key the person gave, a threshold passed) count as told only once it
+answered in words. It is dropped when a reply is being written in the conversation already (the
+person's message came first: it answers nothing), and for someone who left meanwhile. Someone
+without a key Domo may use for them gets an upkeep turn instead, on the general key, when the rules
+of the house let it serve for that (spec 4.11): its one tool is ``key_add``, and it may answer
+nothing too; without that, no arrival turn. When their coming back is no arrival, the news that wait
+for them are considered (a news turn).
 
 A news turn
 -----------
@@ -106,8 +106,8 @@ with no words in which nothing that is shown acted is taken away). Each plan is 
 failed before it acted, they stay due. No turn, and nothing changed, while a reply of theirs is
 under way, without a key Domo may use for them or with every key at its limit: no reply is
 written then, not even an error. The plans due at someone's return come with their coming back
-after an absence (``ARRIVAL_AFTER``): in the arrival turn when one is due (it is then offered
-every tool of theirs), else in a plan's turn of their own. A plan that waits for the build of a
+after an absence (``ARRIVAL_AFTER``): in the arrival turn when one is due (on the main calls of
+a conversation then), else in a plan's turn of their own. A plan that waits for the build of a
 tool is told how that build stands (``due_plans_of``: ready, with the tool's name; abandoned; or
 still building when its time came first), and is served once (``plans.service``).
 
@@ -120,6 +120,35 @@ turns are ``conversation.tool_wakes``'s (a launch for the house wakes him in the
 conversation, on his own). A coming back after an absence also launches the tools that wait for
 that person's return (``madetools.triggers.returns_seen``, in a task of its own: no model, and
 nothing of it touches the coming back).
+
+A request about to lapse
+------------------------
+
+A request that waits and is about to lapse wakes Domo once (``wake_before_expiry``, started by the
+upkeep's ``confirmations.expiring.expiring_pass``, which has written that it did). The turn is the
+one who asked's, in the conversation where the request was first made (``conversation_made_in``:
+none when that cannot be known, and then nobody is woken, never a turn of theirs opened in someone
+else's conversation). He is told the request, whom it waits for (a role word) and how long it has
+left (``prompts.AboutToExpire``, data), and judges: he reminds whoever must answer
+(``confirmation_remind``), tells the one who asked, drops it (``confirmation_expire``), or does
+nothing and answers nothing (``silent_ok``). Nothing he does in it starts another wake, and none
+follows once the request lapsed.
+
+Nobody spoke
+------------
+
+Every such turn tells the judge the truth (part 8 of "Domo judges first"): nobody spoke in it
+(``unasked``: ``Speaker.nobody_spoke``, while the barrier reads whose turn it is as before), and
+why Domo acts (``prepare_turn``'s ``turn_reason``, ``reason_of``): that a request was decided
+(``DECISION_REASON``, a fixed sentence: what the request says stays data in the context), that
+they came back (``ARRIVAL_REASON``, when no plan is due then), the plans due that keep no words
+of the person, in a plan's turn or at their return (``plans_reason``), the tools that woke him
+(``conversation.tool_wakes``). When every plan due keeps their words there is no reason: what
+he does then is what they asked (ruling R39). Otherwise each call the judge weighs there is an
+idea of his with that reason (``tools.context.idea_of``), still
+the person's act with their rights unless he marks it his own: a judge that doubts asks the person
+it concerns, and one silent twice leaves it undone, asking nobody. What he remembers is looked
+for from that reason first (``conversation.prepare.recall_query``).
 
 The tasks
 ---------
@@ -149,13 +178,18 @@ from domo_core.chat.agent import ActionRecord
 from domo_core.chat.models import Message
 from domo_core.chat.store import ConversationStore
 from domo_core.confirmations.chain import just_decided
+from domo_core.confirmations.describe import description_for_a_model, request_description
 from domo_core.confirmations.models import Confirmation
 from domo_core.confirmations.service import AmendOutcome, DecideOutcome
 from domo_core.confirmations.store import (
     action_type_of,
     approver_of,
     confirmations_by_id,
+    conversation_made_in,
+    is_past_lifetime,
     mark_shown,
+    replayed_on_his_own,
+    waits_for_of,
 )
 from domo_core.conversation.channel import NOBODY_LISTENS
 from domo_core.conversation.listeners import Fanout
@@ -190,8 +224,9 @@ from domo_core.plans.service import (
     time_served,
 )
 from domo_core.policy.settings import load_policy_settings
-from domo_core.prompts import ArrivalNote, DuePlan
-from domo_core.tools.context import Notify
+from domo_core.prompts import AboutToExpire, ArrivalNote, DuePlan
+from domo_core.texts.view import REFERENCE
+from domo_core.tools.context import MAX_IDEA_REASON_LENGTH, Notify
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +263,33 @@ PlanOutcome = Literal["spoke", "acted", "silent", "failed"]
 # be written because no key of the person has room left (every one at its limit): the plans stay
 # due, and the pass waits before it tries again (``plans.upkeep``).
 PlanTurnEnd = PlanOutcome | Literal["no_room"]
+# Why Domo begins an arrival turn, as the judge is told (``ToolContext.turn_reason``).
+ARRIVAL_REASON: Final = "they just came back"
+
+
+def reason_of(text: str) -> str:
+    """Why Domo began a turn himself, as the judge is told it (``prepare_turn``'s
+    ``turn_reason``), cut at ``MAX_IDEA_REASON_LENGTH``."""
+    return text[:MAX_IDEA_REASON_LENGTH]
+
+
+def plans_reason(due: Sequence[DuePlan]) -> str | None:
+    """Why Domo acts in a turn the plans ``due`` woke him for: the ``why`` of those that keep no
+    words of the person, joined by ``"; "`` (``reason_of``); ``None`` when every one keeps their
+    words (what he does then is what they asked, ``ToolContext.asked_before``)."""
+    alone = [plan.why for plan in due if not plan.their_words]
+    return reason_of("; ".join(alone)) if alone else None
+
+
+# Why Domo acts in a wake after a decision: a fixed sentence of the code. What the request says
+# (its description: someone's words, a note's text, a name) stays in what the context and the
+# judge read as data, never in his own reason.
+DECISION_REASON: Final = "a request was decided"
+
+
+# Why Domo acts in a wake before a lapse: a fixed sentence of the code, never the words of the
+# request (its description goes where the turn reads it, as data).
+EXPIRY_REASON: Final = "a request is about to lapse"
 
 
 class Wakes:
@@ -278,10 +340,12 @@ def notifier(deps: TurnDeps) -> Notify:
 def unasked(deps: TurnDeps, person: Person) -> TurnRequest:
     """The request of a turn Domo starts for ``person``: no channel asked for it, nobody reads it
     as it comes (``NOBODY_LISTENS``), and it is theirs as their conversation is (the turns a tool
-    wakes him for too, ``conversation.tool_wakes``)."""
+    wakes him for too, ``conversation.tool_wakes``). Nobody spoke in it (``Speaker.nobody_spoke``):
+    the judge is told so, while the barrier reads whose it is as before."""
     known = Clue("session", "for", "strong", "code", deps.clock())
     return TurnRequest(
-        speaker=Speaker(person.id, _NO_CHANNEL, clues=(known,)), abilities=NOBODY_LISTENS
+        speaker=Speaker(person.id, _NO_CHANNEL, clues=(known,), nobody_spoke=True),
+        abilities=NOBODY_LISTENS,
     )
 
 
@@ -370,11 +434,16 @@ async def _wake(
             via=via,
             woken=True,
         )
+        # Where the one who asked asked it (for a request that waited for the person it
+        # concerns in their own conversation, not that one): they are told there.
+        made_in = await conversation_made_in(session, request)
+    if made_in is None:
+        # Never a turn of theirs opened in someone else's conversation.
+        logger.warning("A wake was dropped: the turn the request was made in is not known")
+        return
     # A chain that waits for the explicit yes again after an arrival: the reply presents it.
     presents = request.id if outcome == "arrived" else None
-    opened = await open_reply(
-        deps, request.conversation_id, request.requester_id, presents=presents
-    )
+    opened = await open_reply(deps, made_in, request.requester_id, presents=presents)
     if opened is None:
         return
     reply, requester, presented = opened
@@ -389,14 +458,87 @@ async def _wake(
             # A reply that presents a request again stays, whatever Domo says.
             silent_ok=not presented,
             notify=notifier(deps),
-            # A request Domo made on his own wakes him on his own (Task 9).
-            on_his_own=request.by_domo,
+            # A request Domo made on his own wakes him on his own (Task 9); one born in a
+            # person's turn (his idea there, the owner's rule on his act there) wakes him in
+            # their turn (``store.replayed_on_his_own``).
+            on_his_own=replayed_on_his_own(request),
+            # Nobody spoke: why he acts is the decision.
+            turn_reason=DECISION_REASON,
         )
         handed_over = True  # the turn releases the claim when it ends
     finally:
         if not handed_over:
             deps.streaming_replies.discard(reply.id)
             await take_back(deps, reply.id, presented=presented)
+    await turn.run(Fanout(deps.listeners, requester.id, reply.id))
+
+
+async def wake_before_expiry(deps: TurnDeps, confirmation_id: uuid.UUID) -> None:
+    """Wake Domo, once, for the request ``confirmation_id`` that is about to lapse
+    (``confirmations.expiring``): see the module docstring. Never raises: what goes wrong is
+    logged, by its kind."""
+    try:
+        await _wake_before_expiry(deps, confirmation_id)
+    except Exception as error:
+        logger.error("A wake before a lapse failed (%s)", type(error).__name__)
+
+
+async def _wake_before_expiry(deps: TurnDeps, confirmation_id: uuid.UUID) -> None:
+    async with deps.session_factory() as session:
+        request = (await confirmations_by_id(session, [confirmation_id])).get(confirmation_id)
+        if request is None or request.status != "pending":
+            return
+        settings = await load_policy_settings(session)
+        now = deps.clock()
+        if is_past_lifetime(request, settings, now):
+            return
+        requester = await session.get(Person, request.requester_id)
+        if requester is None or not is_active(requester, now):
+            return
+        # Where the one who asked asked it: never a turn of theirs in someone else's conversation.
+        made_in = await conversation_made_in(session, request)
+        left = request.created_at + settings.max_lifetime - now
+        about = AboutToExpire(
+            request_id=str(request.id),
+            description=(
+                request_description(request, REFERENCE)
+                if request.approver_kind == "self" and request.concerned_id is None
+                else description_for_a_model(request)
+            ),
+            waits_for=waits_for_of(request),
+            hours_left=round(left / timedelta(hours=1), 1),
+        )
+    if made_in is None:
+        logger.warning("A wake was dropped: the turn the request was made in is not known")
+        return
+    opened = await open_reply(deps, made_in, request.requester_id)
+    if opened is None:
+        return
+    reply, requester, _ = opened
+    turn: Turn | None = None
+    try:
+        with contextlib.suppress(NoKey):
+            turn = await prepare_turn(
+                deps=deps,
+                person=requester,
+                reply=reply,
+                request=unasked(deps, requester),
+                expiring=about,
+                # He may answer nothing: a reply with no words, in which nothing shown acted, is
+                # taken away.
+                silent_ok=True,
+                notify=notifier(deps),
+                # His own request made on his own is his to drop or to remind about, in a turn
+                # of his own; one born in a person's turn, in theirs (``replayed_on_his_own``).
+                on_his_own=replayed_on_his_own(request),
+                turn_reason=EXPIRY_REASON,
+            )
+    finally:
+        if turn is None:
+            deps.streaming_replies.discard(reply.id)
+            await take_back(deps, reply.id, presented=False)
+    if turn is None:
+        return
     await turn.run(Fanout(deps.listeners, requester.id, reply.id))
 
 
@@ -772,6 +914,9 @@ async def _arrival(
             silent_ok=True,
             notify=notifier(deps),
             due_plans=due,
+            # Why he acts: their coming back; with plans due, the plans' (none when each keeps
+            # their words: it is their request, as in a plan's turn, ruling R39).
+            turn_reason=plans_reason(due) if due else ARRIVAL_REASON,
         )
         handed_over = True  # the turn releases the claim when it ends
     finally:
@@ -985,6 +1130,7 @@ async def _plan_turn(
                 silent_ok=True,
                 notify=notifier(deps),
                 due_plans=due,
+                turn_reason=plans_reason(due),
             )
     finally:
         if turn is None or turn.blocked is not None:

@@ -45,7 +45,7 @@ from typing import Final, Literal, NamedTuple, Protocol, cast, get_args
 from domo_core.llm.types import JsonObject, ToolCall, ToolDefinition
 from domo_core.policy.actions import FactValue
 from domo_core.policy.asks import RuleAsk
-from domo_core.policy.catalog import MADE_FACTS_WITHOUT_A_YES, is_made
+from domo_core.policy.catalog import MADE_LAUNCH_WITHOUT_A_YES, is_made
 from domo_core.policy.rights import Access, Approver, Right, RightsTable
 from domo_core.policy.roles import DOMO_LABEL, ROLES, Role
 from domo_core.text import is_plain_line
@@ -175,8 +175,9 @@ class Example:
     def __post_init__(self) -> None:
         if is_made(self.action_type):
             # The facts of a launch of one of Domo's tools that an example leaves out are those
-            # of a launch without a yes (``catalog.MADE_FACTS``): it need not say them.
-            object.__setattr__(self, "facts", {**MADE_FACTS_WITHOUT_A_YES, **self.facts})
+            # of a launch without a yes, for a person (``catalog.MADE_FACTS``): it need not say
+            # them.
+            object.__setattr__(self, "facts", {**MADE_LAUNCH_WITHOUT_A_YES, **self.facts})
 
 
 @dataclass(frozen=True)

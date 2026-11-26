@@ -112,6 +112,7 @@ from domo_core.policy.catalog import (
     declared_facts,
     is_made,
     is_silent,
+    needs_the_judge,
 )
 from domo_core.policy.limits import (
     InvalidLimit,
@@ -222,6 +223,10 @@ _FOR_THE_OWNER: Final = (
 )
 _EVERYONE_ONLY_ASKS: Final = "a rule for everyone says what to ask and nothing else: ask alone"
 _NOTHING_TO_ASK: Final = "nothing is asked for an action that changes nothing"
+_NEVER_JUDGED_FOR_HIM: Final = (
+    "the assistant's own judge never weighs this action: write what to ask (yes, explicit_yes or "
+    "proof), not judge"
+)
 _RIGHTS_OF: Final = "its rights are those of the action type in rights_of: write the change there"
 _SILENT_ONLY_ACCESS: Final = (
     "an action that is never shown (the assistant's memory, his plans, the name he is called by, "
@@ -244,9 +249,9 @@ _TOOLS_NO_JUDGE: Final = (
 )
 # Ruling R22: the socle stays out of Domo's reach (spec 5.1).
 _CLOSED_TO_DOMO: Final = (
-    "secrets, keys and accounts, spending limits and who may do what are not opened to the "
-    "assistant "
-    "himself for now: only taken from him"
+    "secrets, keys, sharing an account, spending limits and who may do what (rights, rules, "
+    "leaving, handing the owner's role over) are not opened to the assistant himself for now: only "
+    "taken from him"
 )
 _ASK_WHAT_IT_CARRIES: Final = (
     "nothing is asked for an action that carries others (taking a chain up again, changing a "
@@ -529,13 +534,19 @@ def _ask_problems(where: str, change: RightChange, context: WriterContext) -> li
         if change.ask in ("judge", "never"):
             return [Problem(f"{where}: {_TOOLS_ASK_A_YES}")]
         return []
-    if action_type in CHANGES_NOTHING:
+    # His own rule on a type he holds is read before any judgement, whatever the type changes or
+    # carries (the barrier applies it, ``Allow.rule``): the owner makes him ask first.
+    his_own = change.for_domo and action_type in context.policy.domo
+    if action_type in CHANGES_NOTHING and not his_own:
         return [Problem(f"{where}: {_NOTHING_TO_ASK}")]
-    if is_silent(action_type):
+    if is_silent(action_type) and not his_own:
         # Never shown, never judged: a rule that asks would never be read.
         return [Problem(f"{where}: {_SILENT_ONLY_ACCESS}")]
-    if action_type in JUDGED_WITHIN:
+    if action_type in JUDGED_WITHIN and not his_own:
         return [Problem(f"{where}: {_ASK_WHAT_IT_CARRIES}")]
+    if his_own and change.ask == "judge" and not needs_the_judge(action_type):
+        # Never judged, so "leave it to the judge" would do nothing.
+        return [Problem(f"{where}: {_NEVER_JUDGED_FOR_HIM}")]
     problems: list[Problem] = []
     if change.ask == "never" and action_type not in OWNER_ONLY_ACTIONS:
         problems.append(Problem(f"{where}: {_NEVER_ONLY_THE_OWNERS}"))
@@ -961,10 +972,13 @@ def _moment_shown(
 
 def _outcome_of(decision: Decision, resolved: Resolved, action_type: str) -> ExampleOutcome:
     """What will hold for an example once the yes-judge decides: ``refused`` for a refusal;
-    someone else's agreement the rights ask for (``asks_an_adult``, ``asks_the_owner``: the
-    judge never takes it away); else ``asks_them`` when the owner's rules ask something
-    (``resolved.ask``), and ``domo_judges`` when nothing is imposed. An approver on a type the
-    catalog leaves to the person (a note) asks for that agreement too."""
+    someone else's agreement the rights ask for (``asks_an_adult``, ``asks_the_owner``); else
+    ``asks_them`` when the owner's rules ask something (``resolved.ask``), and ``domo_judges``
+    when nothing is imposed. An approver on a type the catalog leaves to the person (a note) asks
+    for that agreement too. An agreement left to the judge first (``NeedsApproval.judge_first``:
+    a limit that says "judge", the catalog's adult for a child) is shown as asked: the assistant
+    decides when he knows, and an example cannot show what he knows, only what happens when he
+    doubts."""
     match decision:
         case Refuse():
             return "refused"

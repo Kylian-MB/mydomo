@@ -17,9 +17,14 @@ from typing import Any
 
 import pytest
 from chat_support import ChatPilot
+from domo_common.i18n import t
 from domo_core.accounts.models import Person
 from domo_core.audit.log import append_audit
 from domo_core.audit.models import AuditEntry
+from domo_core.confirmations.describe import request_description
+from domo_core.confirmations.judge import Judgement
+from domo_core.confirmations.service import decide_confirmation, requester_context
+from domo_core.conversation.execution import handle_tool_call
 from domo_core.db import SessionFactory
 from domo_core.household.service import disable
 from domo_core.llm.types import ToolCall
@@ -33,14 +38,17 @@ from domo_core.madetools.models import (
     MadeToolVersion,
     ToolBuild,
 )
+from domo_core.madetools.offered import MadeToolOffer
 from domo_core.madetools.service import fingerprint
 from domo_core.madetools.settings import set_for_tool, set_house
 from domo_core.outward.service import close_address, open_address
 from domo_core.plans.models import Plan
 from domo_core.policy.barrier import Allow, decide
 from domo_core.policy.catalog import (
+    ALLOWED_ACTIONS,
     DEFAULT_POLICY,
     KNOWN_ACTIONS,
+    OWNER_ONLY_ACTIONS,
     OpenKind,
     is_silent,
     needs_the_judge,
@@ -49,11 +57,15 @@ from domo_core.policy.models import PolicyRight
 from domo_core.policy.open_catalog import load_policy, replace_kind
 from domo_core.policy.rights import RightsTable, load_rights
 from domo_core.policy.roles import Actor
+from domo_core.policy.subjects import Subject, concerned_of, subject_of
+from domo_core.texts.view import CatalogTexts
 from domo_core.tools.context import ActsAsDomo, InvalidArguments, NamesPeople, ToolContext
 from domo_core.tools.registry import TOOLS
 from fakes import FakeChatModel
 from sqlalchemy import select
+from test_concerned_person import _judge, _people, _requests, _turn
 from test_confirmation_tools import ask_before, invite
+from test_own_idea import LIVE
 
 NOW = datetime(2030, 1, 7, 9, 0, tzinfo=UTC)
 MADE_TOOLS = (
@@ -491,6 +503,8 @@ async def test_a_look_at_ones_own_tool_shows_how_it_is_going(session_factory: Se
     await launched(session_factory, other_id, "failed", at=NOW)
     ctx = context(sam, session_factory)
     seen = await run("tool_look", ctx, name="tally")
+    # The error text its program said came into the turn (ruling R46).
+    assert ctx.outside_text
     assert seen["name"] == "tally" and seen["state"] == "ready" and "for" not in seen
     assert seen["description"] == "Does tally." and seen["aside_reason"] is None
     assert seen["checks"] == {"version": "ready", "summary": {"imports": "ok", "review": "ok"}}
@@ -1338,23 +1352,215 @@ async def test_in_a_turn_of_his_own_a_trigger_is_the_houses_and_his_own_rights_g
     assert (await refusal("tool_remove", owners, name="split")).code == "not_possible"
 
 
-async def test_only_the_owner_or_domo_on_his_own_times_a_tool_for_the_house(
+async def test_only_who_may_set_it_times_a_tool_for_the_house_at_once(
     session_factory: SessionFactory,
 ):
-    # Fix round 1 (R15): as an agreement for the house, a trigger for the house is the owner's,
-    # or Domo's in a turn of his own; anyone else times it for themselves.
+    # Ruling R17 (Task 27): a trigger for the house is set at once by whom the rights allow
+    # ``house.set`` (the owner by default) and by Domo in a turn of his own; anyone else's waits
+    # for the owner's yes, as Domo's request, and is never set without it.
     alex, sam, dana, _ = await household(session_factory)
     await add_tool(session_factory, "chores")
     house = {"name": "chores", "when": "2030-01-08T08:00:00+00:00", "for": "house"}
+    tool = TOOLS["tool_launch_when"]
     for person in (sam, dana):
         ctx = context(person, session_factory)
+        # Described, then waiting for the owner: not refused.
+        await tool.describe(house, ctx.actor, ctx)
+        waits = await tool.waits_for(house, ctx)  # type: ignore[attr-defined]
+        assert waits is not None and (waits.approver, waits.domo_asks) == ("owner", True)
         refused = await refusal("tool_launch_when", ctx, **house)
         assert refused.code == "not_possible", person.display_name
-        assert refused.detail is not None and '"me"' in refused.detail
-        with pytest.raises(InvalidArguments):
-            await TOOLS["tool_launch_when"].describe(house, ctx.actor, ctx)
     assert await trigger_rows(session_factory) == []
-    await run("tool_launch_when", context(alex, session_factory), **house)
+    owners = context(alex, session_factory)
+    assert await tool.waits_for(house, owners) is None  # type: ignore[attr-defined]
+    await run("tool_launch_when", owners, **house)
     alone = replace(context(alex, session_factory), on_his_own=True)
+    assert await tool.waits_for(house, alone) is None  # type: ignore[attr-defined]
     await run("tool_launch_when", alone, **house)
     assert [t.for_person_id for t in await trigger_rows(session_factory)] == [None, None]
+    # For oneself, nothing waits.
+    mine = {**house, "for": "me"}
+    assert await tool.waits_for(mine, context(dana, session_factory)) is None  # type: ignore[attr-defined]
+
+
+# --- Task 27: "for the house" asked by someone who may not set it goes to the owner -------------
+
+HOUSE_AT: dict[str, Any] = {
+    "name": "chores",
+    "when": "2030-01-08T08:00:00+00:00",
+    "for": "house",
+}
+
+
+async def _the_house(session_factory: SessionFactory) -> dict[str, Person]:
+    """Alex, the owner; Dana, an adult; Paul, a child, each with a conversation; and the tool
+    ``chores``."""
+    people = await _people(
+        session_factory, ("Alex", "owner"), ("Dana", "adult"), ("Paul", "child"), grants=False
+    )
+    await add_tool(session_factory, "chores")
+    return people
+
+
+def _timed(arguments: dict[str, Any]) -> ToolCall:
+    return ToolCall("w1", "tool_launch_when", json.dumps(arguments))
+
+
+async def _yes(ctx: ToolContext, request_id: uuid.UUID, decider: Person) -> tuple[str, Any]:
+    return await decide_confirmation(
+        session_factory=ctx.session_factory,
+        confirmation_id=request_id,
+        decider=decider,
+        approve=True,
+        via="button",
+        reply_message_id=None,
+        ctx_factory=requester_context(ctx),
+        registry=ctx.registry,
+        policy=DEFAULT_POLICY,
+        now=LIVE,
+    )
+
+
+async def test_dana_s_trigger_for_the_house_waits_for_the_owner(
+    session_factory: SessionFactory, monkeypatch: pytest.MonkeyPatch
+):
+    people = await _the_house(session_factory)
+    dana = people["Dana"]
+    judged = _judge(monkeypatch, Judgement("do"))
+    ctx, reply_id, _ = await _turn(session_factory, dana)
+    record = await handle_tool_call(_timed(HOUSE_AT), ctx=ctx, reply_id=reply_id)
+    assert record.status == "waiting", record.model_result
+    [request] = await _requests(session_factory)
+    assert (request.approver_kind, request.by_domo, request.requester_id) == (
+        "owner",
+        True,
+        dana.id,
+    )
+    # A request for the owner, nothing set, and no judge asked (a trigger is never judged).
+    assert await trigger_rows(session_factory) == []
+    assert judged.cases == []
+
+
+@pytest.mark.parametrize(
+    ("arguments", "key", "when"),
+    [
+        (
+            HOUSE_AT,
+            "action.describe.tool.launch_when.house.time",
+            datetime(2030, 1, 8, 8, tzinfo=UTC),
+        ),
+        (
+            {"name": "chores", "on": "arrival", "for": "house"},
+            "action.describe.tool.launch_when.house.arrival",
+            None,
+        ),
+        (
+            {"name": "chores", "on": "return", "for": "house"},
+            "action.describe.tool.launch_when.house.return",
+            None,
+        ),
+    ],
+)
+async def test_the_owner_is_told_the_trigger_is_for_the_whole_house(
+    session_factory: SessionFactory, monkeypatch: pytest.MonkeyPatch, arguments, key, when
+):
+    # Fix round 1: the request the owner says yes to says it is for the whole house, which tool,
+    # and when, in his language (the catalogs, never a sentence of the code).
+    people = await _the_house(session_factory)
+    _judge(monkeypatch, Judgement("do"))
+    ctx, reply_id, _ = await _turn(session_factory, people["Dana"])
+    await handle_tool_call(_timed(arguments), ctx=ctx, reply_id=reply_id)
+    [request] = await _requests(session_factory)
+    for lang in ("en", "fr"):
+        texts = CatalogTexts(lang)
+        holes = {"tool": "chores"} if when is None else {"tool": "chores", "when": texts.date(when)}
+        assert request_description(request, texts) == t(key, lang, **holes)
+
+
+async def test_after_his_yes_it_is_set_for_the_house_and_judged_as_the_assistant_s(
+    session_factory: SessionFactory, monkeypatch: pytest.MonkeyPatch
+):
+    people = await _the_house(session_factory)
+    _judge(monkeypatch, Judgement("do"))
+    ctx, reply_id, _ = await _turn(session_factory, people["Dana"])
+    await handle_tool_call(_timed(HOUSE_AT), ctx=ctx, reply_id=reply_id)
+    [request] = await _requests(session_factory)
+    outcome, ran = await _yes(ctx, request.id, people["Alex"])
+    assert outcome == "executed", ran
+    # For the house: launched for nobody in particular, with the assistant's own rights.
+    [trigger] = await trigger_rows(session_factory)
+    assert trigger.for_person_id is None
+    # The assistant is told the owner may let it hold from now on, through the rights.
+    assert ran is not None and "house.set" in json.dumps(ran.model_result)
+
+
+async def test_with_the_right_house_set_dana_sets_it_at_once(
+    session_factory: SessionFactory, monkeypatch: pytest.MonkeyPatch
+):
+    people = await _the_house(session_factory)
+    alex, dana = people["Alex"], people["Dana"]
+    async with session_factory() as writer:
+        writer.add(
+            PolicyRight(
+                person_id=dana.id,
+                action_type="house.set",
+                access="allow",
+                summary="Dana sets things for the house.",
+                owner_words="Dana peut régler des choses pour la maison",
+                created_by=alex.id,
+            )
+        )
+        await writer.commit()
+    _judge(monkeypatch, Judgement("do"))
+    ctx, reply_id, _ = await _turn(session_factory, dana)
+    record = await handle_tool_call(_timed(HOUSE_AT), ctx=ctx, reply_id=reply_id)
+    assert record.status == "done", record.model_result
+    assert await _requests(session_factory) == []
+    [trigger] = await trigger_rows(session_factory)
+    assert trigger.for_person_id is None
+
+
+def test_setting_for_the_house_is_a_type_of_its_own_the_owner_s_by_default():
+    assert "house.set" in KNOWN_ACTIONS
+    assert needs_the_judge("house.set") is False
+    assert {role for role, types in ALLOWED_ACTIONS.items() if "house.set" in types} == {"owner"}
+    assert "house.set" not in OWNER_ONLY_ACTIONS
+
+
+async def test_a_launch_for_the_house_is_described_so_and_the_owner_answers_for_it(
+    session_factory: SessionFactory,
+):
+    # The subject rule of a tool Domo made reads ``for_house``: a launch's real description says
+    # it, so that the thing is the house's and the owner answers for it.
+    people = await _the_house(session_factory)
+    alex, dana = people["Alex"], people["Dana"]
+    async with session_factory() as reader:
+        made = await reader.scalar(select(MadeTool).where(MadeTool.name == "chores"))
+    assert made is not None
+    offer = MadeToolOffer(made, None)  # type: ignore[arg-type]
+    alone = replace(context(alex, session_factory), on_his_own=True)
+    house = await offer.describe({"amount": 2}, alone.actor, alone)
+    hers = await offer.describe(
+        {"amount": 2}, Actor(dana.id, "adult"), context(dana, session_factory)
+    )
+    assert (house.facts["for_house"], hers.facts["for_house"]) == (True, False)
+    async with session_factory() as reader:
+        for action, belongs, answers in (
+            (house, "house", alex.id),
+            (hers, dana.id, dana.id),
+        ):
+            subject = subject_of(action, None, dana.id)
+            assert subject == Subject("tool:chores", belongs)
+            assert await concerned_of(reader, subject, action, LIVE) == answers
+
+
+async def test_a_look_without_an_error_leaves_the_turn_free_of_outside_text(
+    session_factory: SessionFactory,
+):
+    _, sam, *_ = await household(session_factory)
+    tool_id = await add_tool(session_factory, "tally")
+    await launched(session_factory, tool_id, "done", at=NOW - timedelta(minutes=1))
+    ctx = context(sam, session_factory)
+    seen = await run("tool_look", ctx, name="tally")
+    assert [launch["error"] for launch in seen["launches"]] == [None]
+    assert not ctx.outside_text

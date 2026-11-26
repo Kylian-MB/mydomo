@@ -160,6 +160,13 @@ def test_the_stricter_of_two_decisions():
     assert stricter(Allow(), NeedsApproval("owner")) == NeedsApproval("owner")
     assert stricter(NeedsApproval("adult"), NeedsApproval("owner")) == NeedsApproval("owner")
     assert stricter(NeedsApproval("owner"), NeedsApproval("adult")) == NeedsApproval("owner")
+    # Left to the judge only when every side that asks leaves the same agreement to it.
+    first_adult = NeedsApproval("adult", judge_first=True)
+    first_owner = NeedsApproval("owner", "Q?", judge_first=True)
+    assert stricter(first_adult, Allow()).judge_first
+    assert stricter(first_owner, first_owner).judge_first
+    assert not stricter(first_adult, NeedsApproval("adult")).judge_first
+    assert not stricter(first_adult, first_owner).judge_first
 
 
 def _chain_with_his_note(recipient: str) -> dict[str, object]:

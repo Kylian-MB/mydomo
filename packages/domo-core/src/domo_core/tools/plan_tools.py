@@ -49,8 +49,8 @@ from domo_core.policy.actions import DescribedAction
 from domo_core.policy.roles import Actor
 from domo_core.policy.settings import load_policy_settings
 from domo_core.text import is_plain_line
-from domo_core.tools.context import InvalidArguments, ToolContext, ToolOutcome
-from domo_core.tools.notes import MAX_NOTE_LENGTH, exact_text_from
+from domo_core.tools.context import InvalidArguments, ToolContext, ToolOutcome, acts_alone
+from domo_core.tools.notes import MAX_NOTE_LENGTH, exact_text_in
 
 # What a call leaves under the reply: a card nobody reads (the plans are never shown,
 # ``policy.catalog.SILENT_ACTIONS``).
@@ -318,7 +318,7 @@ class PlanSet:
             if given.their_words is None
             or len(given.their_words) > MAX_NOTE_LENGTH
             or ctx.told_outside
-            else exact_text_from(ctx.said, given.their_words)
+            else exact_text_in(ctx.said_messages, given.their_words)
         )
         if words is not None and refuses_secret_shapes(words):
             raise InvalidArguments("invalid", SECRET_REFUSED)
@@ -343,8 +343,9 @@ class PlanSet:
                     on_return=given.on_return,
                     their_words=words,
                     # It answers no message of theirs, and comes from no words of theirs: his own
-                    # (one he sets in a turn a plan woke him for, to put something off, too).
-                    made_by_domo=words is None and not ctx.answers_them,
+                    # (one he sets in a turn a plan woke him for, to put something off, too; on his
+                    # own it is the conversation's person's, as the keys are, but his).
+                    made_by_domo=words is None and (not ctx.answers_them or acts_alone(ctx)),
                     after_build_id=after_build,
                 )
             except SecretRefused:

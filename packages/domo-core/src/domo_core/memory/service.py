@@ -102,6 +102,11 @@ def visible_to(person_id: uuid.UUID, *, with_kept: bool = False) -> ColumnElemen
     return or_(Memory.kept_private.is_(False), Memory.said_by_id == person_id)
 
 
+def of_domo() -> ColumnElement[bool]:
+    """The condition that keeps the memories the assistant himself wrote."""
+    return Memory.by_domo.is_(True)
+
+
 def _check(subject: str, content: str) -> None:
     if not subject.strip() or not content.strip():
         raise ValueError("A subject and a memory are not blank.")
@@ -116,7 +121,7 @@ def _check(subject: str, content: str) -> None:
 async def keep(
     session: AsyncSession,
     *,
-    said_by: uuid.UUID,
+    said_by: uuid.UUID | None,
     subject: str,
     content: str,
     kind: Kind,
@@ -126,11 +131,27 @@ async def keep(
     now: datetime,
     about_id: uuid.UUID | None = None,
     action_type: str | None = None,
+    by_domo: bool = False,
+    for_everyone: bool = False,
+    lesson_action_type: str | None = None,
+    lesson_subject_key: str | None = None,
+    words_checked: bool = False,
 ) -> Memory:
-    """A new memory said by ``said_by``. Raises ``SecretRefused`` for a text that has the shape
-    of a secret and ``ValueError`` for a subject or content out of bounds, or an ``action_type``
-    on a memory that is not ``told_by_domo``; nothing is written then. Flushed."""
+    """A new memory said by ``said_by``, or by the assistant himself (``by_domo``: ``said_by`` may
+    be ``None`` then, and only then); ``words_checked`` when the code checked that its content is
+    itself a passage of their own message, word for word (``Memory.words_checked``). Raises
+    ``SecretRefused`` for a text that has the shape of a secret and ``ValueError`` for a subject
+    or content out of bounds, an ``action_type`` on a memory that is not ``told_by_domo``, a
+    lesson's fields (``for_everyone``,
+    ``lesson_action_type``, ``lesson_subject_key``) on another kind, or nobody who said it without
+    ``by_domo``; nothing is written then. Flushed."""
     _check(subject, content)
+    if said_by is None and not by_domo:
+        raise ValueError("A memory is said by a person, unless the assistant wrote it himself.")
+    if kind != "lesson" and (
+        for_everyone or lesson_action_type is not None or lesson_subject_key is not None
+    ):
+        raise ValueError("What a lesson is for and about goes with a lesson only.")
     if action_type is not None and origin != "told_by_domo":
         raise ValueError("An action type goes with what the assistant told the person only.")
     memory = Memory(
@@ -143,6 +164,11 @@ async def keep(
         kept_private=kept_private,
         core=core,
         action_type=action_type,
+        by_domo=by_domo,
+        for_everyone=for_everyone,
+        lesson_action_type=lesson_action_type,
+        lesson_subject_key=lesson_subject_key,
+        words_checked=words_checked,
         created_at=now,
         changed_at=now,
     )
@@ -165,6 +191,7 @@ async def change(
     said_by: uuid.UUID | None = None,
     confirmed_at: datetime | None = None,
     unconfirm: bool = False,
+    words_checked: bool = False,
 ) -> Memory:
     """Change what is given of ``memory``; ``said_by_id`` stays (it says in whose turn it was
     born, not who changed it), and so does ``origin`` unless the caller sets it again from the turn
@@ -178,7 +205,9 @@ async def change(
     ``said_by`` makes the memory the words of another person (the person it is about corrected
     it in their own turn, or a third person gave it new words in Domo's answer to them: it is
     theirs now); ``confirmed_at`` says that the person it is about
-    confirmed it; ``unconfirm`` takes a confirmation away (someone else's new words). Flushed."""
+    confirmed it; ``unconfirm`` takes a confirmation away (someone else's new words). New words,
+    or words that become someone else's, keep ``words_checked`` only when the caller checked them
+    again (``words_checked``). Flushed."""
     del by
     if origin is not None and origin != "told_by_domo" and memory.action_type is not None:
         raise ValueError("An action type goes with what the assistant told the person only.")
@@ -189,6 +218,9 @@ async def change(
         # The vector was of the old words: computed again outside the turn (``memory.search``).
         memory.embedding = None
         memory.embedding_model = None
+    if new_content != memory.content or (said_by is not None and said_by != memory.said_by_id):
+        # What was checked was the old words, or someone else's.
+        memory.words_checked = words_checked
     memory.subject = new_subject
     memory.content = new_content
     if core is not None:

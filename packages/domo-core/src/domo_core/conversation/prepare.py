@@ -56,24 +56,24 @@ otherwise, and for a wake.
 
 The context
 -----------
-
 The requests that wait for the person's own answer in this conversation, those of others that wait
 for their yes (spec 5.1), their chains paused until someone's arrival and their requests that wait
 for someone else's yes (spec 5.2); the notes left for them that Domo has not told yet (spec 4.8);
 the moments he could not answer them since his last complete reply (spec 4.10); what Domo knows
-(spec 6.4, ``memory_shown``): his core, and what the person's last messages bring back
-(``recall_query``), never what he keeps to himself of someone else, which never makes the turn
-one of words from outside (``ToolContext.told_outside``), and which an upkeep turn is not given;
-what the person's word has been worth so far, and next to each unconfirmed memory what the word
-of who said it has (spec 6.4, ``trust.shown``: data, never read by the barrier or the judge); the
-plans Domo set for the person that wait (spec 6.9, ``plans_shown``), theirs alone; and, for
-the owner alone, the writer's time, the note of a role handed over and the list of
-successors. An arrival (spec 4.9) is offered only the tools whose action changes nothing
-(``ARRIVAL_ACTIONS``). The ready tools Domo made that the person may see (theirs and the
-house's) join the tools of the code as ``t_<name>`` (``madetools.offered.offers``: the barrier
-says who may use one), and the context names those of theirs, or that they asked for, that are
-set aside, with why (``madetools.offered.set_aside_for``), and the builds they opened that are in
-progress (``madetools.offered.being_built_for``).
+(spec 6.4, ``memory_shown``): his core, and what the person's last messages bring back, with why he
+began the turn first when he did (``recall_query``), never what he keeps to himself of someone else,
+which never makes the turn one of words from outside (``ToolContext.told_outside``), and which an
+upkeep turn is not given; what the person's word has been worth so far, and next to each unconfirmed
+memory what the word of who said it has (spec 6.4, ``trust.shown``: data, never read by the barrier;
+the yes-judge weighs the facts in its own case); the plans Domo set for the person that wait (spec
+6.9, ``plans_shown``), theirs alone; and, for the owner alone, the writer's time, the note of a role
+handed over and the list of successors. An arrival (spec 4.9) is offered the person's tools, as any
+turn of theirs: each call goes through the barrier and the judge as any call of a turn Domo started.
+The ready tools Domo made that the person may see (theirs and the house's) join the tools of the
+code as ``t_<name>`` (``madetools.offered.offers``: the barrier says who may use one), and the
+context names those of theirs, or that they asked for, that are set aside, with why
+(``madetools.offered.set_aside_for``), and the builds they opened that are in progress
+(``madetools.offered.being_built_for``).
 
 What a channel can do decides what a tool may show: a channel that cannot show something once to
 the person alone (``Abilities.shows_once``) has it left on their card (``ToolContext.no_reader``),
@@ -88,6 +88,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, time
 from functools import partial
+from itertools import takewhile
 from typing import TYPE_CHECKING, Final
 from zoneinfo import ZoneInfo
 
@@ -113,6 +114,7 @@ from domo_core.confirmations.service import (
 from domo_core.confirmations.store import paused_chains_of, pending_for_others
 from domo_core.conversation.changes import changes_for
 from domo_core.conversation.channel import Abilities
+from domo_core.conversation.kept import KeptMessages
 from domo_core.conversation.speaker import Speaker, actor_of
 from domo_core.conversation.turn import Answer, CardHeads, News, Prepared, Prompt, Turn
 from domo_core.conversation.visits import ArrivalTurns, unanswered_in, untold_decision
@@ -122,6 +124,7 @@ from domo_core.household import nicknames
 from domo_core.household.service import ownership_note
 from domo_core.household.succession import list_successors
 from domo_core.identity.clues import kept_clues
+from domo_core.learning.shown import went_wrong_shown
 from domo_core.llm.catalog import Catalog
 from domo_core.llm.catalog_store import current_catalog
 from domo_core.llm.choices import (
@@ -158,6 +161,7 @@ from domo_core.policy.rights import load_rights
 from domo_core.policy.roles import as_role
 from domo_core.policy.settings import PolicySettings, load_policy_settings
 from domo_core.prompts import (
+    AboutToExpire,
     ArrivalNote,
     DuePlan,
     HouseholdLine,
@@ -214,21 +218,10 @@ PLAN_MARKER: Final = "[a plan of yours is due: see the context]"
 # (``tool_wakes.tool_wake_turn``, spec 5.4): nobody wrote anything. A fixed line of the code, never
 # shown: what the tool says is in the context, as data.
 TOOL_MARKER: Final = "[a tool of yours has something for you: see the context]"
-# The types of the actions an arrival turn may take (``starts``): they change nothing (read,
-# show, tell). Its other tools are not offered.
-ARRIVAL_ACTIONS: Final = frozenset(
-    {
-        "household.list",
-        "note.list_sent",
-        "policy.show",
-        "successors.show",
-        "confirmation.remind",
-        "spending.show",
-        "texts.find",
-        "note.told",
-        "note.show",
-    }
-)
+# The person's turn of the conversation a turn a request about to lapse woke him for sends
+# (``starts.wake_before_expiry``, spec 11.2): nobody wrote anything. A fixed line of the code, never
+# shown: the request is told in the context, as data.
+EXPIRY_MARKER: Final = "[a request is about to lapse: see the context]"
 # The longest answer of an upkeep turn, in tokens: a sentence or two that asks for a key.
 UPKEEP_OUTPUT_TOKENS: Final = 300
 # The one tool of an upkeep turn: the form of a key of one's own.
@@ -264,7 +257,8 @@ class TurnDeps:
     (``embedder``: ``NO_EMBEDDER``, they are found by their words alone). So is the sandbox that
     runs the code of Domo's tools (``sandbox``: ``NO_SANDBOX``, every call fails as a sandbox that
     is down), and the tools' own database their programs read and write (``tools_base``: ``None``,
-    there is none, and each such request is refused)."""
+    there is none, and each such request is refused). So are the messages people wrote while a
+    turn of theirs ran (``kept``, ``conversation.kept``)."""
 
     session_factory: SessionFactory
     model_factory: ModelFactory
@@ -283,6 +277,7 @@ class TurnDeps:
     embedder: Embedder = NO_EMBEDDER
     sandbox: Sandbox = NO_SANDBOX
     tools_base: ToolsBase | None = None
+    kept: KeptMessages = field(default_factory=KeptMessages)
 
 
 @dataclass(frozen=True)
@@ -356,11 +351,23 @@ async def household_shown(
     )
 
 
-def recall_query(messages: Sequence[Message], reply_id: uuid.UUID) -> str:
+def recall_query(
+    messages: Sequence[Message], reply_id: uuid.UUID, turn_reason: str | None = None
+) -> str:
     """What the recall of a turn looks for: the person's last ``RECALL_MESSAGES`` messages before
-    the reply, oldest first, ``RECALL_QUERY_CHARS`` characters at most (the latest kept)."""
-    said = [m.content for m in messages if m.role == "user" and m.id != reply_id]
-    return "\n".join(said[-RECALL_MESSAGES:])[-RECALL_QUERY_CHARS:]
+    the reply, oldest first, ``RECALL_QUERY_CHARS`` characters at most (the latest kept). In a
+    turn Domo started himself, why he did (``turn_reason``) comes first, and the messages fill
+    what is left (LRN-7): what he learned is looked for from why he acts too."""
+    said = "\n".join(
+        [m.content for m in messages if m.role == "user" and m.id != reply_id][-RECALL_MESSAGES:]
+    )
+    if not turn_reason:
+        return said[-RECALL_QUERY_CHARS:]
+    reason = turn_reason[:RECALL_QUERY_CHARS]
+    room = RECALL_QUERY_CHARS - len(reason) - 1
+    if room <= 0 or not said:
+        return reason
+    return f"{reason}\n{said[-room:]}"
 
 
 async def memory_and_trust_shown(
@@ -620,6 +627,21 @@ def _reply_before(
     return None
 
 
+def _before_message(
+    messages: Sequence[Message], person_message_id: uuid.UUID | None
+) -> tuple[tuple[uuid.UUID, str, str], ...]:
+    """The messages before the person's message ``person_message_id``, oldest first, as their id,
+    role and words (none when there is no such message: nobody spoke)."""
+    if person_message_id is None:
+        return ()
+    earlier: list[tuple[uuid.UUID, str, str]] = []
+    for message in messages:
+        if message.id == person_message_id:
+            return tuple(earlier)
+        earlier.append((message.id, message.role, str(message.content)))
+    return ()
+
+
 def _person_message_before(messages: Sequence[Message], reply_id: uuid.UUID) -> uuid.UUID | None:
     """The id of the person's message that the reply ``reply_id`` answers: the last one of the
     person before it."""
@@ -650,9 +672,13 @@ class _Money:
     unmarked: News | None = None
 
 
-async def _speaking(session: AsyncSession, speaker: Speaker, now: datetime) -> Speaker:
+async def _speaking(
+    session: AsyncSession, speaker: Speaker, conversation_id: uuid.UUID, now: datetime
+) -> Speaker:
     """``speaker`` with the clues kept for the person on that channel and that device
-    (``identity.clues.kept_clues``) added to those the channel brings."""
+    (``identity.clues.kept_clues``) added to those the channel brings, and, when someone speaks,
+    when they were heard before in the conversation ``conversation_id`` (``last_heard_at``: their
+    message before their last one, ``None`` when there is none)."""
     if speaker.person_id is None:
         return speaker
     kept = await kept_clues(
@@ -662,7 +688,20 @@ async def _speaking(session: AsyncSession, speaker: Speaker, now: datetime) -> S
         device_id=speaker.device_id,
         now=now,
     )
-    return replace(speaker, clues=(*speaker.clues, *kept))
+    heard = None
+    if not speaker.nobody_spoke:
+        heard = await session.scalar(
+            select(Message.created_at)
+            .where(
+                Message.conversation_id == conversation_id,
+                Message.role == "user",
+                Message.provenance == "person",
+            )
+            .order_by(Message.created_at.desc(), Message.id.desc())
+            .offset(1)
+            .limit(1)
+        )
+    return replace(speaker, clues=(*speaker.clues, *kept), last_heard_at=heard)
 
 
 async def _display_names(session: AsyncSession, ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, str]:
@@ -798,6 +837,8 @@ async def prepare_turn(
     due_plans: Sequence[DuePlan] = (),
     tool_wakes: Sequence[ToolWake] = (),
     on_his_own: bool = False,
+    turn_reason: str | None = None,
+    expiring: AboutToExpire | None = None,
 ) -> Turn:
     """The turn that writes ``reply``, a reply of ``person``'s conversation that is ``streaming``
     and that the caller claimed in ``deps.streaming_replies`` (see the module docstring).
@@ -807,9 +848,9 @@ async def prepare_turn(
     ``PLAN_MARKER``) or an arrival that carries them: the context tells them (``Due now``) and how
     many times he woke by himself for the person today, the judge reads their exact words, and
     the turn counts as what the person asked only when every plan due keeps some
-    (``ToolContext.asked_before``); such an arrival is offered every tool of the person, on
-    the main calls of a conversation. The news told once are marked told only once it spoke, as
-    for an arrival. Never an upkeep turn: ``NoKey`` without a key.
+    (``ToolContext.asked_before``); such an arrival goes on the main calls of a conversation.
+    The news told once are marked told only once it spoke, as for an arrival. Never an upkeep
+    turn: ``NoKey`` without a key.
 
     ``tool_wakes`` are what tools of Domo woke him with, for a turn they woke him for
     (``tool_wakes.tool_wake_turn``, spec 5.4: no words of the person, its conversation ends with
@@ -829,7 +870,21 @@ async def prepare_turn(
     away. ``wake`` wakes Domo in the conversation of the one who asked for a request that the
     person decides in words as its approver (spec 5.1, ``ToolContext.wake``): a turn that answers
     the person's message has one, a wake's none. ``notify`` tells the core that the turn kept news
-    for someone (``ToolContext.notify``). Raises ``NoKey``."""
+    for someone (``ToolContext.notify``).
+
+    ``expiring`` is a request of the person that is about to lapse, for a turn it woke him for
+    (``starts.wake_before_expiry``: no words of theirs, its conversation ends with
+    ``EXPIRY_MARKER``): the context tells it, as data, with what he may do; he may say nothing,
+    and goes on no upkeep turn.
+
+    ``turn_reason`` is why Domo began this turn himself (``starts``, ``tool_wakes``: a plan he set
+    alone, an arrival, a decision, a tool of his), ``None`` in a turn that answers someone and in a
+    plan's turn, or an arrival, whose plans due all keep the person's words: every judged call of
+    the turn is then an idea of his with that reason, as the judge is told
+    (``ToolContext.turn_reason``, ``tools.context.idea_of``), though it stays the person's act, with
+    their rights, unless he marks it; and what he remembers is looked for from it first
+    (``recall_query``). Raises
+    ``NoKey``."""
     async with deps.session_factory() as session:
         # The catalog of this turn, with the kinds Domo opened for his tools: read once, used
         # for the whole turn (never again mid-turn).
@@ -839,12 +894,12 @@ async def prepare_turn(
             policy = on_his_own_tables(policy)
         keys = await usable_keys(session, person)
         texts = await person_texts(session, person)
-        speaker = await _speaking(session, request.speaker, deps.clock())
+        speaker = await _speaking(session, request.speaker, reply.conversation_id, deps.clock())
         if not keys:
             # A message the person wrote, or their arrival: a wake, or a plan, goes on no key.
             general = (
                 None
-                if decided is not None or due_plans or tool_wakes
+                if decided is not None or due_plans or tool_wakes or expiring is not None
                 else await upkeep_key(session)
             )
             if general is None:
@@ -893,11 +948,12 @@ async def prepare_turn(
             # A request of theirs someone else decided, which this turn is not told: whatever it
             # says, those news stay for an arrival turn (``visits``).
             news_seen = None
+        # The conversation up to the reply: what the person wrote after it was opened is read by
+        # the turn as it runs (``conversation.kept``), or by the turn after it.
         conversation = [
             seen
-            for message in messages
-            if message.id != reply.id
-            and (seen := _as_the_model_sees_it(message, actions.get(message.id, ()), requests))
+            for message in takewhile(lambda m: m.id != reply.id, messages)
+            if (seen := _as_the_model_sees_it(message, actions.get(message.id, ()), requests))
             is not None
         ]
         if decided is not None:
@@ -913,6 +969,9 @@ async def prepare_turn(
         elif tool_wakes:
             # A tool of his woke him: the same.
             conversation.append(ChatMessage("user", TOOL_MARKER))
+        elif expiring is not None:
+            # A request is about to lapse: the same.
+            conversation.append(ChatMessage("user", EXPIRY_MARKER))
         alternating = merge_consecutive_roles(conversation)
         settings = deps.settings
         history = select_history(alternating, max_chars=settings.max_history_chars)
@@ -930,7 +989,7 @@ async def prepare_turn(
             max_output_tokens=settings.max_output_tokens,
             # An arrival, a plan's turn or a tool's, may say nothing: the news told once count as
             # told once it spoke.
-            mark=arrival is None and not due_plans and not tool_wakes,
+            mark=arrival is None and not due_plans and not tool_wakes and expiring is None,
         )
         # The levers Domo chose on that key: a shorter history, shorter answers, how much of
         # his memory the turn gives him.
@@ -956,6 +1015,19 @@ async def prepare_turn(
                 reason=lesson.last_reason,
             )
             for lesson in await recent_lessons(session, now=deps.clock())
+        )
+        # What went wrong lately, for this person and in his own acts (data).
+        went_wrong = await read_or_nothing(
+            session,
+            "what went wrong",
+            lambda: went_wrong_shown(
+                session,
+                person,
+                policy_settings.time_zone,
+                now=deps.clock(),
+                on_his_own=on_his_own,
+            ),
+            (),
         )
         # The requests that wait for this person's own answer in this conversation.
         pending = await pending_for(
@@ -1031,7 +1103,7 @@ async def prepare_turn(
                 lambda: memory_and_trust_shown(
                     session,
                     person.id,
-                    recall_query(messages, reply.id),
+                    recall_query(messages, reply.id, turn_reason),
                     choices=chosen,
                     embedder=deps.embedder,
                     now=deps.clock(),
@@ -1110,12 +1182,6 @@ async def prepare_turn(
     registry: ToolRegistry = {**deps.registry, **made}
     # A tool of Domo past the ones offered is found when the model calls it.
     made_tool_named: Callable[[str], Awaitable[InternalTool | None]] | None = made_tool_finder(deps)
-    if arrival is not None and not due_plans:
-        # Nothing that changes anything in an arrival: a call of another tool is no tool's.
-        registry = {
-            name: tool for name, tool in registry.items() if tool.action_type in ARRIVAL_ACTIONS
-        }
-        made_tool_named = None
     tools = tools_for(
         role, registry, policy, person_id=person.id, rights=rights, on_his_own=on_his_own
     )
@@ -1126,7 +1192,13 @@ async def prepare_turn(
     )
     # The person's message the reply answers: none when Domo speaks first (a wake, an arrival,
     # a plan).
-    unprompted = decided is not None or arrival is not None or bool(due_plans) or bool(tool_wakes)
+    unprompted = (
+        decided is not None
+        or arrival is not None
+        or bool(due_plans)
+        or bool(tool_wakes)
+        or expiring is not None
+    )
     answered = None if unprompted else _person_message_before(messages, reply.id)
     # Their message, as it is stored: a tool keeps it as they wrote it (``ToolContext.said``).
     said = next((m.content for m in messages if m.id == answered), None)
@@ -1167,11 +1239,13 @@ async def prepare_turn(
         abilities=request.abilities,
         speaker=speaker,
         told_outside=told_outside,
+        tool_woke=bool(tool_wakes) or (decided is not None and decided.from_outside),
         due_plans=tuple(due_plans),
         # The plans due are what they asked for only when each one keeps their exact words: an
         # action of the turn may be for any of them, and one Domo made alone keeps none.
         asked_before=bool(due_plans) and all(plan.their_words for plan in due_plans),
         on_his_own=on_his_own,
+        turn_reason=turn_reason,
     )
     prepared = Prepared(
         person_id=person.id,
@@ -1200,6 +1274,7 @@ async def prepare_turn(
             keys=money.keys,
             models=money.models,
             lessons=lessons,
+            went_wrong=went_wrong,
             notes_to_tell=notes,
             arrival=arrival,
             unanswered=unanswered_in(messages),
@@ -1215,6 +1290,7 @@ async def prepare_turn(
             tool_wakes=tuple(tool_wakes),
             building=building,
             agreements=agreements,
+            expiring=expiring,
         ),
         history=history,
         tools=tools,
@@ -1229,6 +1305,7 @@ async def prepare_turn(
             to_approve=to_approve,
             steps=steps,
             waiting_for_others=for_others,
+            earlier=_before_message(messages, answered),
         ),
         max_output_tokens=max_output_tokens,
         texts=texts,

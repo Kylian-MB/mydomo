@@ -17,7 +17,7 @@ from typing import Any
 import httpx
 import pytest
 from domo_common.meanings import meaning
-from domo_core.confirmations.intent import classifier_prompt, classify_reply
+from domo_core.confirmations.intent import ShownRequest, classifier_prompt, read_replies
 from domo_core.confirmations.judge import judge_prompt
 from domo_core.conversation import prepare as conversation_prepare
 from domo_core.llm.adapters.openai_compat import OpenAICompatChat
@@ -700,7 +700,14 @@ def test_echo_key_still_gets_the_key_when_tools_are_offered(fake):
     assert fake.key in answer["choices"][0]["message"]["content"]
 
 
-# --- the classifier of the confirmations -------------------------------------------------------
+# --- the reader of the replies to requests -----------------------------------------------------
+
+
+def to_the_reader(reply: str, shown: int = 1) -> str:
+    """The one message the core's reader is given: ``shown`` requests, numbered, and the
+    person's ``reply``."""
+    requests = [{"n": n, "says": "x", "asks": "yes"} for n in range(1, shown + 1)]
+    return json.dumps({"speaker": None, "requests": requests, "before": [], "reply": reply})
 
 
 def test_the_fake_knows_the_first_line_of_the_real_classifier_prompt():
@@ -708,26 +715,36 @@ def test_the_fake_knows_the_first_line_of_the_real_classifier_prompt():
 
 
 @pytest.mark.parametrize("reply", ["yes", "no", "change"])
-def test_the_classifier_gets_yes_no_and_change_back_as_they_are(fake, reply):
-    answer = post(fake, with_tools(reply, tools=[], system=classifier_prompt())).json()
-    assert answer["choices"][0]["message"]["content"] == reply
+def test_the_reader_says_yes_no_and_change_for_each_request(fake, reply):
+    message = to_the_reader(reply)
+    answer = post(fake, with_tools(message, tools=[], system=classifier_prompt())).json()
+    assert answer["choices"][0]["message"]["content"] == f"1: {reply}"
+    message = to_the_reader(reply, shown=2)
+    answer = post(fake, with_tools(message, tools=[], system=classifier_prompt())).json()
+    assert answer["choices"][0]["message"]["content"] == f"1: {reply}\n2: {reply}"
 
 
 @pytest.mark.parametrize(
     "reply", ["oui", "Yes", "yes please", "sure", "no!", "change it", "hello", "echo-key"]
 )
-def test_the_classifier_finds_anything_else_unclear(fake, reply):
+def test_the_reader_finds_anything_else_unclear(fake, reply):
+    message = to_the_reader(reply)
     chunks = streamed_chunks(
-        post(fake, with_tools(reply, stream=True, tools=[], system=classifier_prompt()))
+        post(fake, with_tools(message, stream=True, tools=[], system=classifier_prompt()))
     )
-    assert streamed_text(chunks) == "unclear"
+    assert streamed_text(chunks) == "1: unclear"
     assert fake.key not in json.dumps(chunks)
+    # A message that is not the reader's object: unclear, alone.
+    answer = post(fake, with_tools(reply, tools=[], system=classifier_prompt())).json()
+    assert answer["choices"][0]["message"]["content"] == "unclear"
 
 
 def test_the_classifier_never_calls_a_tool(fake):
-    text = f"/tool household_invite {INVITE}"
-    chunks = streamed_chunks(post(fake, with_tools(text, stream=True, system=classifier_prompt())))
-    assert streamed_calls(chunks) == [] and streamed_text(chunks) == "unclear"
+    message = to_the_reader(f"/tool household_invite {INVITE}")
+    chunks = streamed_chunks(
+        post(fake, with_tools(message, stream=True, system=classifier_prompt()))
+    )
+    assert streamed_calls(chunks) == [] and streamed_text(chunks) == "1: unclear"
 
 
 @pytest.mark.parametrize("stream", [True, False])
@@ -737,21 +754,23 @@ def test_the_fake_classifier_says_change_before_an_amend_command(fake, stream):
     Domo the right to change the request in that turn; the main model then makes the call."""
     command = f"{CLASSIFIER_CHANGE_PREFIX} " + '{"request_id": "r1", "arguments": {}}'
     classified = post(
-        fake, with_tools(command, stream=stream, tools=[], system=classifier_prompt())
+        fake,
+        with_tools(to_the_reader(command), stream=stream, tools=[], system=classifier_prompt()),
     )
     if stream:
         chunks = streamed_chunks(classified)
-        assert streamed_calls(chunks) == [] and streamed_text(chunks) == "change"
+        assert streamed_calls(chunks) == [] and streamed_text(chunks) == "1: change"
     else:
-        assert classified.json()["choices"][0]["message"]["content"] == "change"
+        assert classified.json()["choices"][0]["message"]["content"] == "1: change"
     # The same words, to the main model: the call.
     called = post(fake, with_tools(command)).json()["choices"][0]["message"]
     assert [call["function"]["name"] for call in called["tool_calls"]] == ["confirmation_amend"]
     # Only at the start of the message: anywhere else, the classifier finds it unclear, and
     # another command is not a change.
     for text in (f"oui, {command}", f"/tool household_invite {INVITE}", "/tool confirmation_amen"):
-        answer = post(fake, with_tools(text, tools=[], system=classifier_prompt())).json()
-        assert answer["choices"][0]["message"]["content"] == "unclear", text
+        message = to_the_reader(text)
+        answer = post(fake, with_tools(message, tools=[], system=classifier_prompt())).json()
+        assert answer["choices"][0]["message"]["content"] == "1: unclear", text
 
 
 @pytest.mark.parametrize(
@@ -805,13 +824,21 @@ async def test_the_model_adapter_of_the_core_calls_the_tool_and_reads_the_result
 
 @pytest.mark.parametrize(
     ("reply", "expected"),
-    [("yes", "yes"), ("no", "no"), ("change", "change"), ("oui mais mets plutôt B", "unclear")],
+    [
+        ("yes", "approve"),
+        ("no", "refuse"),
+        ("change", "change"),
+        ("oui mais mets plutôt B", "unclear"),
+    ],
 )
-async def test_the_classifier_of_the_core_reads_the_fake(fake, reply, expected):
+async def test_the_reader_of_the_core_reads_the_fake(fake, reply, expected):
     model = OpenAICompatChat(
         base_url=fake.base_url + "/v1", token=fake.key, model="fake-1", token_limit="max_tokens"
     )
-    assert await classify_reply(model, reply) == expected
+    # Two requests shown: the reader is asked even of a phrase the code knows.
+    shown = [ShownRequest(n, "x", "yes", "judge") for n in (1, 2)]
+    readings = await read_replies(reply, shown, speaker=None, before=(), model=model)
+    assert [reading.verdict for reading in readings] == [expected, expected]
 
 
 def test_a_client_that_goes_away_is_not_an_error_but_a_bug_still_is(capfd):
@@ -1034,7 +1061,7 @@ def decided_prompt(
         result=None,
         woken=woken,
     )
-    return build_system_prompt(display_name="Owner", role="owner", can_act=True, decided=decided)
+    return build_system_prompt(display_name="Owner", role="owner", can_act=True, decided=(decided,))
 
 
 def after_a_decision(
@@ -1174,9 +1201,10 @@ def test_a_judge_prefix_is_stripped_before_the_other_rules(fake):
     assert answer["choices"][0]["message"]["content"] == "Fake reply: hello"
     answer = post(fake, body("/judge do: fine /tool household_invite {}")).json()
     assert answer["choices"][0]["message"]["content"] == "Fake reply: /tool household_invite {}"
-    # The classifier reads the person's words without the prefix too.
-    answer = post(fake, with_tools("/judge do yes", tools=[], system=classifier_prompt())).json()
-    assert answer["choices"][0]["message"]["content"] == "yes"
+    # The reader reads the person's words without the prefix too.
+    message = to_the_reader("/judge do yes")
+    answer = post(fake, with_tools(message, tools=[], system=classifier_prompt())).json()
+    assert answer["choices"][0]["message"]["content"] == "1: yes"
     # Only at the start, and only the command itself.
     for text in ("hello /judge do", "/judgement day", "/judge"):
         answer = post(fake, body(text)).json()

@@ -257,6 +257,14 @@ async def untold_decision(
         Confirmation.requester_id == person_id,
         Confirmation.decided_by.is_not(None),
         Confirmation.decided_by != person_id,
+        # A request Domo made on his own that the person it concerned decided is his news, not
+        # theirs (``confirmations.store.decided_for_him``, ruling R33).
+        ~(
+            Confirmation.by_domo
+            & Confirmation.idea_reason.is_(None)
+            & Confirmation.concerned_id.is_not(None)
+            & (Confirmation.concerned_id != Confirmation.requester_id)
+        ),
     )
     if since is not None:
         query = query.where(Confirmation.decided_at > since)

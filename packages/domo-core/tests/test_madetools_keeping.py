@@ -24,6 +24,7 @@ from domo_common.sandbox_api import RunRequest, RunResult
 from domo_core.accounts.models import Person
 from domo_core.audit.models import AuditEntry
 from domo_core.channels.turns import app_turn_deps
+from domo_core.learning.models import WentWrong
 from domo_core.madetools import build as build_module
 from domo_core.madetools.launch import HOUSE, ForWhom, launch
 from domo_core.madetools.models import (
@@ -342,7 +343,10 @@ async def test_checking_a_tool_says_which_example_gives_another_answer(session_f
         context(alex, session_factory),
         launch_deps=deps_of(session_factory, live_clock, sandbox, []),
     )
+    assert not ctx.outside_text
     told = await run("tool_check", ctx, name="double")
+    # What its program gave came into the turn (ruling R46).
+    assert ctx.outside_text
     assert told == {
         "name": "double",
         "examples": [
@@ -707,6 +711,32 @@ async def test_a_build_given_up_wakes_domo_and_one_whose_tool_was_removed_does_n
     async with chat_server.session_factory() as reader:
         ended = await reader.get(ToolBuild, removed)
     assert ended is not None and ended.state == "abandoned"
+    # He removed the tool himself: nothing went wrong, and no fact is noted for it.
+    async with chat_server.session_factory() as reader:
+        kept = [fact.subject_key for fact in await reader.scalars(select(WentWrong))]
+    assert kept == ["tool:weather"]
+
+
+async def test_an_abandoned_build_leaves_a_fact(
+    chat_server: ChatServer, sandbox: FakeSandbox, adult_chat: ChatPilot, monkeypatch
+):
+    async def noted(deps: Any, trouble: Trouble) -> None:
+        return None
+
+    monkeypatch.setattr(build_module, "wake_for_trouble", noted)
+    use(chat_server, Maker(give_up("no way to read the weather")))
+    build_id = await opened(chat_server, adult_chat.person, name="weather")
+    await run_the_pass(chat_server)
+    async with chat_server.session_factory() as reader:
+        [fact] = list(await reader.scalars(select(WentWrong)))
+    assert (fact.kind, fact.action_type, fact.subject_key) == (
+        "build_abandoned",
+        "tool.build",
+        "tool:weather",
+    )
+    assert (fact.by_person_id, fact.by_domo, fact.of_domo) == (None, False, True)
+    assert fact.reason == "no way to read the weather"
+    assert build_id is not None
 
 
 @pytest.mark.parametrize("most", [2**31, 10**18, 10**30])

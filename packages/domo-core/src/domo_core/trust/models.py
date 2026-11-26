@@ -26,8 +26,8 @@ class TrustFact(Base):
     whose turn it was noted (one ``confirmed`` fact per memory at most); ``reported_by_id`` who
     reported it, for a ``reported`` fact only. The
     three become ``None`` when what they name is deleted; the fact goes with ``person_id``'s row. A
-    fact is data, never a right, a rule or a limit: nothing of the policy, the confirmations or
-    the spending reads it."""
+    fact is data, never a right, a rule or a limit: nothing of the policy or the spending reads
+    it; the yes-judge reads it in its case (``confirmations.case``), to weigh, never as a yes."""
 
     __tablename__ = "trust_facts"
     __table_args__ = (

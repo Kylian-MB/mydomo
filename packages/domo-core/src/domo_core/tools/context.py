@@ -23,7 +23,10 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Final, Literal, Protocol, runtime_checkable
 from uuid import UUID
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from domo_core.accounts.models import Person
+from domo_core.accounts.sessions import is_active
 from domo_core.conversation.channel import NOBODY_LISTENS, Abilities
 from domo_core.conversation.speaker import Speaker
 from domo_core.db import SessionFactory
@@ -34,9 +37,9 @@ from domo_core.llm.types import JsonObject, ToolDefinition
 from domo_core.memory.embedder import NO_EMBEDDER, Embedder
 from domo_core.policy.actions import DescribedAction, FactValue, Present
 from domo_core.policy.asks import Ask, Asked
-from domo_core.policy.catalog import PolicyTables, is_silent
-from domo_core.policy.rights import NO_RIGHTS, Approver, RightsTable
-from domo_core.policy.roles import Actor, Role, domo_actor
+from domo_core.policy.catalog import HOUSE_SET, PROGRAM_RUN, PolicyTables, is_made, is_silent
+from domo_core.policy.rights import NO_RIGHTS, Approver, RightsTable, load_rights
+from domo_core.policy.roles import Actor, Role, as_role, domo_actor
 from domo_core.prompts import DuePlan
 from domo_core.texts.view import REFERENCE, Texts
 
@@ -55,8 +58,8 @@ if TYPE_CHECKING:
 
 # Why arguments were rejected: they make no sense (``invalid``), they name more than one person
 # or thing (``ambiguous``) or nothing that exists (``not_found``), or a value is too long. A call
-# that is right but that the household's state refuses, whatever the rights (the last key of the
-# household, which nobody could talk without), or that a rule of the household or of the tool
+# that is right but that the household's state refuses, whatever the rights (an address the owner
+# closed, reached by a request run without his yes), or that a rule of the household or of the tool
 # refuses (a fact of trust noted in a turn that may not note it, say), is ``not_possible``: no
 # mistake of the model's form, so it never makes the request take a stronger model (``chat.agent``).
 InvalidCode = Literal["invalid", "ambiguous", "not_found", "too_long", "not_possible"]
@@ -72,6 +75,23 @@ WakeStarter = Callable[[UUID, "DecideOutcome | AmendOutcome", "ActionRecord | No
 # (``conversation.visits.news_for``): a turn for them may be due now
 # (``conversation.starts.news_kept``). It returns at once and never raises.
 Notify = Callable[[UUID], None]
+
+
+# The longest reason Domo keeps for an idea of his (``MessageAction.idea_reason``).
+MAX_IDEA_REASON_LENGTH: Final = 200
+
+
+@dataclass(frozen=True)
+class OwnIdea:
+    """An act that is the assistant's own idea, as the yes-judge is told of it
+    (``conversation.execution.consult_the_judge``): his ``reason`` for it, the person whose words
+    it was born of (``born_of``, ``None`` when nobody's), and whether the person concerned lacks
+    the right to do it themselves (``lacks_the_right``). Data, never instructions: nothing in the
+    reason moves who asks or whose private memories the case reads."""
+
+    reason: str
+    born_of: UUID | None = None
+    lacks_the_right: bool = False
 
 
 class InvalidArguments(Exception):
@@ -128,6 +148,20 @@ class ToolOutcome:
     card_once: JsonObject | None = None
     confirmation_id: UUID | None = None
     recorded_as: str | None = None
+
+
+@dataclass
+class OutsideText:
+    """The one mutable mark of a turn that text of a program came into it (``raised``), shared by
+    its ``ToolContext`` and every copy of it (``ToolContext.outside_text``)."""
+
+    raised: bool = False
+
+
+def brings_outside_text(action_type: str) -> bool:
+    """Whether what a call of this type gives back is a program's output or error text: a tool
+    Domo made, or a program he runs by hand."""
+    return is_made(action_type) or action_type == PROGRAM_RUN
 
 
 @dataclass
@@ -207,7 +241,11 @@ class ToolContext:
     ``None`` in a turn without a message of theirs (a wake, an arrival), outside a turn, and when
     a stored request runs after a yes (``confirmations.service``) or a chain is continued in a
     later turn (``tools.chain``): the message of the turn that made the call is not kept, and it
-    is never guessed.
+    is never guessed. ``said_later`` are the messages they wrote while the turn ran, that it read
+    (spec 11.3), each as it is stored; never set without ``said``. Their messages of the turn
+    (``said_messages``) are checked for an exact passage one by one, never across two (ruling
+    R62: ``tools.notes.exact_text_in``); what they said in the turn as a whole, as a reason, is
+    ``said_in_turn``.
 
     ``told_outside`` says that the turn was given words that are neither the person's nor
     Domo's own: a note someone left them, a request of someone else that waits for their yes,
@@ -244,6 +282,14 @@ class ToolContext:
     conversation is still the person's (``person``, the owner: what he says there is said to
     them, and a request that waits there waits for them), but every call of the turn is judged
     with Domo's own rights (``judged_actor_of``), and what he launches there is for the house.
+
+    ``own_idea`` is what Domo marked as his own idea for the next action he calls in this answer
+    (``act_on_my_own``): that action is judged with his own rights and what he knows. The next
+    call that changes something takes it (``take_own_idea``), used up or not, as ``ask_more``.
+    ``turn_reason`` is why Domo began this turn himself, when he did (``None`` otherwise): what he
+    does there is his idea (``idea_of``). ``judged_as`` is, while a call runs, who it was judged
+    as (``judged_actor_of``: Domo for an idea of his), set by whoever runs it and set back after
+    (``None`` otherwise): a tool that records who acted reads it (``acting``).
     """
 
     session_factory: SessionFactory
@@ -273,6 +319,8 @@ class ToolContext:
     abilities: Abilities = NOBODY_LISTENS
     speaker: Speaker | None = None
     told_outside: bool = False
+    tool_woke: bool = False
+    outside: OutsideText = field(default_factory=lambda: OutsideText(), repr=False)
     due_plans: tuple[DuePlan, ...] = ()
     asked_before: bool = False
     embedder: Embedder = NO_EMBEDDER
@@ -280,8 +328,25 @@ class ToolContext:
     made_tool_named: "Callable[[str], Awaitable[InternalTool | None]] | None" = None
     launch_deps: "LaunchDeps | None" = None
     on_his_own: bool = False
+    own_idea: OwnIdea | None = None
+    turn_reason: str | None = None
+    judged_as: Actor | None = None
     # Never in a representation of the context (a log, an error): someone's own words.
     said: str | None = field(default=None, repr=False)
+    said_later: tuple[str, ...] = field(default=(), repr=False)
+
+    @property
+    def said_messages(self) -> tuple[str, ...]:
+        """The person's messages of this turn, each on its own: ``said``, then ``said_later``
+        (none without ``said``)."""
+        return () if self.said is None else (self.said, *self.said_later)
+
+    @property
+    def said_in_turn(self) -> str | None:
+        """What the person said in this turn as a whole, their messages one after the other
+        (``None`` without ``said``): their own words, as the reason of what they undo or
+        complain about. Never read for an exact passage (``said_messages``)."""
+        return "\n\n".join(self.said_messages) if self.said is not None else None
 
     @property
     def turn_subject(self) -> Actor:
@@ -293,35 +358,82 @@ class ToolContext:
         return domo_actor() if self.on_his_own else self.actor
 
     @property
-    def may_act_for_the_house(self) -> bool:
-        """Whether what this turn sets for the house (an agreement that lasts, a trigger that
-        launches a tool for the house) may be set here: by the owner, or by Domo in a turn he
-        acts in on his own. Anyone else sets them for themselves: a launch for the house is judged
-        with Domo's own rights, and his own yes answers its cost (Task 9, R15)."""
-        return self.on_his_own or self.person.role == "owner"
+    def acting(self) -> Actor:
+        """Who the call that runs was judged as (``judged_as``), else whose turn it is
+        (``turn_subject``): whom a tool records as having acted, and audits."""
+        return self.turn_subject if self.judged_as is None else self.judged_as
+
+    async def may_set_for_the_house(self, session: AsyncSession) -> bool:
+        """Whether what this call sets for the house (an agreement that lasts, a trigger that
+        launches a tool for the house) may be set at once (ruling R17, Task 27): by Domo in a turn
+        he acts in on his own, by the person of the turn when the rights in force allow them
+        ``house.set`` (the owner by default, anyone a right gives it to), or after the yes of
+        someone they allow it (``approved_by``, in the household now). Anyone else's call waits
+        for the owner's yes. A launch for the house is judged with Domo's own rights, and his own
+        yes answers its cost (Task 9, R15). The right is read for whoever sets it, Domo too
+        (``_sets_at_once``): a deny the owner wrote refuses it (``InvalidArguments``
+        ``not_possible``); a right that asks first, names an approver or sets a limit is no "at
+        once": it waits for the owner's yes as without a right, and that yes then sets it, his
+        own as a person's (re-review R2). Reads only."""
+        rights = await load_rights(session)
+        setter = domo_actor() if self.on_his_own else self.actor
+        if _sets_at_once(rights, setter, self.policy):
+            return True
+        if self.approved_by is None:
+            return False
+        # A person's own yes is not someone else's; on his own, the person of the conversation
+        # (the owner) who said yes to his request is.
+        if self.approved_by == self.person.id and not self.on_his_own:
+            return False
+        approver = await session.get(Person, self.approved_by)
+        if approver is None or not is_active(approver, self.clock()):
+            return False
+        who = Actor(approver.id, as_role(approver.role))
+        return _sets_at_once(rights, who, self.policy, refuses=False)
 
     def take_ask_more(self) -> tuple[Ask, str] | None:
         """What Domo asked for the next action (the ask and his reason), and forget it."""
         raised, self.ask_more = self.ask_more, None
         return raised
 
+    def take_own_idea(self) -> OwnIdea | None:
+        """What Domo marked as his own idea for the next action, and forget it."""
+        taken, self.own_idea = self.own_idea, None
+        return taken
+
     @property
     def they_asked(self) -> bool:
         """Whether what Domo does in this turn is taken as a request the person made: the turn
         answers a message of theirs (``reply_message_id``), or a plan due keeps the exact words
-        they asked it with (``asked_before``), and it was given nothing from outside
-        (``told_outside``). The owner's rule "what is asked for and understood is done" is about
+        they asked it with (``asked_before``), and no text from outside is in it
+        (``outside_text``: words told to the turn, or what a tool he made or a program gave in
+        it, from then on). The owner's rule "what is asked for and understood is done" is about
         such a request: a judge that does not answer asks nothing then, and a yes otherwise
         (``confirmations.judge.fallback``)."""
-        return (self.reply_message_id is not None or self.asked_before) and not self.told_outside
+        return (self.reply_message_id is not None or self.asked_before) and not self.outside_text
 
     @property
     def answers_them(self) -> bool:
         """Whether the reply of this turn is Domo's own answer to a message of the person, with
-        nothing from outside in the turn (``Message.own_answer``); the judge reads any other
-        reply as relayed. A turn a plan woke him for answers no message, even when the
-        plan keeps what they asked (``asked_before``)."""
-        return self.reply_message_id is not None and not self.told_outside
+        no text from outside in the turn (``outside_text``, ``Message.own_answer``); the judge
+        reads any other reply as relayed. A turn a plan woke him for answers no message, even
+        when the plan keeps what they asked (``asked_before``)."""
+        return self.reply_message_id is not None and not self.outside_text
+
+    @property
+    def outside_text(self) -> bool:
+        """Whether text nobody of the house said is in this turn, for the tools that move a
+        person's trust (``trust_note``, ``trust_correct``, ``memory_change`` with ``confirmed``):
+        words told to the turn (``told_outside``), a turn a tool or a program woke him for, which
+        carries what it gave (``tool_woke``), or what a tool he made, or a program, said came into
+        it (``outside``, shared by every copy of the context: ``raise_outside_text``). What a tool
+        that only reads what he knows or holds gave is not in it."""
+        return self.told_outside or self.tool_woke or self.outside.raised
+
+    def raise_outside_text(self) -> None:
+        """Say that text of a program came into this turn, for good: in this context and in every
+        copy of it (``dataclasses.replace`` keeps the same ``outside``)."""
+        self.outside.raised = True
 
     @property
     def someone_else_said_yes(self) -> bool:
@@ -355,6 +467,26 @@ class ToolContext:
         conversation: it speaks to them (``.yours``)."""
         reader = "on_request" if self.someone_else_said_yes else "yours"
         return f"action.card.done.{action}.{reader}"
+
+
+# What Domo reads with something set for the house on the yes of someone the rights allow it, for
+# a person they do not (ruling R17): the owner may let it hold for them from now on.
+HOUSE_SET_ON_A_YES: Final = (
+    "set for the house on the owner's yes: if he wants this person to set such things for the "
+    "house from now on without asking him, he may say so in his words, and the rights tools write "
+    "it (a right on house.set)"
+)
+
+
+async def set_on_a_yes(session: AsyncSession, ctx: ToolContext) -> bool:
+    """Whether what this call sets for the house is set on someone else's yes (``approved_by``)
+    for a person of the conversation whom the rights in force do not allow ``house.set``: the
+    result then tells Domo that the owner may let it hold (``HOUSE_SET_ON_A_YES``). Reads only."""
+    if ctx.approved_by is None or ctx.approved_by == ctx.person.id:
+        return False
+    rights = await load_rights(session)
+    person = Actor(ctx.person.id, as_role(ctx.person.role))
+    return not rights.resolve(person, HOUSE_SET, ctx.policy).allowed
 
 
 @runtime_checkable
@@ -419,16 +551,75 @@ class ActsAsDomo(Protocol):
     acts_as_domo: Literal[True]
 
 
-def judged_actor_of(tool: InternalTool, ctx: ToolContext) -> Actor:
+def judged_actor_of(tool: InternalTool, ctx: ToolContext, idea: OwnIdea | None = None) -> Actor:
     """Who a call of ``tool`` in ``ctx`` is judged as, by the barrier, the limits, the yes-judge
     and the audit, wherever it is asked (``conversation.execution``, ``confirmations``): Domo
     himself (``policy.roles.domo_actor``) for a tool whose every call is his own act
-    (``ActsAsDomo``) and for every call of a turn he acts in on his own
-    (``ToolContext.on_his_own``); the person who asks (``ctx.actor``, as read again before the
-    call) otherwise. The one source of it."""
-    if ctx.on_his_own or isinstance(tool, ActsAsDomo):
+    (``ActsAsDomo``), for every call of a turn he acts in on his own
+    (``ToolContext.on_his_own``) and for a call he marked as his own idea (``idea``, the mark
+    taken: ``ToolContext.take_own_idea``); the person who asks (``ctx.actor``, as read again
+    before the call) otherwise. The one source of it."""
+    if ctx.on_his_own or idea is not None or isinstance(tool, ActsAsDomo):
         return domo_actor()
     return ctx.actor
+
+
+def acts_alone(ctx: ToolContext) -> bool:
+    """Whether what Domo keeps, plans or notes in this turn is his own, not the person's: a turn he
+    acts in on his own (``ToolContext.on_his_own``), or a turn that answers no message of the
+    person and in which no plan due keeps their words (a review, a turn he started, a wake):
+    nobody asked for what he does there (``not they_asked and reply_message_id is None``)."""
+    return ctx.on_his_own or (not ctx.they_asked and ctx.reply_message_id is None)
+
+
+def idea_of(ctx: ToolContext, taken: OwnIdea | None) -> OwnIdea | None:
+    """Whose idea a call is, as the judge is told: the mark Domo put on it (``taken``), else the
+    reason of a turn he began himself (``ToolContext.turn_reason``), else his idea with no reason
+    in a turn he acts in on his own; ``None`` for what a person asked."""
+    if taken is not None:
+        return taken
+    if ctx.turn_reason is not None:
+        return OwnIdea(ctx.turn_reason)
+    if ctx.on_his_own:
+        return OwnIdea("")
+    return None
+
+
+# What the model is told when the owner denied setting something for the house to whoever sets it.
+_HOUSE_SET_DENIED: Final = (
+    "the owner does not let this be set for the house by whoever asks it now: nothing was done"
+)
+
+
+def _sets_at_once(
+    rights: RightsTable, actor: Actor, policy: PolicyTables, *, refuses: bool = True
+) -> bool:
+    """Whether ``actor`` sets something for the house at once (``house.set``, read for them,
+    Domo too): a right that lets them with nothing asked first, no approver and no limit. Domo
+    with no right of his own on it does, in a turn of his own (ruling R17). A deny the owner
+    wrote for them raises ``InvalidArguments`` ``not_possible`` (``refuses``), else counts as
+    not at once."""
+    if actor.subject == "domo":
+        his = next((r for r in rights.rights if r.for_domo and r.action_type == HOUSE_SET), None)
+        if his is None:
+            return True
+        if his.access == "deny":
+            if refuses:
+                raise InvalidArguments("not_possible", _HOUSE_SET_DENIED)
+            return False
+        asks = his.ask in ("yes", "explicit_yes", "proof")
+        return not asks and his.limit is None and his.approver in (None, "self")
+    if rights.denied_on_purpose(actor, HOUSE_SET):
+        if refuses:
+            raise InvalidArguments("not_possible", _HOUSE_SET_DENIED)
+        return False
+    resolved = rights.resolve(actor, HOUSE_SET, policy)
+    return (
+        resolved.allowed
+        and resolved.ask is None
+        and resolved.limit is None
+        and resolved.approver in (None, "self")
+    )
 
 
 @dataclass(frozen=True)
@@ -437,18 +628,26 @@ class WaitsForAYes:
     it asks, who asked it and why (``asked``). ``domo_asks``: the request is Domo's own, waiting
     for ``approver`` in the person's conversation (``Confirmation.by_domo``, ruling R17: an
     opening of his that takes the owner's yes, in the owner's own turn), so that the owner answers
-    it there, by the button or in words, as the approver of a request he did not make himself."""
+    it there, by the button or in words, as the approver of a request he did not make himself.
+
+    ``judge_first``: the yes is the person's own, for a cost within their limit (spec part 12): the
+    yes-judge weighs it first, with ``cost`` (the amount, the tool, the operation, their
+    agreements on it and their own earlier spendings of the kind), and a usual one runs without
+    it (``conversation.execution.handle_tool_call``)."""
 
     approver: Approver
     asked: Asked
     domo_asks: bool = False
+    judge_first: bool = False
+    cost: JsonObject | None = None
 
 
 @runtime_checkable
 class AsksItsYes(Protocol):
     """A tool whose call may carry the yes of a stop (a tool of Domo's called with
-    ``yes_for``, ``madetools.offered``): such a call is never judged, and always waits for that
-    yes, asked as the stop says (``conversation.execution.handle_tool_call``)."""
+    ``yes_for``, ``madetools.offered``): such a call waits for that yes, asked as the stop says
+    (``conversation.execution.handle_tool_call``); only the person's own yes for a cost
+    (``WaitsForAYes.judge_first``) is weighed by the judge first."""
 
     async def waits_for(self, arguments: JsonObject, ctx: ToolContext) -> WaitsForAYes | None:
         """What the call waits for, when it carries a yes; ``None`` for any other call. Reads
@@ -460,10 +659,12 @@ class AsksItsYes(Protocol):
 class AsksWhomItsYes(Protocol):
     """A tool whose call, when a yes is asked before it (by the yes-judge or a rule of the owner),
     may wait for someone else's yes than the person's own (ruling R24: reopening an address the
-    owner closed, in anyone's turn but his, waits for his yes as Domo's request)."""
+    owner closed, in anyone's turn but his, waits for his yes as Domo's request; Task 27: a house
+    account the owner removed, asked again, waits for his yes, the request staying the person's)."""
 
     async def whose_yes(self, arguments: JsonObject, ctx: ToolContext) -> Approver | None:
-        """Whose yes such a request waits for, as Domo's own (``WaitsForAYes.domo_asks``);
+        """Whose yes such a request waits for: as Domo's own (``WaitsForAYes.domo_asks``) for a
+        tool whose every call is his act (``ActsAsDomo``), else as the person's own request;
         ``None`` for the usual. Reads only."""
         ...
 

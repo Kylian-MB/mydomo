@@ -13,12 +13,16 @@ rights of now. A launch for the house wakes him in the owner's conversation, on 
 (``on_his_own``: a wake ``madetools.handover`` reads from ``made_tool_runs.for_house``, or from the
 wakes a chain of launches for the house gathered): nobody asked, so every call of that turn is
 judged with his own rights (``tools.context.ToolContext.on_his_own``,
-``conversation.execution.judged_actor_of``), what is about the owner's own things is not his by
-default there (``policy.catalog.NOT_ON_HIS_OWN``), and what he launches there is for the house. What
+``conversation.execution.judged_actor_of``), what is about the owner's own profile, texts,
+devices seen, nicknames and spending is not his by default there (``policy.catalog.NOT_ON_HIS_OWN``:
+his memory, plans and chains are his own), and what he launches there is for the house. What
 he says there is said to the owner, whose conversation it is. The same wake of the house tells him,
 on his own, that one of his tools is in trouble (``madetools.troubles``: set aside, or a build
 abandoned, with why and the last error its program said, as data), so that he looks at it,
 corrects it, goes back a version or leaves it.
+
+Nobody spoke in such a turn, and the judge is told why Domo acts: the tools that woke him, by
+name (``tools_reason``; see ``conversation.starts``, "Nobody spoke").
 """
 
 import asyncio
@@ -36,13 +40,20 @@ from domo_core.audit.log import append_audit
 from domo_core.chat.store import ConversationStore
 from domo_core.conversation.listeners import Fanout
 from domo_core.conversation.prepare import NoKey, TurnDeps, made_tool_deps, prepare_turn
-from domo_core.conversation.starts import notifier, open_reply, take_back, unasked
+from domo_core.conversation.starts import notifier, open_reply, reason_of, take_back, unasked
 from domo_core.conversation.turn import Turn
 from domo_core.madetools.handover import WAKE_DROPPED, deliver_runs
 from domo_core.prompts import ToolWake
 from domo_core.upkeep import UpkeepPass
 
 logger = logging.getLogger(__name__)
+
+
+def tools_reason(wakes: Sequence[ToolWake]) -> str:
+    """Why Domo acts in a turn tools of his woke him for, as the judge is told it
+    (``prepare_turn``'s ``turn_reason``): their names, each once, in order of name; never what
+    they say."""
+    return reason_of("a tool of yours woke you: " + ", ".join(sorted({w.tool for w in wakes})))
 
 
 async def tool_wake_turn(
@@ -122,6 +133,7 @@ async def _tool_wake(
                 notify=notifier(deps),
                 tool_wakes=tuple(wakes),
                 on_his_own=on_his_own,
+                turn_reason=tools_reason(wakes),
             )
     finally:
         if turn is None or turn.blocked is not None:

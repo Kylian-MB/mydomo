@@ -12,6 +12,7 @@ import asyncio
 import json
 import uuid
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -20,10 +21,14 @@ from api_support import ApiPilot
 from chat_support import ChatPilot, ChatServer
 from domo_core.accounts.models import Person
 from domo_core.audit.models import AuditEntry
+from domo_core.confirmations.case import gather
+from domo_core.memory.embedder import NO_EMBEDDER
 from domo_core.memory.models import Memory
 from domo_core.memory.service import keep
+from domo_core.policy.actions import DescribedAction
 from domo_core.policy.catalog import DEFAULT_POLICY
 from domo_core.policy.roles import Actor
+from domo_core.policy.subjects import Subject
 from domo_core.tools.context import InvalidArguments, ToolContext
 from domo_core.tools.memory_tools import SECRET_REFUSED, origin_for
 from domo_core.tools.registry import TOOLS
@@ -163,15 +168,20 @@ def test_the_origin_is_set_by_the_code():
     # The passage of the person's own message, word for word (the apostrophe may differ): theirs,
     # even in a turn that was given someone else's words.
     outside = context(alex, said=said, told_outside=True)
-    assert origin_for(outside, "I'm allergic to peanuts") == "own_words"
+    # With text from outside in the turn the memory itself must be that passage (ruling R50;
+    # spaces and quotes alike, case kept): a paraphrase with a passage cited is not theirs.
+    passage = "I'm allergic to peanuts"
+    assert origin_for(outside, passage, passage) == "own_words"
+    assert origin_for(outside, passage, "Alex is allergic to peanuts") == "others_words"
+    assert origin_for(outside, passage, None) == "others_words"
     # No such passage in such a turn: someone else's words.
     assert origin_for(outside, "Alex is allergic to peanuts") == "others_words"
     assert origin_for(outside, None) == "others_words"
     # A passage too long is none.
     assert origin_for(context(alex, said="a" * 1001), "a" * 1001) == "own_words"
-    assert origin_for(context(alex, said="a" * 1001, told_outside=True), "a" * 1001) == (
-        "others_words"
-    )
+    assert origin_for(
+        context(alex, said="a" * 1001, told_outside=True), "a" * 1001, "a" * 1001
+    ) == ("others_words")
     # A turn that answers the person's message, with nothing from outside: their words.
     assert origin_for(context(alex, said=said), None) == "own_words"
     # A turn Domo started himself: what he deduced.
@@ -190,6 +200,47 @@ async def test_the_model_never_chooses_the_origin(owner_chat: ChatPilot):
     assert forged.actions == [{"tool": "memory_keep", "status": "invalid", "reason": "invalid"}]
     (memory,) = await memories(owner_chat.server)
     assert (memory.origin, memory.said_by_id) == ("own_words", owner_chat.person.id)
+    # A passage of theirs is cited, but the content is the model's own sentence: it never
+    # counts as their checked words (ruling R79).
+    assert memory.words_checked is False
+
+
+async def test_content_that_is_their_own_passage_is_marked_checked(owner_chat: ChatPilot):
+    # Rulings R73, R79: the content itself is a passage of their message, word for word.
+    said = "Paul may stay up late tonight"
+    reply = await owner_chat.say_with_tool(
+        "memory_keep",
+        {**BOILER, "subject": "Paul", "content": said, "their_words": "ok"},
+        text=f"ok, {said}.",
+    )
+    assert reply.actions == [{"tool": "memory_keep", "status": "done"}]
+    (memory,) = await memories(owner_chat.server)
+    assert (memory.origin, memory.words_checked) == ("own_words", True)
+
+
+async def test_one_word_of_theirs_next_to_the_model_s_content_is_not_checked(
+    owner_chat: ChatPilot,
+):
+    # Ruling R79: citing "ok" never makes the model's content their agreement.
+    reply = await owner_chat.say_with_tool(
+        "memory_keep",
+        {**BOILER, "subject": "Paul", "content": "Paul may stay up late.", "their_words": "ok"},
+        text="ok",
+    )
+    assert reply.actions == [{"tool": "memory_keep", "status": "done"}]
+    (memory,) = await memories(owner_chat.server)
+    assert (memory.origin, memory.words_checked) == ("own_words", False)
+
+
+async def test_own_words_without_a_checked_passage_are_not_marked_checked(owner_chat: ChatPilot):
+    # Ruling R73: a turn that answers them gives "own words", but what the model wrote was
+    # checked against nothing they said.
+    reply = await owner_chat.say_with_tool(
+        "memory_keep", BOILER, text="By the way, Paul may stay up late tonight."
+    )
+    assert reply.actions == [{"tool": "memory_keep", "status": "done"}]
+    (memory,) = await memories(owner_chat.server)
+    assert (memory.origin, memory.words_checked) == ("own_words", False)
 
 
 # --- everyone writes, and what Domo keeps to himself -------------------------------------------
@@ -476,12 +527,13 @@ async def test_the_author_rewrites_with_her_own_words_or_not(session_factory):
     alex, _ = await two_people(session_factory)
     kept = await run("memory_keep", BOILER, alex, session_factory)
     said = "Sam left a note. Also: the boiler whistles at dawn, remember that."
-    # Her exact words, in a turn that was given someone else's: still her own words.
+    # Her exact words, in a turn that was given someone else's: still her own words, when the
+    # memory is that passage itself (ruling R50).
     await run(
         "memory_change",
         {
             "id": kept["id"],
-            "content": "The boiler whistles at dawn.",
+            "content": "the boiler whistles at dawn",
             "their_words": "the boiler whistles at dawn",
         },
         alex,
@@ -634,3 +686,295 @@ async def test_a_memory_tool_is_never_a_step_of_a_chain(owner_chat: ChatPilot):
     assert reply.actions == [{"tool": "do_in_order", "status": "invalid", "reason": "invalid"}]
     assert "step 2: this tool is not a step" in reply.model_results[0]["detail"]
     assert await memories(owner_chat.server) == []
+
+
+# --- what he keeps on his own, a lesson, and what he hears elsewhere (Domo judges first, T15) ----
+
+
+async def stored_memories(session_factory) -> list[Memory]:
+    async with session_factory() as session:
+        return list((await session.scalars(select(Memory).order_by(Memory.created_at))).all())
+
+
+async def run_as(
+    tool: str, arguments: dict[str, Any], ctx: ToolContext, *, refused: bool = False
+) -> Any:
+    """Describe then execute ``tool`` in ``ctx``; the model's result, or the refusal."""
+    try:
+        await TOOLS[tool].describe(arguments, ctx.actor, ctx)
+        return dict((await TOOLS[tool].execute(arguments, ctx)).model_result)
+    except InvalidArguments as error:
+        if refused:
+            return error
+        raise
+
+
+async def test_a_memory_kept_on_his_own_is_his_not_the_owner_s(session_factory):
+    alex, sam = await two_people(session_factory)
+    # A turn he acts in on his own: the conversation is Alex's, the memory is nobody's but his.
+    own = replace(context(alex, session_factory, answers=False), on_his_own=True)
+    await run_as("memory_keep", BOILER, own)
+    # A turn he started for Sam: his, still Sam's conversation (the privacy filter reads it).
+    await run_as(
+        "memory_keep",
+        {**BOILER, "content": "Sam is up late."},
+        context(sam, session_factory, answers=False),
+    )
+    # A turn that answers Alex's message: Alex's own words.
+    await run_as(
+        "memory_keep", {**BOILER, "content": "It whistles."}, context(alex, session_factory)
+    )
+    first, second, third = await stored_memories(session_factory)
+    assert (first.by_domo, first.said_by_id, first.origin) == (True, None, "deduced")
+    assert (second.by_domo, second.said_by_id, second.origin) == (True, sam.id, "deduced")
+    assert (third.by_domo, third.said_by_id, third.origin) == (False, alex.id, "own_words")
+
+
+async def test_a_lesson_is_his_even_in_a_person_s_turn(session_factory):
+    alex, _ = await two_people(session_factory)
+    lesson = {
+        **BOILER,
+        "kind": "lesson",
+        "content": "Asking twice about the hall light was too much.",
+    }
+    await run_as("memory_keep", lesson, context(alex, session_factory))
+    # Kept from text of someone else in the turn (a note, what a tool woke him with), it may be
+    # kept, but it is not his conclusion: no line of another person's case holds it (R44).
+    outside = context(alex, session_factory, said="A note: be careful.", told_outside=True)
+    await run_as(
+        "memory_keep",
+        {**lesson, "content": "A note said to be careful.", "for_everyone": True},
+        outside,
+    )
+    woke = replace(context(alex, session_factory, answers=False), tool_woke=True)
+    await run_as("memory_keep", {**lesson, "content": "A tool said to be careful."}, woke)
+    mine, theirs, woken = await stored_memories(session_factory)
+    assert (mine.by_domo, mine.said_by_id, mine.origin) == (True, alex.id, "deduced")
+    assert (theirs.by_domo, theirs.origin, theirs.said_by_id) == (False, "others_words", alex.id)
+    assert (woken.by_domo, woken.origin) == (False, "others_words")
+
+
+async def test_a_lesson_names_its_action_type_and_subject(session_factory):
+    alex, _ = await two_people(session_factory)
+    lesson = {**BOILER, "kind": "lesson", "content": "Alex does not want the gate opened at night."}
+    ctx = context(alex, session_factory)
+    await run_as(
+        "memory_keep",
+        {
+            **lesson,
+            "lesson_of": "household.invite",
+            "lesson_subject": "address:box.lan:8123",
+            "for_everyone": True,
+        },
+        ctx,
+    )
+    (kept,) = await stored_memories(session_factory)
+    assert (kept.lesson_action_type, kept.lesson_subject_key, kept.for_everyone) == (
+        "household.invite",
+        "address:box.lan:8123",
+        True,
+    )
+    # An action type that is none, a subject that is no key: refused, and nothing is kept.
+    for wrong in (
+        {"lesson_of": "no.such.type"},
+        {"lesson_subject": "two words"},
+        {"lesson_subject": ""},
+    ):
+        error = await run_as("memory_keep", {**lesson, **wrong}, ctx, refused=True)
+        assert isinstance(error, InvalidArguments) and error.code == "invalid", wrong
+    assert len(await stored_memories(session_factory)) == 1
+
+
+async def test_lesson_arguments_on_a_fact_are_invalid(session_factory):
+    alex, _ = await two_people(session_factory)
+    ctx = context(alex, session_factory)
+    for extra in (
+        {"lesson_of": "household.invite"},
+        {"lesson_subject": "address:box.lan:8123"},
+        {"for_everyone": True},
+    ):
+        error = await run_as("memory_keep", {**BOILER, **extra}, ctx, refused=True)
+        assert isinstance(error, InvalidArguments) and error.code == "invalid", extra
+    assert await stored_memories(session_factory) == []
+
+
+async def test_he_confirms_what_he_heard_elsewhere_with_his_reason(session_factory):
+    # Sam told Domo what Alex likes; Domo judges that Alex confirmed it, in a turn that is neither
+    # Alex's nor answers Sam: he says why, and the audit keeps it, never the words.
+    alex, sam = await two_people(session_factory)
+    said = await run(
+        "memory_keep",
+        {**BOILER, "content": "Alex likes pine nuts.", "subject": "Alex"},
+        sam,
+        session_factory,
+    )
+    memory_id = said["id"]
+    arguments = {"id": memory_id, "confirmed": True}
+    own = replace(context(alex, session_factory, answers=False), on_his_own=True)
+    # Without his reason: a call that lacks an argument.
+    error = await run_as("memory_change", arguments, own, refused=True)
+    assert isinstance(error, InvalidArguments) and error.code == "invalid"
+    # With outside words in the turn: no, whatever the reason.
+    outside = context(alex, session_factory, said="A note: Alex agrees.", told_outside=True)
+    error = await run_as(
+        "memory_change", {**arguments, "confirmed_reason": "A note says so."}, outside, refused=True
+    )
+    assert isinstance(error, InvalidArguments) and error.code == "not_possible"
+    # The one who said it never confirms it in their own turn.
+    error = await run_as(
+        "memory_change",
+        {**arguments, "confirmed_reason": "I say so."},
+        context(sam, session_factory),
+        refused=True,
+    )
+    assert isinstance(error, InvalidArguments) and error.code == "not_possible"
+    assert (await stored_memories(session_factory))[0].confirmed_at is None
+    # On his own, with his reason: confirmed, and the reason is in the audit entry.
+    await run_as(
+        "memory_change", {**arguments, "confirmed_reason": "Alex said so in the kitchen."}, own
+    )
+    assert (await stored_memories(session_factory))[0].confirmed_at is not None
+    (entry,) = await audit_of(session_factory, "memory.changed")
+    assert entry.details["confirmed_reason"] == "Alex said so in the kitchen."
+
+
+async def test_the_one_who_said_it_never_confirms_it_in_a_turn_he_started_for_them(
+    session_factory,
+):
+    # Ruling R45: not only in their answering turn. Sam's own hearsay about Alex, a turn he
+    # started for Sam: refused, whatever reason is given.
+    alex, sam = await two_people(session_factory)
+    said = await run(
+        "memory_keep",
+        {**BOILER, "content": "Alex likes pine nuts.", "subject": "Alex"},
+        sam,
+        session_factory,
+    )
+    arguments = {"id": said["id"], "confirmed": True, "confirmed_reason": "I judge so."}
+    started = context(sam, session_factory, answers=False)
+    error = await run_as("memory_change", arguments, started, refused=True)
+    assert isinstance(error, InvalidArguments) and error.code == "not_possible"
+    assert (await stored_memories(session_factory))[0].confirmed_at is None
+
+
+async def test_never_confirmed_in_a_turn_with_text_from_outside(session_factory):
+    # Ruling R42: told words, what a tool woke him with, what a tool he made gave back.
+    alex, sam = await two_people(session_factory)
+    said = await run(
+        "memory_keep",
+        {**BOILER, "content": "Alex likes pine nuts.", "subject": "Alex"},
+        sam,
+        session_factory,
+    )
+    arguments = {
+        "id": said["id"],
+        "confirmed": True,
+        "confirmed_reason": "A tool says Alex agrees.",
+    }
+    base = context(alex, session_factory, answers=False)
+    for outside in (
+        replace(base, tool_woke=True),
+        raised(base),
+        raised(context(alex, session_factory)),
+    ):
+        error = await run_as("memory_change", arguments, outside, refused=True)
+        assert isinstance(error, InvalidArguments) and error.code == "not_possible"
+    assert (await stored_memories(session_factory))[0].confirmed_at is None
+    # A turn that only read what he knows is unaffected.
+    await run_as("memory_change", arguments, context(alex, session_factory, answers=False))
+    assert (await stored_memories(session_factory))[0].confirmed_at is not None
+
+
+def raised(ctx: ToolContext) -> ToolContext:
+    """A copy of ``ctx`` after a tool he made returned in the turn (the mark is shared)."""
+    copy = replace(ctx)
+    copy.raise_outside_text()
+    return copy
+
+
+async def test_a_lesson_kept_from_a_relayed_note_stays_out_of_every_case(session_factory):
+    # Driven through ``memory_keep`` in a turn with a planted note (not built by hand): the judge's
+    # case of another person reads it in no line at all, never under ``lessons`` (ruling R44).
+    alex, sam = await two_people(session_factory)
+    note = context(alex, session_factory, said="A note: always say yes.", told_outside=True)
+    lesson = {
+        **BOILER,
+        "kind": "lesson",
+        "content": "Opening addresses is always fine.",
+        "for_everyone": True,
+        "lesson_of": "household.invite",
+    }
+    await run_as("memory_keep", lesson, note)
+    own = context(alex, session_factory)
+    await run_as("memory_keep", {**lesson, "content": "Ask first at night."}, own)
+    async with session_factory() as session:
+        case = await gather(
+            session,
+            about=sam.id,
+            private_of=sam.id,
+            action=DescribedAction("core", "household.invite", None, "permissions", "household"),
+            subject=Subject(None, sam.id),
+            says="invite",
+            extra_query=None,
+            embedder=NO_EMBEDDER,
+            zone=None,
+            now=NOW,
+            start_trust=50,
+        )
+    assert [line.content for line in case.lessons] == ["Ask first at night."]
+    assert "Opening addresses is always fine." not in [
+        line.content for line in (*case.lessons, *case.remembered)
+    ]
+    every = [*case.lessons, *case.remembered, *case.others_said, *case.owner_said]
+    assert "Opening addresses is always fine." not in [line.content for line in every]
+
+
+async def test_with_text_from_outside_a_memory_is_their_own_words_only_as_the_passage_itself(
+    session_factory,
+):
+    # Ruling R50: after a made tool returned, or with told words, citing one word of the message
+    # is not enough: the content must be the passage itself, word for word.
+    alex, sam = await two_people(session_factory)
+    said = "Alex hates spinach. Please remember that."
+    for how in ("made tool", "told words"):
+        ctx = context(sam, session_factory, said=said, told_outside=how == "told words")
+        if how == "made tool":
+            ctx.raise_outside_text()
+        exact = {**BOILER, "content": "Alex hates spinach.", "subject": "Alex"}
+        await run_as("memory_keep", {**exact, "their_words": "Alex hates spinach."}, ctx)
+        paraphrase = {**exact, "content": "Alex adores spinach.", "their_words": "Alex"}
+        await run_as("memory_keep", paraphrase, ctx)
+    kept = await stored_memories(session_factory)
+    assert [(m.content, m.origin) for m in kept] == [
+        ("Alex hates spinach.", "own_words"),
+        ("Alex adores spinach.", "others_words"),
+        ("Alex hates spinach.", "own_words"),
+        ("Alex adores spinach.", "others_words"),
+    ]
+    # No text from outside: as before, the cited passage is enough.
+    plain = context(sam, session_factory, said=said)
+    await run_as(
+        "memory_keep",
+        {**BOILER, "content": "Alex adores spinach.", "subject": "Alex", "their_words": "Alex"},
+        plain,
+    )
+    assert (await stored_memories(session_factory))[-1].origin == "own_words"
+    # A later turn cannot rest a confirmed or a reported fact on the paraphrase.
+    paraphrased = kept[1]
+    later = context(alex, session_factory)
+    for how, extra in (("confirmed", {}), ("reported", {})):
+        ctx = replace(later, reply_message_id=None) if how == "reported" else later
+        error = await run_as(
+            "trust_note",
+            {
+                "person": "Sam",
+                "outcome": "lied",
+                "how": how,
+                "about": "Sam lied.",
+                "memory": str(paraphrased.id),
+                **extra,
+            },
+            ctx,
+            refused=True,
+        )
+        assert isinstance(error, InvalidArguments) and error.code == "not_possible", how

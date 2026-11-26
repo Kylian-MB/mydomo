@@ -19,8 +19,7 @@ from domo_core.confirmations.models import Confirmation
 from domo_core.llm.types import ToolCall
 from domo_core.outward.models import OpenAddress
 from domo_core.outward.service import open_for
-from domo_core.policy.actions import DescribedAction
-from domo_core.policy.roles import Actor, domo_actor
+from domo_core.policy.roles import Actor
 from domo_core.tools.context import ToolContext
 from fakes import FakeChatModel, is_judge_call
 from sqlalchemy import func, select
@@ -373,42 +372,9 @@ async def test_the_judge_of_an_opening_reads_what_the_owner_said(owner_chat: Cha
     assert "192.168.1.20 sur le port 8123" in case
 
 
-def _context(person_role: str, *, on_his_own: bool) -> ToolContext:
-    from domo_core.accounts.models import Person
-    from domo_core.policy.catalog import DEFAULT_POLICY
-    from domo_core.tools.registry import TOOLS
-
-    person = Person(id=uuid.uuid4(), display_name="Alex", role=person_role)
-    return ToolContext(
-        session_factory=None,  # type: ignore[arg-type]
-        actor=Actor(person.id, person.role),  # type: ignore[arg-type]
-        person=person,
-        conversation_id=uuid.uuid4(),
-        origin="",
-        gatekeeper=None,  # type: ignore[arg-type]
-        clock=lambda: None,  # type: ignore[arg-type,return-value]
-        registry=TOOLS,
-        policy=DEFAULT_POLICY,
-        reply_message_id=None if on_his_own else uuid.uuid4(),
-        on_his_own=on_his_own,
-    )
-
-
-def test_the_judge_reads_the_turn_s_words_for_an_opening_and_an_ask_only_in_a_person_s_turn():
-    # The right is Domo's (the barrier's actor), the judge's case the person's in their turn.
-    from domo_core.conversation.execution import judges_the_words_of
-
-    def action(action_type: str) -> DescribedAction:
-        return DescribedAction("core", action_type, None, "self_profile", "household")
-
-    theirs = _context("owner", on_his_own=False)
-    for action_type in ("net.open", "net.open_host", "account.ask"):
-        assert judges_the_words_of(theirs, action(action_type), domo_actor()) == theirs.actor
-    # Any other act of Domo's keeps his own case; on his own, it is his, whatever the type.
-    assert judges_the_words_of(theirs, action("tool.build"), domo_actor()) == domo_actor()
-    alone = _context("owner", on_his_own=True)
-    for action_type in ("net.open", "net.open_host", "account.ask"):
-        assert judges_the_words_of(alone, action(action_type), domo_actor()) == domo_actor()
+# The judge reads the words of the turn for every act of his in a person's turn, and his own case
+# on his own: ``test_judge.test_an_act_of_his_in_a_person_s_turn_reads_their_words`` and
+# ``test_judge.test_his_own_act_reads_what_he_knows_and_why``.
 
 
 # --- ruling R19: never on the judge's "do", never inside a chain --------------------------------

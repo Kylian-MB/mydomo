@@ -27,8 +27,8 @@ Why each property of the spec holds (the numbers are from a start of 70):
 * two starts are ``START_WEIGHT / (START_WEIGHT + sum(weight))`` of their gap apart: the whole gap
   without a fact, less with each fact.
 
-The score is computed, never kept; it is data for Domo's judgement, never a right, a rule or a
-limit.
+The score is computed, never kept; it is data for Domo's judgement and the yes-judge's, never a
+right, a rule or a limit.
 """
 
 import math

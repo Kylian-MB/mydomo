@@ -66,6 +66,7 @@ def test_the_judge_reads_no_identifier():
         channel="page",
         device_id=uuid4(),
         clues=(_clue(at=NOW - timedelta(minutes=7, seconds=30)),),
+        last_heard_at=NOW - timedelta(hours=2),
     )
     seen = speaker.as_json(NOW)
     assert "person_id" not in seen
@@ -80,3 +81,20 @@ def test_the_judge_reads_no_identifier():
             "minutes_ago": 7,
         }
     ]
+    assert seen["last_heard_minutes_ago"] == 120
+    # Never heard before in this conversation: said so.
+    first = Speaker(person_id=uuid4(), channel="page", clues=(_clue(),)).as_json(NOW)
+    assert first["last_heard_minutes_ago"] is None
+
+
+def test_a_turn_nobody_spoke_in_tells_no_clue():
+    speaker = Speaker(
+        person_id=uuid4(),
+        channel="unasked",
+        clues=(_clue(at=NOW - timedelta(days=3)),),
+        nobody_spoke=True,
+        last_heard_at=NOW - timedelta(hours=1),
+    )
+    assert speaker.as_json(NOW) == {"channel": "unasked", "nobody_spoke": True}
+    # Who it is stays as the barrier reads it.
+    assert established(speaker)

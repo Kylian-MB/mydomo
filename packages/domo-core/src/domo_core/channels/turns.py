@@ -60,8 +60,9 @@ def turn_deps_of(
 ) -> TurnDeps:
     """What every turn needs of ``app``, with these: the writing of people's texts and of the heads
     of the cards (``app.state.text_writing``), the tasks the turns run in (``app.state.wakes``),
-    the arrival turns that run (``app.state.arrival_turns``: none where it is ``None``) and whoever
-    listens (``app.state.listeners``), and the local model of the meanings of memories
+    the arrival turns that run (``app.state.arrival_turns``: none where it is ``None``), whoever
+    listens (``app.state.listeners``), what people wrote while a turn of theirs ran
+    (``app.state.kept``), and the local model of the meanings of memories
     (``app.state.embedder``: none where the lifespan made none), the sandbox
     (``web.deps.sandbox_of``: one that is always down where the lifespan made none) and the tools'
     own database (``web.deps.tools_base_of``: none where the lifespan made none)."""
@@ -79,6 +80,7 @@ def turn_deps_of(
         policy=policy,
         text_writing=text_writing,
         wakes=state.wakes,
+        kept=state.kept,
         card_heads=card_head_writing(text_writing, session_factory),
         arrival_turns=getattr(state, "arrival_turns", None),
         listeners=getattr(state, "listeners", None),

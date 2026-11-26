@@ -19,10 +19,12 @@ from domo_core.conversation.events import Acted, Ended, Event, Words
 from domo_core.conversation.listeners import Fanout, Listeners
 from domo_core.conversation.prepare import ARRIVAL_MARKER, TurnDeps
 from domo_core.conversation.service import Conversation
+from domo_core.conversation.tool_wakes import tool_wake_turn
 from domo_core.conversation.visits import ArrivalTurns, news_for
 from domo_core.gatekeeper_client import GatekeeperClient
 from domo_core.llm.types import ChatMessage, ChatModel, ToolCall
 from domo_core.notes.models import Note
+from domo_core.prompts import ToolWake
 from fakes import FakeChatModel
 from sqlalchemy import select, update
 
@@ -276,6 +278,33 @@ async def test_a_turn_domo_starts_holds_back_what_waits_or_is_shown_once():
     assert listener.events == [done]
     # Nobody listens: nothing is given, and nothing fails.
     await Fanout(None, alex, reply).emit(done)
+
+
+async def test_a_tools_wake_tells_the_judge_why_he_acts(
+    chat_server: ChatServer,
+    owner_member: Member,
+    adult_member: Member,
+    settings: CoreSettings,
+    gk_client: GatekeeperClient,
+):
+    # Part 8 of "Domo judges first": nobody spoke in a turn a tool of his woke him for, and the
+    # case says so, with the tools that woke him as his reason; the act stays the person's.
+    alex = adult_member.person
+    leave = ToolCall("n1", "note_leave", json.dumps({"recipient": "Owner", "text": "Total: 12."}))
+    model = FakeChatModel(tool_script=[leave, "I told the owner."], judge="do")
+    deps = core_deps(chat_server, model, settings, gk_client)
+    woken = [ToolWake("tally", {"total": 12}), ToolWake("count", {}), ToolWake("tally", {})]
+    assert await tool_wake_turn(deps, alex.id, woken)
+    await idle(deps)
+    [judged] = model.judge_calls()
+    case = json.loads(str(judged.messages[0].content))
+    assert case["speaker"] == {"channel": "unasked", "nobody_spoke": True}
+    assert (case["idea"]["of"], case["idea"]["reason"]) == (
+        "domo",
+        "a tool of yours woke you: count, tally",
+    )
+    async with chat_server.session_factory() as reader:
+        assert len((await reader.scalars(select(Note))).all()) == 1
 
 
 async def test_a_gone_listener_is_dropped_and_the_turn_still_ends(

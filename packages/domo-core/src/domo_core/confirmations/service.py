@@ -84,9 +84,12 @@ for Domo himself (``policy.roles.domo_actor``: his rights, limits and history, a
 when the agreement it waited for lets it through, one ``allow`` in his name unless one was written
 already, ``Confirmation.counted_for_domo``, so that his history counts it once) and runs it as
 his, on his own (``ToolContext.on_his_own``: what it launches is for the house). A person answers
-it yes or no, never changes nor drops it; Domo, in a turn of his own, drops it
-(``expire_by_domo``) or changes it (``amend_confirmation``, ``_amend_his_own``: judged again
-from scratch as his, it always waits again for a yes, spec 12.5). He never drops nor changes a
+it yes, no, or "yes, but" (the owner's decision of 2026-11-24), never drops it; Domo, in a turn of
+his own, drops it (``expire_by_domo``) or changes it. A change of it, his or the answerer's
+(``amend_confirmation``, ``_amend_his_own``), is made again in his name and judged from scratch
+as his: it runs when nothing more is asked (his own change: the barrier lets it through; the
+answerer's: their yes is the one it needs and their words give what it asks), and waits again for
+a yes otherwise (spec 12.5). He never drops nor changes a
 person's request under cover of his own there, a note in his name they asked for included, but
 by a right the owner gives him (``asker_on_his_own``, ruling R30); and a person's request
 changed in such a turn is judged as theirs (ledger n3).
@@ -169,6 +172,7 @@ from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import is_active
 from domo_core.audit.log import append_audit
 from domo_core.chat.agent import ActionRecord
+from domo_core.chat.models import Message
 from domo_core.chat.store import ConversationStore
 from domo_core.confirmations.chain import paused, request_told, waits_again
 from domo_core.confirmations.describe import (
@@ -201,6 +205,7 @@ from domo_core.confirmations.replan import (
 )
 from domo_core.confirmations.steps import PlannedStep, add_steps, steps_of
 from domo_core.confirmations.store import (
+    CANNOT_BE_UNDONE_REASON,
     action_type_of,
     approver_of,
     approves,
@@ -208,17 +213,23 @@ from domo_core.confirmations.store import (
     asked_of,
     awaiting_approval,
     confirmations_by_id,
+    conversation_made_in,
     covers,
     create_confirmation,
+    decided_for_him,
     effective_arguments,
+    for_the_person_concerned,
     is_past_lifetime,
+    made_in_a_turn,
     mark_shown,
     mark_shown_to_approver,
     pending_for,
     pending_to_approve,
     predecessors_of,
+    replayed_on_his_own,
     request_state,
     requester_of,
+    warned_one,
     who_answers,
 )
 from domo_core.conversation.execution import (
@@ -229,11 +240,15 @@ from domo_core.conversation.execution import (
     failed_record,
     refused_by_the_judge,
     rights_say,
+    warned_first,
 )
 from domo_core.conversation.speaker import Speaker
 from domo_core.db import SessionFactory
 from domo_core.household.service import resolve_person, whole_names
 from domo_core.identity.clues import keep_proof_clue
+from domo_core.learning.models import Kind
+from domo_core.learning.record import kept_reason, note_went_wrong, reason_code
+from domo_core.learning.undone import note_undoing
 from domo_core.llm.types import JsonObject
 from domo_core.memory.told import told
 from domo_core.policy.actions import DescribedAction
@@ -243,10 +258,18 @@ from domo_core.policy.barrier import (
     Decision,
     NeedsApproval,
     Refuse,
+    given_for_an_idea,
     record_decision,
+    stricter,
     writes_for_domo,
 )
-from domo_core.policy.catalog import PolicyTables, on_his_own_requests, on_his_own_tables
+from domo_core.policy.catalog import (
+    DOMO_ACTIONS,
+    NOT_ON_HIS_OWN,
+    PolicyTables,
+    on_his_own_requests,
+    on_his_own_tables,
+)
 from domo_core.policy.decision import ChainBasis, decide_now
 from domo_core.policy.rights import Approver, load_rights
 from domo_core.policy.roles import (
@@ -257,12 +280,14 @@ from domo_core.policy.roles import (
     domo_actor,
 )
 from domo_core.policy.settings import PolicySettings, load_policy_settings
+from domo_core.policy.subjects import concerned_of, keys_of, subject_of
 from domo_core.text import is_plain_line
 from domo_core.texts.view import REFERENCE
 from domo_core.tools.context import (
     InternalTool,
     InvalidArguments,
     NamesPeople,
+    OwnIdea,
     PlansSteps,
     ToolContext,
     judged_actor_of,
@@ -292,6 +317,7 @@ __all__ = [
     "decide_confirmation",
     "effective_arguments",
     "expire_by_domo",
+    "expire_past_lifetime",
     "explicit_reason_from",
     "is_active",
     "is_past_lifetime",
@@ -379,6 +405,8 @@ RefusalReason = Literal["not_allowed", "no_longer_possible", "limit", "limit_err
 # ``explicit_phrase``: the firm yes the code knows or the one the classifier read, and a proof
 # do).
 _NOT_EXPLICIT: Final = frozenset({"phrase", "classifier", "change"})
+# The ways of answering in words: a no said so keeps the person's words (``refusal_words``).
+_SAID_IN_WORDS: Final = frozenset({"explicit_phrase", "phrase", "classifier"})
 
 # What Domo is told when an id names no request of the person that waits in this conversation
 # (it never learns whether the id exists).
@@ -414,16 +442,19 @@ _NO_GRANT: Final = "a request can only be changed right after the person answere
 
 # The arguments of a change of a chain of actions: the whole chain, as the person wants it now.
 _CHAIN_CHANGE: Final = frozenset({"steps"})
-# What Domo is told when a person's change names a request he made on his own: they answer it
-# yes or no; he changes it himself, in a turn of his own (spec 12.5).
-_DOMO_S_OWN: Final = (
-    "this request is yours, made on your own: the person answers it yes or no, and only you change "
-    "or drop it, in a turn of your own. Nothing was changed"
-)
 # What Domo is told when he changes a chain of his own that waits: drop it and propose another.
 _HIS_CHAIN_NOT_CHANGED: Final = (
     "a chain of yours that waits is not changed: drop it with confirmation_expire and propose the "
     "chain you want now. Nothing was changed"
+)
+# What Domo is told when a person answers a chain of his own with a change: it is not changed.
+_HIS_CHAIN_ANSWERED: Final = (
+    "a chain of yours that waits is answered yes or no, never changed: tell the person, and "
+    "propose the chain they want as a new one. Nothing was changed"
+)
+# What Domo is told when nobody could answer a request changed now.
+_NOBODY_TO_ASK: Final = (
+    "nobody could answer it now (the household has no owner): nothing was changed"
 )
 # The type of a note, which an approver never changes, neither its words nor its recipient
 # (spec 6.7).
@@ -433,7 +464,10 @@ _NOTE_LEAVE: Final = "note.leave"
 def may_decide(c: Confirmation, person: Person, now: datetime) -> bool:
     """Whether ``person`` may answer the request: the requester for a ``self`` request; an adult
     or the owner other than the requester for an ``adult`` one; the owner, not the requester, for
-    an ``owner`` one. Only an active person may."""
+    an ``owner`` one; when a person is concerned (``concerned_id``), that person alone, whatever
+    the kind. Only an active person may."""
+    if c.concerned_id is not None:
+        return is_active(person, now) and person.id == c.concerned_id
     return is_active(person, now) and approves(c.approver_kind, person, requester_of(c))
 
 
@@ -530,7 +564,14 @@ async def _audit_decided(
     (``conversation.starts.WAKE_OUTCOMES``), and the wake, which is told it, is the turn that says
     it to whoever listens to them; a news turn would only race it."""
     # Every decision is audited here: a path that skipped this would skip the news too.
-    if not by_domo and decider.id != c.requester_id and c.decided_at is not None:
+    # A request he made on his own that someone else decided is no news for the one in whose
+    # conversation he made it, who asked nothing: it wakes him (ruling R33).
+    if (
+        not by_domo
+        and decider.id != c.requester_id
+        and c.decided_at is not None
+        and not decided_for_him(c)
+    ):
         # Imported here: ``conversation.visits`` reads the requests from this package.
         from domo_core.conversation.visits import news_for
 
@@ -551,14 +592,61 @@ async def _audit_decided(
     await append_audit(session, actor=actor, action="confirmation.decided", details=details)
 
 
+def _of_domo(c: Confirmation) -> bool:
+    """Whether what went wrong with ``c`` was the assistant's own: a request he made on his own
+    (``by_domo``: a turn of his own, his explicit mark, a call that says it is his), never one
+    merely moved to the person it concerns."""
+    return c.by_domo or c.idea_reason is not None
+
+
+async def _note(
+    session: AsyncSession,
+    c: Confirmation,
+    kind: Kind,
+    now: datetime,
+    *,
+    by: uuid.UUID | Literal["domo", "code"] = "code",
+    reason: str | None = None,
+    action_type: str | None = None,
+) -> None:
+    """Note a fact of what went wrong with ``c`` (``learning.record.note_went_wrong``), in the
+    caller's transaction: about the one who asked, on what it is about. It never stops the
+    decision."""
+    await note_went_wrong(
+        session,
+        kind=kind,
+        action_type=action_type_of(c) if action_type is None else action_type,
+        now=now,
+        subject_key=c.subject_key,
+        confirmation_id=c.id,
+        by=by,
+        of_domo=_of_domo(c),
+        about=c.requester_id,
+        reason=reason,
+    )
+
+
+# Why a yes was refused when no rule refused it: what it asked can no longer be done as it was.
+_NO_LONGER_POSSIBLE: Final = "no_longer_possible"
+# Why a yes was refused when the rights now ask for the yes of whoever just gave it.
+_NOT_ALLOWED: Final = "not_allowed"
+
+
 async def _expire(
-    session: AsyncSession, c: Confirmation, *, by: Literal["domo", "lifetime"], actor: str
+    session: AsyncSession,
+    c: Confirmation,
+    *,
+    by: Literal["domo", "lifetime"],
+    actor: str,
+    now: datetime,
 ) -> None:
     """Make the request ``expired`` and audit it (``confirmation.expired``), last: the caller
-    commits right after."""
+    commits right after. A silence, never a refusal: the fact noted is ``expired``, by the code
+    (its lifetime) or by the assistant (he dropped it)."""
     c.status = "expired"
     c.expired_by = by
     await session.flush()
+    await _note(session, c, "expired", now, by="domo" if by == "domo" else "code")
     await append_audit(
         session,
         actor=actor,
@@ -571,6 +659,21 @@ async def _expire(
     )
 
 
+async def expire_past_lifetime(
+    session: AsyncSession, confirmation_id: uuid.UUID, settings: PolicySettings, now: datetime
+) -> bool:
+    """Expire the request ``confirmation_id`` if it still waits and has waited as long as the owner
+    allows (``is_past_lifetime``), its row locked: the same expiry as the one that happens when
+    someone opens it (``_open_pending``), by the code, so one fact is noted and one entry audited,
+    whichever comes first, and a request already expired is never expired again. Whether it was
+    expired now. Flushed, not committed."""
+    c = await _locked(session, confirmation_id)
+    if c is None or c.status != "pending" or not is_past_lifetime(c, settings, now):
+        return False
+    await _expire(session, c, by="lifetime", actor="system", now=now)
+    return True
+
+
 async def _mark_decided(
     session: AsyncSession,
     c: Confirmation,
@@ -579,37 +682,72 @@ async def _mark_decided(
     via: DecidedVia,
     reply_message_id: uuid.UUID | None,
     now: datetime,
+    answer: Literal["yes", "no"] | None,
 ) -> None:
     """``decider`` answered the request ``c`` (``via``, with their message ``reply_message_id``)
-    at ``now``. When it is the one who asked answering a request the judge asked to warn them
-    (``warned``), what it told them is remembered (``_remember_the_warning``), in the caller's
-    transaction: kept when it commits the answer."""
+    at ``now``, and ``answer`` is what they answered to its warning, if it had one: ``yes`` or
+    ``no``; ``None`` when they answered with a change that was refused, and the whole request
+    with it (ruling R48: they answered a change, not the warning). When the one warned (the one
+    person the thing belongs to: the person it concerns, who alone answers it, or else the one who
+    asked: ``store.warned_one``) answers a request the judge asked to warn them (``warned``), what
+    it told them is remembered with their answer (``_remember_the_warning``), for them alone, in
+    the caller's transaction: kept when it commits the answer."""
     c.decided_by = decider.id
     c.decided_at = now
     c.decided_via = via
     c.decided_message_id = reply_message_id
-    # A warning given for a chain is not remembered at all, for now: it would be kept under the
-    # chain's own type (``chain.run``), which says nothing of the step it was about (final review
-    # M9; remembering it per step is left for later).
-    if c.warned and c.ask_why and decider.id == c.requester_id and action_type_of(c) != _CHAIN_RUN:
-        await _remember_the_warning(session, c, c.ask_why, now)
+    if decider.id == warned_one(c) and answer is not None:
+        reason = c.ask_why or CANNOT_BE_UNDONE_REASON
+        await _remember_the_warning(session, c, decider, reason, now, answer == "yes")
+
+
+async def _warned_types(session: AsyncSession, c: Confirmation) -> list[str]:
+    """The type of action a warning given for ``c`` is about: its own; for a chain, never the
+    chain's own (``chain.run``), which says nothing of its steps (final review M9), but the one
+    type of its steps when they all have it. The judge gives one verdict for a whole chain: with
+    several types, which one it was about is not known, and it is kept under none (ruling R49:
+    it would refresh what was told of another type, which would no longer count as a first
+    time)."""
+    if action_type_of(c) != _CHAIN_RUN:
+        return [action_type_of(c)]
+    types = {step.action_type for step in await steps_of(session, c.id)}
+    return list(types) if len(types) == 1 else []
 
 
 async def _remember_the_warning(
-    session: AsyncSession, c: Confirmation, reason: str, now: datetime
+    session: AsyncSession,
+    c: Confirmation,
+    decider: Person,
+    reason: str,
+    now: datetime,
+    approved: bool,
 ) -> None:
-    """The one who asked answered ``c``, which the judge asked to warn them of ``reason``: keep
-    that Domo told them (``memory.told.told``, spec 6.8), in a savepoint of ``session``. A
-    failure is logged and leaves the answer as it is: a memory never stops a decision."""
+    """``decider``, who was warned, answered ``c``, which the judge asked to warn them of
+    ``reason``: keep that Domo told them, with their answer (``memory.told.told``, spec 6.8), and,
+    for a no, the fact that a warning was declined (``warning_declined``), one for each type it
+    was about (``_warned_types``), in a savepoint of ``session``. A failure is logged and leaves
+    the answer as it is: a memory never stops a decision."""
     try:
         async with session.begin_nested():
-            await told(
-                session,
-                person_id=c.requester_id,
-                action_type=action_type_of(c),
-                reason=reason,
-                now=now,
-            )
+            for action_type in await _warned_types(session, c):
+                await told(
+                    session,
+                    person_id=decider.id,
+                    action_type=action_type,
+                    reason=reason,
+                    answer="yes" if approved else "no",
+                    now=now,
+                )
+                if not approved:
+                    await _note(
+                        session,
+                        c,
+                        "warning_declined",
+                        now,
+                        by=decider.id,
+                        reason=reason,
+                        action_type=action_type,
+                    )
     except SQLAlchemyError as error:
         logger.warning(
             "What the assistant told a person could not be kept (%s)", type(error).__name__
@@ -652,7 +790,7 @@ async def _open_pending(
         return "expired" if c.status == "expired" else "already_decided"
     settings = await load_policy_settings(session)
     if is_past_lifetime(c, settings, now):
-        await _expire(session, c, by="lifetime", actor="system")
+        await _expire(session, c, by="lifetime", actor="system", now=now)
         await session.commit()
         return "expired"
     return _Open(c, person, settings)
@@ -689,16 +827,26 @@ async def _refuse(
     *,
     via: DecidedVia,
     changed: bool = False,
+    now: datetime,
     replay: tuple[Actor, DescribedAction, Decision] | None = None,
     judged: Judgement | None = None,
     means: str | None = None,
+    said_no: bool = False,
+    why: str | None = None,
 ) -> None:
     """Make the request ``refused`` and commit, with its audit: the judge's verdict when it
     refused a change (``judge.verdict``, with the replay's actor and action), why the barrier
     refused it or what it said when a replay was made (``policy.decision``), then the decision
-    (``confirmation.decided``, with the ``means`` of a proof), last."""
+    (``confirmation.decided``, with the ``means`` of a proof), last.
+
+    The fact of it is noted first, in the same transaction (``_noted_refusal``): who refused it,
+    the decider when they said no (``said_no``), the judge when it refused a change, else the
+    code (the rules of now, or what can no longer be done: ``why``)."""
     c.status = "refused"
     await session.flush()
+    await _noted_refusal(
+        session, c, decider, now, replay=replay, judged=judged, said_no=said_no, why=why
+    )
     if replay is not None:
         actor, action, decision = replay
         if judged is not None:
@@ -710,6 +858,32 @@ async def _refuse(
         session, c, decider, outcome="refused", via=via, changed=changed, means=means
     )
     await session.commit()
+
+
+async def _noted_refusal(
+    session: AsyncSession,
+    c: Confirmation,
+    decider: Person,
+    now: datetime,
+    *,
+    replay: tuple[Actor, DescribedAction, Decision] | None,
+    judged: Judgement | None,
+    said_no: bool,
+    why: str | None,
+) -> None:
+    """The fact of the refusal of ``c``: ``refused`` by the decider who said no, with their words
+    when they said it in words (``refusal_words``: data, never what the request does); the
+    judge's refusal of a change (``judge_refused``, with its reason); else ``refused`` by the
+    code, with why (a code: the barrier's reason, or ``why``)."""
+    if said_no:
+        await _note(session, c, "refused", now, by=decider.id, reason=c.refusal_words)
+        return
+    if judged is not None and judged.verdict == "do_not":
+        await _note(session, c, "judge_refused", now, by="domo", reason=judged.reason)
+        return
+    decision = None if replay is None else replay[2]
+    code = decision.reason if isinstance(decision, Refuse) else why
+    await _note(session, c, "refused", now, reason=code)
 
 
 def _why_refused(decision: Refuse, decider: Person, requester_id: uuid.UUID) -> RefusalReason:
@@ -956,6 +1130,9 @@ async def _reroute(
     before = c.approver_kind
     c.approver_kind = approver
     c.ask_reason = question
+    if approver != "self":
+        # The barrier's approver wins: the person it concerned no longer answers it alone.
+        c.concerned_id = None
     _unmark(c)
     await session.flush()
     actor, action, decision = replay
@@ -991,10 +1168,12 @@ async def _run_and_settle(
     via: DecidedVia,
     changed: bool = False,
     means: str | None = None,
+    by_domo: bool = False,
 ) -> tuple[Literal["executed", "failed"], ActionRecord]:
     """The end of a yes, the same for a decision and for a change. The caller made the request
     ``executing`` on ``session`` (which holds its row lock), with what goes with it (and, for a yes
-    given by a proof, its ``means``, for the audit).
+    given by a proof, its ``means``, for the audit; for a change of his own request that runs with
+    nobody's yes, ``by_domo``: decided in his name).
 
     From here on it is one unit, shielded from cancellation: the commit that makes the request
     ``executing``; the call, run in ``ctx`` (the requester's), with the session closed first (no
@@ -1018,7 +1197,12 @@ async def _run_and_settle(
             arguments,
             # The message of the turn that made the call is not kept: never the one of the yes.
             replace(
-                ctx, described_action=action, approved_by=decider.id, request_id=c.id, said=None
+                ctx,
+                described_action=action,
+                approved_by=decider.id,
+                request_id=c.id,
+                said=None,
+                said_later=(),
             ),
         )
         record = replace(record, confirmation_id=c.id)
@@ -1034,6 +1218,8 @@ async def _run_and_settle(
                 via=via,
                 changed=changed,
                 means=means,
+                by_domo=by_domo,
+                now=ctx.clock(),
             )
         return outcome, record
     # A shield without a deadline that nobody cancels never stops what it holds.
@@ -1066,6 +1252,31 @@ def requester_context(base: ToolContext) -> Callable[[Person, uuid.UUID], ToolCo
     return build
 
 
+def _in_their_turn(policy: PolicyTables) -> PolicyTables:
+    """``policy`` as it is in a person's turn, for a request of Domo's born of his mark there
+    that he changes in a turn of his own (whose ``policy`` is ``on_his_own_tables``'s): what is
+    about the person's own things is his again as his default rights say (``DOMO_ACTIONS``)."""
+    return replace(policy, domo=policy.domo | (DOMO_ACTIONS & NOT_ON_HIS_OWN))
+
+
+async def idea_decided_with_the_speaker(
+    session: AsyncSession,
+    speaker: Actor,
+    action: DescribedAction,
+    policy: PolicyTables,
+    domo: Decision,
+    now: datetime,
+) -> Decision:
+    """The barrier's decision on an idea of Domo's made in ``speaker``'s turn, replayed (ruling
+    R26, as ``conversation.execution`` decides it at first): his own decision (``domo``) and the
+    one for the speaker, a right merely not given counted as given (``barrier.given_for_an_idea``),
+    the stricter standing (``barrier.stricter``): what the owner wrote for them or their role, and
+    an adult's agreement for a child, still hold."""
+    theirs = given_for_an_idea(policy, speaker.role, action.action_type)
+    person = await decide_now(session, speaker, action, theirs, now)
+    return stricter(person, domo)
+
+
 async def _made_tool(ctx: ToolContext, name: str) -> InternalTool | None:
     """The tool of Domo's called ``name`` (``ToolContext.made_tool_named``), when the context
     of the decision finds them; ``None`` otherwise, or when it cannot be read (logged)."""
@@ -1093,8 +1304,13 @@ async def decide_confirmation(
     now: datetime,
     means: str | None = None,
     speaker: Speaker | None = None,
+    words: str | None = None,
 ) -> tuple[DecideOutcome, ActionRecord | None]:
     """Carry out ``decider``'s yes (``approve``) or no on the request (see the module docstring).
+
+    A no said in words (``via`` a phrase or the classifier) keeps the person's message, ``words``,
+    cut short and without the shape of a secret (``Confirmation.refusal_words``: what they said
+    when they refused it, data, never what the request does); a button has none.
 
     Returns the outcome and, when the stored call ran, its record (status, card, ``card_once``,
     what the model would read), with ``confirmation_id`` set; when a yes ended ``refused``, a
@@ -1140,19 +1356,31 @@ async def decide_confirmation(
             if early is not None:
                 return early, None
         await _mark_decided(
-            session, c, current, via=via, reply_message_id=reply_message_id, now=now
+            session,
+            c,
+            current,
+            via=via,
+            reply_message_id=reply_message_id,
+            now=now,
+            answer="yes" if approve else "no",
         )
         if not approve:
-            await _refuse(session, c, current, via=via, means=means)
+            if via in _SAID_IN_WORDS:
+                c.refusal_words = kept_reason(words)
+            await _refuse(session, c, current, via=via, now=now, means=means, said_no=True)
             return "refused", None
 
         # A yes: the barrier again, for the requester, with the stored call described again.
         requester = await _person(session, c.requester_id)
+        # Where it runs: the conversation of the turn it was first made in, the requester's (for
+        # a request that waited for the person it concerns in their own conversation, not that
+        # one); unknown, it runs nowhere (below).
+        made_in = await conversation_made_in(session, c)
         tool = registry.get(c.tool_name)
-        if tool is None and requester is not None:
+        if tool is None and requester is not None and made_in is not None:
             # A tool of Domo's (``t_<name>``, a launch that carries a yes): found as a turn finds
             # one it did not offer, whichever way the yes is given (words, a button, a proof).
-            tool = await _made_tool(ctx_factory(requester, c.conversation_id), c.tool_name)
+            tool = await _made_tool(ctx_factory(requester, made_in), c.tool_name)
         try:
             action: DescribedAction | None = DescribedAction.from_json(c.action)
         except ValueError:
@@ -1163,22 +1391,37 @@ async def decide_confirmation(
             c.status = "failed"
             c.result = failed_record(c.tool_name, action_type_of(c)).card
             await session.flush()
+            await _note(session, c, "failed", now, reason=_NO_LONGER_POSSIBLE)
             await _audit_decided(session, c, current, outcome="failed", via=via, means=means)
             await session.commit()
             return "failed", None
-        if requester is None or not is_active(requester, now):
-            await _refuse(session, c, current, via=via, means=means)
+        if requester is None or not is_active(requester, now) or made_in is None:
+            # Gone, or the turn it was made in can no longer be known: never run in someone
+            # else's conversation as theirs.
+            await _refuse(
+                session, c, current, via=via, now=now, means=means, why=_NO_LONGER_POSSIBLE
+            )
             return "refused", _refused_yes(c, "no_longer_possible")
         # Who asked: the requester, or Domo for a request he made on his own (judged and run
-        # as his, on his own, with what is about the owner's own things not his by default).
+        # as his, on his own, with what is about the owner's own things not his by default), or
+        # born of his mark in a person's turn (judged and run as his in that turn, the
+        # requester's, whose socle holds as at first: ruling R30; a requester who left was
+        # refused above, never replaced by whoever answers). One born of the owner's rule on his
+        # act in a person's turn (``in_their_turn``) is the owner's to answer, and runs in that
+        # turn, for that person, as it was judged (re-review R1).
         asker = requester_of(c)
-        if c.by_domo:
+        idea_speaker: Actor | None = None
+        if made_in_a_turn(c):
+            actor = domo_actor()
+            ctx = ctx_factory(requester, made_in)
+            idea_speaker = Actor(requester.id, as_role(requester.role))
+        elif replayed_on_his_own(c):
             actor = domo_actor()
             policy = on_his_own_tables(policy)
-            theirs = ctx_factory(requester, c.conversation_id)
+            theirs = ctx_factory(requester, made_in)
             ctx = replace(theirs, on_his_own=True, policy=on_his_own_tables(theirs.policy))
         else:
-            ctx = ctx_factory(requester, c.conversation_id)
+            ctx = ctx_factory(requester, made_in)
             # Who the call was judged as when it was asked (final review I3): Domo for his own
             # acts (``program_run``, the ``tool_*``), whose rights of now (a "no more" of the
             # owner's since) decide, and whose history and audit it is; the requester otherwise.
@@ -1197,12 +1440,27 @@ async def decide_confirmation(
             action.target,
         ):
             # The call no longer describes what the yes was given to.
-            await _refuse(session, c, current, via=via, means=means)
+            await _refuse(
+                session, c, current, via=via, now=now, means=means, why=_NO_LONGER_POSSIBLE
+            )
+            return "refused", _refused_yes(c, "no_longer_possible")
+        if c.concerned_id is not None and not await _still_concerns(
+            session, c, now_action, requester.id, now
+        ):
+            # The thing is someone else's now (given away, entrusted): this yes no longer
+            # answers for it.
+            await _refuse(
+                session, c, current, via=via, now=now, means=means, why=_NO_LONGER_POSSIBLE
+            )
             return "refused", _refused_yes(c, "no_longer_possible")
         decision = await decide_now(session, actor, now_action, policy, now)
+        if idea_speaker is not None:
+            decision = await idea_decided_with_the_speaker(
+                session, idea_speaker, now_action, policy, decision, now
+            )
         replay = (actor, now_action, decision)
         if isinstance(decision, Refuse):
-            await _refuse(session, c, current, via=via, replay=replay, means=means)
+            await _refuse(session, c, current, via=via, now=now, replay=replay, means=means)
             reason = _why_refused(decision, current, asker)
             return "refused", _refused_yes(c, reason, limit=_refusal_of(decision))
         need = (
@@ -1214,7 +1472,16 @@ async def decide_confirmation(
             if need.approver == c.approver_kind:
                 # ``may_decide`` let the decider give this kind of yes a moment ago, so this is
                 # never reached; were it, it is never guessed: refused.
-                await _refuse(session, c, current, via=via, replay=replay, means=means)
+                await _refuse(
+                    session,
+                    c,
+                    current,
+                    via=via,
+                    now=now,
+                    replay=replay,
+                    means=means,
+                    why=_NOT_ALLOWED,
+                )
                 return "refused", _refused_yes(c, "not_allowed")
             await _reroute(session, c, current, need.approver, need.question, replay=replay)
             return "approver_changed", rerouted_yes(c)
@@ -1229,6 +1496,8 @@ async def decide_confirmation(
             not chain
             # Domo's own yes is nobody's: the yes of whoever may answer his request stands.
             and not c.by_domo
+            # The person it concerns answers it alone, not the one who asked.
+            and c.concerned_id is None
             and isinstance(decision, Allow)
             and _the_requesters_own_yes(asked_of(c), current, asker)
         ):
@@ -1252,7 +1521,9 @@ async def decide_confirmation(
             tool=tool,
             action=action,
             arguments=arguments,
-            ctx=ctx,
+            # Who it was judged as, for a tool that records who acted (a chain's steps are
+            # judged each in its turn).
+            ctx=ctx if chain else replace(ctx, judged_as=actor),
             decider=current,
             via=via,
             means=means,
@@ -1280,15 +1551,20 @@ async def settle(
     via: DecidedVia,
     changed: bool = False,
     means: str | None = None,
+    by_domo: bool = False,
+    now: datetime,
 ) -> None:
     """Phase 3: store what came of the approved action, and audit the decision (last, with the
-    ``means`` of a proof). One
+    ``means`` of a proof; in his name, ``by_domo``, for a change of his own that ran). One
     attempt, limited to ``_SETTLE_SECONDS``; a failure is logged, and the request stays
     ``executing`` (shown as ``running``: its outcome is not known): the action ran (or failed),
     and is not run again. A request that is no longer ``executing`` is left as it is: a chain of
     actions that went back to waiting for someone else's yes on the way
     (``confirmations.chain``) is not over. ``tools.chain.ChainContinue`` settles the rest of a
-    chain it continued the same way."""
+    chain it continued the same way. A request that ``failed`` is a fact of what went wrong
+    (``failed``, by the code, its reason only when it is a code), noted in the same transaction,
+    at ``now``, when it failed (a chain taken up again may fail long after its yes). A person's
+    request that ran may undo what the assistant did or decided (``_undoing_noted``, R56)."""
     with anyio.move_on_after(_SETTLE_SECONDS):
         try:
             async with session_factory() as session:
@@ -1300,6 +1576,12 @@ async def settle(
                 c.status = outcome
                 c.result = dict(record.card)
                 await session.flush()
+                if outcome == "failed":
+                    # A request that ran and failed, at ``now``: a fact, its reason only when it
+                    # is a code.
+                    await _note(session, c, "failed", now, reason=reason_code(record.model_result))
+                else:
+                    await _undoing_noted(session, c, record, now)
                 await _audit_decided(
                     session,
                     c,
@@ -1308,6 +1590,7 @@ async def settle(
                     via=via,
                     changed=changed,
                     means=means,
+                    by_domo=by_domo,
                 )
                 await session.commit()
             return
@@ -1324,6 +1607,32 @@ async def settle(
     )
 
 
+async def _undoing_noted(
+    session: AsyncSession, c: Confirmation, record: ActionRecord, now: datetime
+) -> None:
+    """What a person's request that ran after a yes undoes of the assistant's
+    (``learning.undone.note_undoing``, R56), as an action run at once does
+    (``conversation.execution.store_action``): by the one who asked, never for a request of his
+    (``by_domo``, or his reason). No words are kept with it: the yes may be someone else's. The
+    action is the one that ran (its stored description, its result for the keys); nothing when
+    it cannot be read."""
+    if c.by_domo or c.idea_reason is not None:
+        return
+    try:
+        action = DescribedAction.from_json(c.action)
+    except ValueError:
+        return
+    await note_undoing(
+        session,
+        action_type=action.action_type,
+        keys=keys_of(action, record.model_result),
+        by=requester_of(c),
+        now=now,
+        reason=None,
+        ran_from=c.id,
+    )
+
+
 # --- what Domo does with the requests ----------------------------------------------------------
 
 
@@ -1335,6 +1644,7 @@ async def _own_pending(
     now: datetime,
     *,
     paused: str | None,
+    concerned_too: bool = False,
 ) -> Confirmation:
     """The request, locked, if it is one of ``requester_id`` in this conversation that waits for a
     yes, still under its lifetime; ``InvalidArguments("not_found")`` otherwise (whatever the
@@ -1343,7 +1653,12 @@ async def _own_pending(
     managed too when ``paused`` is ``None``; otherwise ``paused`` is what Domo is told
     (``InvalidArguments("invalid")``): it waits for no yes."""
     c = await _locked(session, confirmation_id)
-    if c is None or requester_of(c) != requester_id or c.conversation_id != conversation_id:
+    mine = c is not None and (
+        _shows_it(c, requester_id, conversation_id)
+        if concerned_too
+        else (requester_of(c), c.conversation_id) == (requester_id, conversation_id)
+    )
+    if c is None or not mine:
         raise InvalidArguments("not_found", _NOT_PENDING)
     if c.status == "waiting_arrival":
         if paused is not None:
@@ -1352,6 +1667,15 @@ async def _own_pending(
     if c.status != "pending" or is_past_lifetime(c, await load_policy_settings(session), now):
         raise InvalidArguments("not_found", _NOT_PENDING)
     return c
+
+
+def _shows_it(c: Confirmation, person_id: uuid.UUID, conversation_id: uuid.UUID) -> bool:
+    """Whether ``c`` is a request of ``person_id``'s own in this conversation, as their reply
+    shows it: one they asked, or one that waits there for them alone as the person it concerns
+    (``concerned_id``)."""
+    if c.conversation_id != conversation_id:
+        return False
+    return requester_of(c) == person_id or c.concerned_id == person_id
 
 
 async def remind(
@@ -1380,14 +1704,21 @@ async def remind(
     is then the approver's reply that presents it (``shown_to_approver_message_id``), and what the
     one who asked was shown does not move. Flushed, not committed."""
     c = await _locked(session, confirmation_id)
-    own = c is not None and (requester_of(c), c.conversation_id) == (requester_id, conversation_id)
+    own = c is not None and _shows_it(c, requester_id, conversation_id)
     if not own and approver is not None:
         c = await pending_to_approve(session, confirmation_id, approver, now)
         if shown_in is not None:
             c.shown_to_approver_message_id = shown_in
     else:
         c = await _own_pending(
-            session, confirmation_id, requester_id, conversation_id, now, paused=_PAUSED_NOT_SHOWN
+            session,
+            confirmation_id,
+            requester_id,
+            conversation_id,
+            now,
+            paused=_PAUSED_NOT_SHOWN,
+            # Shown to the person it concerns too, in their conversation: their words answer it.
+            concerned_too=True,
         )
         if c.approver_kind != "self":
             # It waits for someone else's yes: the one who asked nudges its approver (spec 5.2).
@@ -1441,7 +1772,7 @@ async def expire_by_domo(
         session, confirmation_id, requester_id, conversation_id, now, paused=None
     )
     asker = DOMO_LABEL if requester_id == DOMO_SUBJECT_ID else f"person:{requester_id}"
-    await _expire(session, c, by="domo", actor=asker)
+    await _expire(session, c, by="domo", actor=asker, now=now)
     return c
 
 
@@ -1627,7 +1958,9 @@ async def amend_confirmation(
     Before all that, a chain of the person, in this conversation, that paused until someone's
     arrival (``waiting_arrival``) is not changed, grant or not: ``InvalidArguments("invalid")``,
     with what Domo is to do (drop it, and propose a new chain that waits for the same
-    invitation). And a change of rights (``rights.apply``) is changed in words, and drafted again
+    invitation). A request of Domo's own is changed by ``_amend_his_own``: by him in a turn of his
+    own, or, with this turn's grant, by the person who answered it "yes, but" (``answerer``). And a
+    change of rights (``rights.apply``) is changed in words, and drafted again
     by the rights writer before anything is locked (``_amend_rights``, spec 5.3): the new draft
     is then judged like any other change, or the writer asks the owner a question
     (``writer_asks``).
@@ -1660,6 +1993,22 @@ async def amend_confirmation(
         return await _amend_his_own(
             session_factory, confirmation_id, new_arguments, ctx=ctx, now=now, raised=raised
         )
+    if found is not None and found.by_domo and not ctx.on_his_own:
+        # A request of his that the person answered "yes, but" (when they may answer it): his
+        # change, made again in his name, that their yes covers if his judge lets it go.
+        if ctx.change_grant != confirmation_id:
+            raise InvalidArguments("invalid", _NO_GRANT)
+        changed = await _amend_his_own(
+            session_factory,
+            confirmation_id,
+            new_arguments,
+            ctx=ctx,
+            now=now,
+            raised=raised,
+            answerer=ctx.person,
+        )
+        _use_grant(ctx, confirmation_id)
+        return changed
     if found is not None and action_type_of(found) == _RIGHTS_APPLY:
         return await _amend_rights(
             session_factory, confirmation_id, mine, new_arguments, ctx=ctx, now=now, raised=raised
@@ -1692,10 +2041,6 @@ async def amend_confirmation(
             _use_grant(ctx, confirmation_id)
             return opened, None, None
         c, person, settings = opened.c, opened.person, opened.settings
-        if c.by_domo:
-            # Domo's own request is answered yes or no by a person (a change would make it
-            # theirs); he changes it himself, on his own (``_amend_his_own``).
-            raise InvalidArguments("not_possible", _DOMO_S_OWN)
         tool = ctx.registry.get(c.tool_name)
         if tool is None or tool.action_type != action_type_of(c):
             raise InvalidArguments("invalid", "this request can no longer be changed")
@@ -1705,9 +2050,17 @@ async def amend_confirmation(
         requester = await _person(session, c.requester_id) if by_approver else person
         if requester is None or not is_active(requester, now):
             await _mark_decided(
-                session, c, person, via="change", reply_message_id=ctx.reply_message_id, now=now
+                session,
+                c,
+                person,
+                via="change",
+                reply_message_id=ctx.reply_message_id,
+                now=now,
+                answer=None,
             )
-            await _refuse(session, c, person, via="change", changed=True)
+            await _refuse(
+                session, c, person, via="change", now=now, changed=True, why=_NO_LONGER_POSSIBLE
+            )
             _use_grant(ctx, confirmation_id)
             return "refused", _refused_yes(c, "no_longer_possible"), c
         kept_note = note if by_approver else None
@@ -1760,17 +2113,24 @@ async def amend_confirmation(
             raise InvalidArguments(
                 "invalid", "the change changes nothing: give the arguments that change"
             )
+        # Run, if it runs, in the turn it was first made in (the requester's conversation, not
+        # the one of the person it concerns): unknown, it is not changed.
+        made_in = await conversation_made_in(session, c)
+        if made_in is None:
+            raise InvalidArguments("invalid", "this request can no longer be changed")
         run_ctx = replace(
             ctx,
             actor=Actor(person_id=requester.id, role=as_role(requester.role)),
             person=requester,
-            conversation_id=c.conversation_id,
+            conversation_id=made_in,
             change_grant=None,
             # The plans due in this turn, if any, are not the request's.
             due_plans=(),
             asked_before=False,
             # A person's request, even changed in a turn of Domo's own, is theirs (ledger n3).
             on_his_own=False,
+            # The clues of who speaks are the changer's: never read as the requester's.
+            speaker=ctx.speaker if requester.id == ctx.person.id else None,
         )
         # Described, judged and audited as the call was when it was asked (final review I3).
         actor = judged_actor_of(tool, run_ctx)
@@ -1788,10 +2148,16 @@ async def amend_confirmation(
         replay = (actor, action, decision)
         if isinstance(decision, Refuse):
             await _mark_decided(
-                session, c, person, via="change", reply_message_id=ctx.reply_message_id, now=now
+                session,
+                c,
+                person,
+                via="change",
+                reply_message_id=ctx.reply_message_id,
+                now=now,
+                answer=None,
             )
             c.approver_note = kept_note
-            await _refuse(session, c, person, via="change", changed=True, replay=replay)
+            await _refuse(session, c, person, via="change", now=now, changed=True, replay=replay)
             _use_grant(ctx, confirmation_id)
             reason = _why_refused(decision, person, requester.id)
             return "refused", _refused_yes(c, reason, limit=_refusal_of(decision)), c
@@ -1802,6 +2168,16 @@ async def amend_confirmation(
         by_the_rights = _the_rights_ask_again(
             decision, c, person, requester.id, for_others=for_others
         )
+        # A request that waited for the person it concerns: whose yes the changed one waits for,
+        # and where, is the code's again (invariant ii); the change is a yes only from whoever
+        # answers the changed one.
+        placed = (
+            None
+            if c.concerned_id is None
+            else await _placed_again(session, requester.id, action, decision, made_in, now)
+        )
+        if placed is not None:
+            by_the_rights = not _answers(placed, person, requester.id)
         # The judge judges the changed action again, for the one who asked (F22), with the
         # request's history, told before the change marks it decided (F23).
         says = describe_for_people(action, arguments, REFERENCE)
@@ -1816,6 +2192,8 @@ async def amend_confirmation(
             rights=rights_say(decision),
             request=request,
             owner_rule=owner_rule_of(decision.never_ask),
+            # Its reason goes back to whoever changes it, theirs only when the case is.
+            told_to=person.id,
         )
         if judgement.verdict == "do_not" and for_others:
             # Their change of their request that waits for someone else's yes, which the judge
@@ -1824,13 +2202,26 @@ async def amend_confirmation(
             _use_grant(ctx, confirmation_id)
             return "refused", record, c
         await _mark_decided(
-            session, c, person, via="change", reply_message_id=ctx.reply_message_id, now=now
+            session,
+            c,
+            person,
+            via="change",
+            reply_message_id=ctx.reply_message_id,
+            now=now,
+            answer=None if judgement.verdict == "do_not" else "yes",
         )
         c.approver_note = kept_note
         if judgement.verdict == "do_not":
             # Refused at once: whoever's agreement it would need is never bothered (spec 4.4).
             await _refuse(
-                session, c, person, via="change", changed=True, replay=replay, judged=judgement
+                session,
+                c,
+                person,
+                via="change",
+                now=now,
+                changed=True,
+                replay=replay,
+                judged=judgement,
             )
             _use_grant(ctx, confirmation_id)
             refused = refused_by_the_judge(c.tool_name, action.action_type, judgement.reason)
@@ -1853,6 +2244,10 @@ async def amend_confirmation(
             never_ask=decision.never_ask,
             yes_already_given=False,
         )
+        if given_by_the_change(asked) and warned_first(judgement, action, None, decision.never_ask):
+            # What a judge must weigh first (the last key), on a silent judge: a new request
+            # asks a plain yes, never the change's words.
+            asked = Asked("yes", "judge", None)
         if by_the_rights or not given_by_the_change(asked):
             outcome, new = await _ask_again(
                 session,
@@ -1868,8 +2263,12 @@ async def amend_confirmation(
                 asked=asked or Asked("yes", "approver", None),
                 note=kept_note,
                 judged=judgement,
+                placed=placed,
+                made_in=made_in,
             )
             _use_grant(ctx, confirmation_id)
+            if placed is not None:
+                _notify_the_concerned(ctx, placed)
             return outcome, None, new
 
         # The words of the change give what is asked: it runs now, as the person's yes to it.
@@ -1904,47 +2303,70 @@ async def _amend_his_own(
     ctx: ToolContext,
     now: datetime,
     raised: tuple[Ask, str] | None,
+    answerer: Person | None = None,
 ) -> tuple[AmendOutcome, ActionRecord | None, Confirmation | None]:
-    """``amend_confirmation`` for a request of Domo's own (``by_domo``) that waits in this
-    conversation, changed by him in a turn he acts in on his own (spec 12.5). His change is no yes
-    (his own yes is nobody's), so it never runs: like the one who asked changing their request that
-    waits for someone else's yes (spec 5.2), it is always asked again, needing no grant.
+    """``amend_confirmation`` for a request of Domo's own (``by_domo``): changed by him in a turn
+    he acts in on his own (spec 12.5), when it waits in this conversation, needing no grant; or,
+    with ``answerer``, by a person who may answer it (``may_decide``: the barrier's approver, or the
+    person it concerns) and answered it "yes, but" in this turn (the owner's decision of
+    2026-11-24). Either way the changed call is made again in his name, and follows the verdict.
 
     1. the row is locked (``_open_pending``): it must still be ``pending`` (else ``expired`` or
        ``already_decided``) and under its lifetime (else it expires now); a chain of his is not
-       changed (``invalid``: he drops it and proposes another); its tool, found as at a yes
-       (``_made_tool`` for a tool of his), must still be the request's;
+       changed (``invalid``: he drops it and proposes another; answered, it is answered yes or
+       no); its tool, found as at a yes (``_made_tool`` for a tool of his), must still be the
+       request's;
     2. the changed call (the arguments given over the stored ones, the people it names by their
-       whole names) must change something (``invalid``), and is described by that tool for him,
-       in the context of the request's conversation, on his own;
-    3. it is judged again from scratch, as his: the barrier with his own rights and the house's
-       limits (``decide_now`` for ``domo_actor``, ``on_his_own_tables``), then the yes-judge,
-       told the request's history. A ``Refuse`` or the judge's ``do_not`` leaves the request as it
-       was, waiting (``_change_refused``, ``_judged_change_refused``), and only the refusal comes
-       back;
-    4. otherwise a new request of his replaces it (``replaced``), in one transaction: waiting for
-       the agreement the barrier asks now, else the owner's (his own request asks the owner,
-       R16); asking what the judge, he (``raised``) and the owner's rules ask after a change
-       (``judge.ask_after_a_change``), a plain yes of the approver when that is nothing; counted
-       in his history already when the barrier let it through (``counted_for_domo``); with the
-       ``waiting`` action that shows it under this turn's reply, and the audit (the judge's
-       verdict, the barrier's decision, then ``confirmation.decided`` in his name), last.
-       ``asked_again`` while it waits for the same approver, ``approver_changed`` otherwise."""
+       whole names, as whoever changes it names them) must change something (``invalid``), and is
+       described by that tool for him, in the context of the turn it was first made in
+       (``store.conversation_made_in``: unknown, ``invalid``, and nothing runs);
+    3. it is judged again from scratch, as his: made on his own, the barrier with his own rights
+       and the house's limits (``decide_now`` for ``domo_actor``, ``on_his_own_tables``), on his
+       own; born of his mark in a person's turn (``store.made_in_a_turn``), in that turn, with the
+       plain rules (``_in_their_turn``) and that person's socle too, as at first
+       (``idea_decided_with_the_speaker``); then the yes-judge, told the request's history and
+       his idea (with whether that person lacks the right, and, answered, whose words it was
+       born of). A ``Refuse`` or the judge's ``do_not`` leaves the request as it was, waiting
+       (``_change_refused``, ``_judged_change_refused``), and only the refusal comes back;
+    4. what it asks then (``judge.ask_after_a_change``: the judge, he (``raised``), what the
+       request asked when words never give it, the owner's rules) and whose yes it needs
+       (``_placed_again``: the agreement the barrier asks now, else the yes of the person the
+       changed action concerns, ``policy.subjects.concerned_of``, never the owner by default)
+       decide whether it runs now: his own change when nothing is asked and the barrier lets it
+       through; the answerer's when their yes is the one it needs and their words give what it
+       asks (``judge.given_by_the_change``: a proof or an explicit yes never). It then runs as a
+       person's change that the judge lets through does (``_run_and_settle``, ``via="change"``,
+       ``amended_arguments``), in the turn it was first made in, as its requester's, decided by
+       the answerer (or in his name);
+    5. otherwise a new request of his replaces it (``replaced``), in one transaction, waiting
+       where the code says: in the conversation of the turn it was first made in, or in the
+       conversation of the person it concerns (then without the judge's reason, and news for
+       them); keeping a reply of that turn (``_message_in``); a plain yes of the approver when
+       nothing more is asked; counted in his history already when the barrier let it through
+       (``counted_for_domo``); shown by this turn's reply where it waits here (for whoever answers
+       it, when answered), with the ``waiting`` action that shows it under this turn's reply, and
+       the audit (the judge's verdict, the barrier's decision, then ``confirmation.decided`` in
+       his name, or the answerer's), last. ``asked_again`` while it waits for the same approver
+       (answered: for the answerer again), ``approver_changed`` otherwise."""
+
+    def allowed(c: Confirmation, person: Person) -> bool:
+        if not c.by_domo:
+            return False
+        if answerer is None:
+            return c.conversation_id == ctx.conversation_id
+        return may_decide(c, person, now)
+
     async with session_factory() as session:
-        opened = await _open_pending(
-            session,
-            confirmation_id,
-            ctx.person.id,
-            now,
-            allowed=lambda c, _: c.by_domo and c.conversation_id == ctx.conversation_id,
-        )
+        opened = await _open_pending(session, confirmation_id, ctx.person.id, now, allowed=allowed)
         if not isinstance(opened, _Open):
             if opened == "not_allowed":
                 raise InvalidArguments("not_found", _NOT_PENDING)
             return opened, None, None
         c = opened.c
         if c.chain_basis is not None:
-            raise InvalidArguments("invalid", _HIS_CHAIN_NOT_CHANGED)
+            raise InvalidArguments(
+                "invalid", _HIS_CHAIN_NOT_CHANGED if answerer is None else _HIS_CHAIN_ANSWERED
+            )
         requester = await _person(session, c.requester_id)
         tool = ctx.registry.get(c.tool_name) or await _made_tool(ctx, c.tool_name)
         if (
@@ -1956,25 +2378,39 @@ async def _amend_his_own(
             raise InvalidArguments("invalid", "this request can no longer be changed")
         arguments: JsonObject = {**c.arguments, **new_arguments}
         if isinstance(tool, NamesPeople):
-            # The people it names by their whole name, as a call of his on his own there.
+            # The people it names by their whole name, as whoever changes it names them.
             arguments = await whole_names(
-                session, arguments, tool.person_arguments, now=now, speaker=requester.id
+                session,
+                arguments,
+                tool.person_arguments,
+                now=now,
+                speaker=requester.id if answerer is None else answerer.id,
             )
         if arguments == dict(c.arguments):
             raise InvalidArguments(
                 "invalid", "the change changes nothing: give the arguments that change"
             )
-        # His, judged from scratch: his own rights, in a turn of his own, in that conversation.
+        # His, judged from scratch: his own rights, in a turn of his own, in that conversation;
+        # or, born of his mark in a person's turn, in that turn (the requester's, where it was
+        # made), with the plain rules, never those of a turn of his own (ruling S1).
+        in_a_turn = made_in_a_turn(c)
+        made_in = await conversation_made_in(session, c)
+        if made_in is None:
+            raise InvalidArguments("invalid", "this request can no longer be changed")
         run_ctx = replace(
             ctx,
             actor=Actor(person_id=requester.id, role=as_role(requester.role)),
             person=requester,
-            conversation_id=c.conversation_id,
+            conversation_id=made_in,
             change_grant=None,
             due_plans=(),
             asked_before=False,
-            on_his_own=True,
-            policy=on_his_own_tables(ctx.policy),
+            on_his_own=replayed_on_his_own(c),
+            policy=on_his_own_tables(ctx.policy)
+            if replayed_on_his_own(c)
+            else _in_their_turn(ctx.policy),
+            # The clues of who speaks are the answerer's: never read as the requester's.
+            speaker=ctx.speaker if requester.id == ctx.person.id else None,
         )
         actor = domo_actor()
         action: DescribedAction | None = None
@@ -1985,8 +2421,25 @@ async def _amend_his_own(
         if action.action_type != action_type_of(c):
             raise InvalidArguments("invalid", "a change keeps the same kind of action")
         decision = await decide_now(session, actor, action, run_ctx.policy, now)
+        lacks = False
+        if in_a_turn:
+            # Born of his mark in a person's turn: their socle holds, as at first.
+            decision = await idea_decided_with_the_speaker(
+                session, run_ctx.actor, action, run_ctx.policy, decision, now
+            )
+            # Told to the judge, as at first: whether they lack the right themselves.
+            rights = await load_rights(session)
+            lacks = not rights.resolve(run_ctx.actor, action.action_type, run_ctx.policy).allowed
         if isinstance(decision, Refuse):
             return await _change_refused(session, c, requester, actor, action, decision)
+        # Whose yes it waits for, and where: the code's again, on the changed action (never the
+        # owner by default); born of the owner's rule on his act in a person's turn, still the
+        # owner's while his rule asks (re-review RC1).
+        placed = (
+            _Placed("owner", None, None, made_in, False)
+            if c.in_their_turn and isinstance(decision, Allow) and decision.rule is not None
+            else await _placed_again(session, requester.id, action, decision, made_in, now)
+        )
         says = describe_for_people(action, arguments, REFERENCE)
         request = await request_told(
             session, c, before=[request_description(c, REFERENCE)], after=[says], now=now
@@ -1999,6 +2452,15 @@ async def _amend_his_own(
             rights=rights_say(decision),
             request=request,
             owner_rule=owner_rule_of(decision.never_ask),
+            # Whose words it was born of is not kept, never guessed: but a change answered is
+            # born of the answerer's words.
+            idea=OwnIdea(
+                c.idea_reason or "",
+                born_of=None if answerer is None else answerer.id,
+                lacks_the_right=lacks,
+            ),
+            # Its reason goes back to whoever changes it, theirs only when the case is.
+            told_to=ctx.person.id,
         )
         if judgement.verdict == "do_not":
             record = await _judged_change_refused(session, c, actor, action, decision, judgement)
@@ -2021,23 +2483,71 @@ async def _amend_his_own(
             never_ask=decision.never_ask,
             yes_already_given=False,
         )
-        approver: Approver = decision.approver if isinstance(decision, NeedsApproval) else "owner"
-        new = await create_confirmation(
+        if given_by_the_change(asked) and warned_first(judgement, action, None, decision.never_ask):
+            # What a judge must weigh first (the last key), on a silent judge: a new request
+            # asks a plain yes, never the change's words.
+            asked = Asked("yes", "judge", None)
+        # Whether the answerer's yes is the one it needs now (his own yes is nobody's).
+        theirs = answerer is not None and _answers(placed, answerer, requester_of(c))
+        if answerer is None:
+            runs = asked is None and isinstance(decision, Allow)
+        else:
+            runs = theirs and given_by_the_change(asked)
+            await _mark_decided(
+                session,
+                c,
+                answerer,
+                via="change",
+                reply_message_id=ctx.reply_message_id,
+                now=now,
+                answer="yes",
+            )
+        if runs:
+            # It runs now, as a person's change that the judge lets through does.
+            return await _run_his_change(
+                session,
+                session_factory,
+                c,
+                tool=tool,
+                actor=actor,
+                action=action,
+                arguments=arguments,
+                judgement=judgement,
+                run_ctx=run_ctx,
+                decider=requester if answerer is None else answerer,
+                by_domo=answerer is None,
+                now=now,
+            )
+        approver = placed.approver
+        new = await _changed_request(
             session,
-            requester=run_ctx.actor,
-            tool_name=c.tool_name,
-            arguments=arguments,
+            c,
+            actor=run_ctx.actor,
             action=action,
+            arguments=arguments,
+            decision=decision,
             approver=approver,
-            asked=asked or Asked("yes", "approver", None),
-            conversation_id=c.conversation_id,
-            message_id=ctx.domo_message_id,
+            asked=_shown_there(asked or Asked("yes", "approver", None), placed),
+            conversation_id=placed.conversation_id,
+            # Made in the turn it was first made in, still (``store.conversation_made_in``).
+            message_id=await _message_in(session, c, made_in),
             now=now,
-            question=decision.question if isinstance(decision, NeedsApproval) else None,
+            question=_question_of(c, placed),
+            note=None,
+            concerned_id=placed.concerned_id,
             by_domo=True,
-            # The ``allow`` written below in his name counts it in his history already.
-            counted_for_domo=isinstance(decision, Allow),
+            judged_as=actor,
         )
+        # This reply shows it, where it waits in this very conversation (answered, to the answerer
+        # only when it waits for them again: their next words answer it).
+        here = placed.conversation_id == ctx.conversation_id
+        if answerer is None:
+            new.last_shown_message_id = ctx.domo_message_id if here else None
+        else:
+            shown = ctx.domo_message_id if here and theirs else None
+            new.last_shown_message_id = shown if placed.approver == "self" else None
+            new.shown_to_approver_message_id = shown if placed.approver != "self" else None
+        await _tell_who_answers(session, ctx, placed, now)
         c.status = "replaced"
         c.replaced_by = new.id
         await session.flush()
@@ -2047,11 +2557,12 @@ async def _amend_his_own(
                 tool_name=c.tool_name,
                 action_type=action_type_of(c),
                 status="waiting",
-                summary={"key": f"action.card.waiting.{approver}", "params": {}},
+                summary={"key": _waiting_key(placed), "params": {}},
                 confirmation_id=new.id,
                 by_domo=True,
             )
-        outcome: AmendOutcome = "asked_again" if approver == c.approver_kind else "approver_changed"
+        same = theirs if answerer is not None else approver == c.approver_kind
+        outcome: AmendOutcome = "asked_again" if same else "approver_changed"
         await audit_judgement(
             session, actor=actor, tool_name=c.tool_name, action=action, judgement=judgement
         )
@@ -2059,15 +2570,254 @@ async def _amend_his_own(
         await _audit_decided(
             session,
             c,
-            requester,
+            requester if answerer is None else answerer,
             outcome=outcome,
             via="change",
             changed=True,
             replaced_by=new.id,
-            by_domo=True,
+            by_domo=answerer is None,
         )
         await session.commit()
-        return outcome, None, new
+    _notify_the_concerned(ctx, placed)
+    return outcome, None, new
+
+
+async def _run_his_change(
+    session: AsyncSession,
+    session_factory: SessionFactory,
+    c: Confirmation,
+    *,
+    tool: InternalTool,
+    actor: Actor,
+    action: DescribedAction,
+    arguments: JsonObject,
+    judgement: Judgement,
+    run_ctx: ToolContext,
+    decider: Person,
+    by_domo: bool,
+    now: datetime,
+) -> tuple[AmendOutcome, ActionRecord, Confirmation]:
+    """Step 4 of ``_amend_his_own``: his changed call (``action``, judged as ``actor``) runs now,
+    on ``session`` (which holds the row lock of ``c``): ``c`` becomes ``executing`` with what runs
+    (``amended_arguments``, its action), decided by a change (by ``decider``, the answerer, who
+    was marked so; or in his name, ``by_domo``, his own change being nobody's yes), counted once
+    in his history (``_count_for_domo``), after the judge's verdict is audited; then the call runs
+    in ``run_ctx``, the turn it was first made in, as its requester's (``_run_and_settle``)."""
+    if by_domo:
+        c.decided_at = now
+        c.decided_via = "change"
+    c.status = "executing"
+    c.amended_arguments = arguments
+    c.action = dict(action.as_json())
+    await audit_judgement(
+        session, actor=actor, tool_name=c.tool_name, action=action, judgement=judgement
+    )
+    await _count_for_domo(session, c, actor, action)
+    ran, record = await _run_and_settle(
+        session,
+        session_factory,
+        c,
+        tool=tool,
+        action=action,
+        arguments=arguments,
+        ctx=run_ctx,
+        decider=decider,
+        via="change",
+        changed=True,
+        by_domo=by_domo,
+    )
+    return ran, record, c
+
+
+@dataclass(frozen=True)
+class _Placed:
+    """Whose yes a request born of a change waits for, and where (invariant ii of fix round 2):
+    the agreement the barrier asks (``approver``, ``question``), in the conversation of the turn
+    it was first made in; else the yes of the person the changed action concerns
+    (``concerned_id``, ``policy.subjects.concerned_of``): there when that is the one who asked,
+    else in their own active conversation (``elsewhere``)."""
+
+    approver: Approver
+    question: str | None
+    concerned_id: uuid.UUID | None
+    conversation_id: uuid.UUID
+    elsewhere: bool
+
+
+async def _placed_again(
+    session: AsyncSession,
+    requester_id: uuid.UUID,
+    action: DescribedAction,
+    decision: Allow | NeedsApproval,
+    made_in: uuid.UUID,
+    now: datetime,
+) -> _Placed:
+    """Where and for whom the changed ``action`` of ``requester_id`` waits (``_Placed``).
+    ``InvalidArguments("not_possible")`` when nobody can answer for it (no owner now)."""
+    if isinstance(decision, NeedsApproval):
+        return _Placed(decision.approver, decision.question, None, made_in, False)
+    try:
+        concerned = await concerned_of(session, subject_of(action, None, requester_id), action, now)
+    except LookupError:
+        raise InvalidArguments("not_possible", _NOBODY_TO_ASK) from None
+    if concerned == requester_id:
+        return _Placed("self", None, concerned, made_in, False)
+    theirs = await ConversationStore(session).active_conversation(concerned)
+    return _Placed("self", None, concerned, theirs.id, True)
+
+
+async def _still_concerns(
+    session: AsyncSession,
+    c: Confirmation,
+    action: DescribedAction,
+    requester_id: uuid.UUID,
+    now: datetime,
+) -> bool:
+    """Whether the person ``c`` waits for (``concerned_id``) still answers for the thing
+    ``action`` (as described at the yes) is about (``concerned_of``, read again): false once the
+    thing is someone else's, or nobody can answer for it (no owner now)."""
+    try:
+        concerned = await concerned_of(session, subject_of(action, None, requester_id), action, now)
+    except LookupError:
+        return False
+    return concerned == c.concerned_id
+
+
+async def _message_in(
+    session: AsyncSession, c: Confirmation, made_in: uuid.UUID
+) -> uuid.UUID | None:
+    """A reply of the conversation ``made_in`` (the turn ``c`` was first made in), for a request
+    born of a change of ``c`` to keep (``message_id``: ``store.conversation_made_in``): its own,
+    when it is one, else the latest there; ``None`` when there is none."""
+    if c.message_id is not None:
+        found = await session.scalar(
+            select(Message.conversation_id).where(Message.id == c.message_id)
+        )
+        if found == made_in:
+            return c.message_id
+    return await session.scalar(
+        select(Message.id)
+        .where(Message.conversation_id == made_in)
+        .order_by(Message.created_at.desc())
+        .limit(1)
+    )
+
+
+def _waiting_key(placed: _Placed) -> str:
+    """The card of the action that shows a request born of a change (``placed``): whose yes it
+    waits for, the person it concerns, by no name, when it waits in their own conversation."""
+    return (
+        "action.card.waiting.the_concerned"
+        if placed.elsewhere
+        else f"action.card.waiting.{placed.approver}"
+    )
+
+
+def _told_elsewhere(ctx: ToolContext, placed: _Placed) -> uuid.UUID | None:
+    """The person a request born of a change waits for (``placed``) when they must be told of it
+    apart from this turn: the person it concerns, when it waits in another conversation than this
+    turn's and they are not the person of this turn; ``None`` otherwise."""
+    concerned = placed.concerned_id
+    if concerned is None or concerned == ctx.person.id:
+        return None
+    return None if placed.conversation_id == ctx.conversation_id else concerned
+
+
+async def _tell_who_answers(
+    session: AsyncSession, ctx: ToolContext, placed: _Placed, now: datetime
+) -> None:
+    """News for the person a request born of a change waits for, when they are told of it apart
+    from this turn (``_told_elsewhere``), in the transaction that makes it."""
+    told = _told_elsewhere(ctx, placed)
+    if told is not None:
+        # Imported here: ``conversation.visits`` reads the requests from this package.
+        from domo_core.conversation.visits import news_for
+
+        await news_for(session, told, now=now)
+
+
+def _shown_there(asked: Asked | None, placed: _Placed) -> Asked | None:
+    """What a request born of a change asks, as stored: without the judge's reason when it waits
+    in the conversation of someone else than the one who asked, who wrote nothing of it (the
+    judge wrote it from the one who asked's case: ruling R29). The fact that the judge warned is
+    kept, never its words (ruling R69), with the code's own line that it cannot be undone (R72):
+    the answer of the person it waits for is remembered."""
+    if asked is None or not placed.elsewhere:
+        return asked
+    return for_the_person_concerned(asked)
+
+
+def _question_of(c: Confirmation, placed: _Placed) -> str | None:
+    """The question a limit asked of a request born of a change of ``c``: the barrier's now when
+    it asks another approver's agreement, else the one ``c`` kept, while it waits for the same
+    person's yes."""
+    if placed.question is not None:
+        return placed.question
+    same = placed.approver == c.approver_kind and placed.concerned_id == c.concerned_id
+    return c.ask_reason if same else None
+
+
+async def _changed_request(
+    session: AsyncSession,
+    c: Confirmation,
+    *,
+    actor: Actor,
+    action: DescribedAction,
+    arguments: JsonObject,
+    decision: Decision,
+    approver: Approver,
+    asked: Asked | None,
+    conversation_id: uuid.UUID,
+    message_id: uuid.UUID | None,
+    now: datetime,
+    question: str | None,
+    note: str | None,
+    concerned_id: uuid.UUID | None = None,
+    by_domo: bool = False,
+    judged_as: Actor | None = None,
+) -> Confirmation:
+    """The one way a change makes the request that replaces ``c`` (``create_confirmation``):
+    the changed call of the one who asked (``actor``), whose yes it waits for and where, what it
+    asks and the question a limit asked, what an approver said with the change (``note``), what
+    it is about (``policy.subjects``), his reason when it was born of his mark (``c``'s), the
+    person it concerns, and whether his history counts it already (the barrier let it through
+    for ``judged_as``, the actor it was judged as, ``actor`` when not given)."""
+    counted = isinstance(decision, Allow) and writes_for_domo(judged_as or actor, action)
+    return await create_confirmation(
+        session,
+        requester=actor,
+        tool_name=c.tool_name,
+        arguments=arguments,
+        action=action,
+        approver=approver,
+        asked=asked,
+        conversation_id=conversation_id,
+        message_id=message_id,
+        now=now,
+        question=question,
+        approver_note=note,
+        by_domo=by_domo,
+        # The ``allow`` written in his name counts it in his history already.
+        counted_for_domo=counted,
+        subject_key=subject_of(action, None, actor.person_id).key,
+        idea_reason=c.idea_reason,
+        concerned_id=concerned_id,
+        # His request born in a person's turn of the owner's rule stays so (re-review RC1).
+        in_their_turn=by_domo and c.in_their_turn,
+    )
+
+
+def _notify_the_concerned(ctx: ToolContext, placed: _Placed) -> None:
+    """Once a request waits for someone who is told of it apart from this turn
+    (``_told_elsewhere``), the core is told that a turn of theirs may be due (``ctx.notify``); a
+    failure is logged."""
+    told = _told_elsewhere(ctx, placed)
+    if told is None or ctx.notify is None:
+        return
+    try:
+        ctx.notify(told)
+    except Exception as error:
+        logger.error("The core was not told of news (%s)", type(error).__name__)
 
 
 async def _change_refused(
@@ -2152,6 +2902,8 @@ async def _ask_again(
     asked: Asked | None,
     note: str | None = None,
     judged: Judgement | None = None,
+    placed: "_Placed | None" = None,
+    made_in: uuid.UUID | None = None,
 ) -> tuple[AmendOutcome, Confirmation]:
     """Step 5 of ``amend_confirmation``, in one transaction: the new request of the requester
     (``actor``; the changed call, asking ``asked``, with the approver of the one it replaces and
@@ -2162,7 +2914,29 @@ async def _ask_again(
     request it replaces made ``replaced``, and the audit (the judge's verdict on the change when
     it judged it, ``judged``; what the barrier said of the changed action; then the decision of
     ``person``, as the outcome), last. Committed; an error leaves nothing stored. Returns the
-    outcome and the new request."""
+    outcome and the new request.
+
+    ``placed``: for a request that waited for the person it concerns, whose yes the new one waits
+    for and where (``_placed_again``), keeping the turn it was first made in (``made_in``: a reply
+    of it, ``_message_in``), shown by this turn's reply only where it waits in this very
+    conversation, without the judge's reason in someone else's (ruling R29), and news for them."""
+    if placed is not None and made_in is not None:
+        return await _ask_again_placed(
+            session,
+            c,
+            person,
+            actor,
+            action,
+            decision,
+            arguments,
+            ctx,
+            now,
+            asked=asked,
+            note=note,
+            judged=judged,
+            placed=placed,
+            made_in=made_in,
+        )
     approver: Approver
     if isinstance(decision, NeedsApproval) and decision.approver != approver_of(c):
         approver, question = decision.approver, decision.question
@@ -2174,23 +2948,22 @@ async def _ask_again(
     outcome, message_id, shown_to_approver = _presented_by(
         ctx, person, actor.person_id, approver, before=c.approver_kind
     )
-    new = await create_confirmation(
+    new = await _changed_request(
         session,
-        requester=actor,
-        tool_name=c.tool_name,
-        arguments=arguments,
+        c,
+        actor=actor,
         action=action,
+        arguments=arguments,
+        decision=decision,
         approver=approver,
         asked=asked,
         conversation_id=c.conversation_id,
         message_id=message_id,
         now=now,
         question=question,
-        shown_to_approver=shown_to_approver,
-        approver_note=note,
-        # The ``allow`` written below in his name counts it in his history already.
-        counted_for_domo=isinstance(decision, Allow) and writes_for_domo(actor, action),
+        note=note,
     )
+    new.shown_to_approver_message_id = shown_to_approver
     c.status = "replaced"
     c.replaced_by = new.id
     await session.flush()
@@ -2213,6 +2986,87 @@ async def _ask_again(
     )
     await session.commit()
     return outcome, new
+
+
+async def _ask_again_placed(
+    session: AsyncSession,
+    c: Confirmation,
+    person: Person,
+    actor: Actor,
+    action: DescribedAction,
+    decision: Decision,
+    arguments: JsonObject,
+    ctx: ToolContext,
+    now: datetime,
+    *,
+    asked: Asked | None,
+    note: str | None,
+    judged: Judgement | None,
+    placed: _Placed,
+    made_in: uuid.UUID,
+) -> tuple[AmendOutcome, Confirmation]:
+    """``_ask_again`` for a request that waited for the person it concerns (``placed``)."""
+    here = placed.conversation_id == ctx.conversation_id
+    new = await _changed_request(
+        session,
+        c,
+        actor=actor,
+        action=action,
+        arguments=arguments,
+        decision=decision,
+        approver=placed.approver,
+        asked=_shown_there(asked, placed),
+        conversation_id=placed.conversation_id,
+        message_id=await _message_in(session, c, made_in),
+        now=now,
+        question=_question_of(c, placed),
+        note=note,
+        concerned_id=placed.concerned_id,
+    )
+    # Shown by this turn's reply where it waits in this very conversation, to whoever answers it.
+    answers = _answers(placed, person, actor.person_id)
+    new.last_shown_message_id = ctx.domo_message_id if here and answers else None
+    if not here or not answers or placed.concerned_id is not None:
+        new.shown_to_approver_message_id = None
+    elif placed.approver != "self":
+        new.shown_to_approver_message_id = ctx.domo_message_id
+    c.status = "replaced"
+    c.replaced_by = new.id
+    await session.flush()
+    await _tell_who_answers(session, ctx, placed, now)
+    if ctx.domo_message_id is not None:
+        await ConversationStore(session).add_action(
+            ctx.domo_message_id,
+            tool_name=c.tool_name,
+            action_type=action_type_of(c),
+            status="waiting",
+            summary={
+                "key": "action.card.waiting.self" if answers else _waiting_key(placed),
+                "params": {},
+            },
+            confirmation_id=new.id,
+        )
+    outcome: AmendOutcome = (
+        "asked_again" if answers and placed.approver == c.approver_kind else "approver_changed"
+    )
+    if judged is not None:
+        await audit_judgement(
+            session, actor=actor, tool_name=c.tool_name, action=action, judgement=judged
+        )
+    await record_decision(session, actor, action, decision, tool_name=c.tool_name)
+    await _audit_decided(
+        session, c, person, outcome=outcome, via="change", changed=True, replaced_by=new.id
+    )
+    await session.commit()
+    return outcome, new
+
+
+def _answers(placed: _Placed, person: Person, requester_id: uuid.UUID) -> bool:
+    """Whether ``person`` answers a request placed so (``_Placed``): the person it concerns, or
+    an approver of the agreement it waits for."""
+    if placed.concerned_id is not None:
+        return placed.concerned_id == person.id
+    return approves(placed.approver, person, requester_id)
 
 
 # --- a change of rights, drafted again by the writer (spec 5.3) ----------------------------------
@@ -2333,9 +3187,15 @@ async def _amend_rights(
         replay = (actor, action, decision)
         if isinstance(decision, Refuse):
             await _mark_decided(
-                session, c, person, via="change", reply_message_id=ctx.reply_message_id, now=now
+                session,
+                c,
+                person,
+                via="change",
+                reply_message_id=ctx.reply_message_id,
+                now=now,
+                answer=None,
             )
-            await _refuse(session, c, person, via="change", changed=True, replay=replay)
+            await _refuse(session, c, person, via="change", now=now, changed=True, replay=replay)
             _use_grant(ctx, confirmation_id)
             reason = _why_refused(decision, person, person.id)
             return "refused", _refused_yes(c, reason, limit=_refusal_of(decision)), c
@@ -2355,11 +3215,24 @@ async def _amend_rights(
             owner_rule=owner_rule_of(decision.never_ask),
         )
         await _mark_decided(
-            session, c, person, via="change", reply_message_id=ctx.reply_message_id, now=now
+            session,
+            c,
+            person,
+            via="change",
+            reply_message_id=ctx.reply_message_id,
+            now=now,
+            answer=None if judgement.verdict == "do_not" else "yes",
         )
         if judgement.verdict == "do_not":
             await _refuse(
-                session, c, person, via="change", changed=True, replay=replay, judged=judgement
+                session,
+                c,
+                person,
+                via="change",
+                now=now,
+                changed=True,
+                replay=replay,
+                judged=judgement,
             )
             _use_grant(ctx, confirmation_id)
             refused = refused_by_the_judge(c.tool_name, action.action_type, judgement.reason)
@@ -2382,6 +3255,10 @@ async def _amend_rights(
             never_ask=decision.never_ask,
             yes_already_given=False,
         )
+        if given_by_the_change(asked) and warned_first(judgement, action, None, decision.never_ask):
+            # What a judge must weigh first (the last key), on a silent judge: a new request
+            # asks a plain yes, never the change's words.
+            asked = Asked("yes", "judge", None)
         if not given_by_the_change(asked):
             outcome, new = await _ask_again(
                 session,
@@ -2541,6 +3418,8 @@ async def _amend_chain(
         asked_before=False,
         # A person's chain is theirs, whatever the turn (ledger n3).
         on_his_own=False,
+        # The clues of who speaks are the decider's: never read as the requester's.
+        speaker=ctx.speaker if requester.id == decider.id else None,
     )
     done_actions = [DescribedAction.from_json(row.action) for row in done if row.action is not None]
     plan: ChainPlan | None = None
@@ -2567,7 +3446,13 @@ async def _amend_chain(
             _, record, _ = await _change_refused(session, c, decider, actor, plan.action, decision)
         else:
             await _mark_decided(
-                session, c, decider, via="change", reply_message_id=ctx.reply_message_id, now=now
+                session,
+                c,
+                decider,
+                via="change",
+                reply_message_id=ctx.reply_message_id,
+                now=now,
+                answer=None,
             )
             c.approver_note = note
             await _refuse(
@@ -2575,6 +3460,7 @@ async def _amend_chain(
                 c,
                 decider,
                 via="change",
+                now=now,
                 changed=True,
                 replay=(actor, plan.action, decision),
             )
@@ -2614,9 +3500,11 @@ async def _amend_chain(
         action=plan.action,
         says=describe_chain(plan.arguments, REFERENCE),
         rights=rights_say(decision),
-        steps=told,
+        steps=plan.steps,
         request=request,
         owner_rule=owner_rule_of(plan.never_ask),
+        # Its reason goes back to whoever changes it, theirs only when the case is.
+        told_to=decider.id,
     )
     if judgement.verdict == "do_not" and for_others:
         # Their change of their chain that waits for someone else's yes, which the judge refuses:
@@ -2625,13 +3513,26 @@ async def _amend_chain(
         _use_grant(ctx, c.id)
         return "refused", record, c
     await _mark_decided(
-        session, c, decider, via="change", reply_message_id=ctx.reply_message_id, now=now
+        session,
+        c,
+        decider,
+        via="change",
+        reply_message_id=ctx.reply_message_id,
+        now=now,
+        answer=None if judgement.verdict == "do_not" else "yes",
     )
     c.approver_note = note
     if judgement.verdict == "do_not":
         # Refused at once: whoever's agreement it would need is never bothered (spec 4.4).
         await _refuse(
-            session, c, decider, via="change", changed=True, replay=replay, judged=judgement
+            session,
+            c,
+            decider,
+            via="change",
+            now=now,
+            changed=True,
+            replay=replay,
+            judged=judgement,
         )
         _use_grant(ctx, c.id)
         refused = refused_by_the_judge(c.tool_name, plan.action.action_type, judgement.reason)
@@ -2646,6 +3547,9 @@ async def _amend_chain(
         yes_already_given=False,
         chain_rule=plan.chain_rule,
     )
+    if given_by_the_change(asked) and warned_first(judgement, plan.action, plan, plan.never_ask):
+        # A step a judge must weigh first (the last key), on a silent judge: asked again.
+        asked = Asked("yes", "judge", None)
     if by_the_rights or not given_by_the_change(asked):
         # Asked of whoever answers it: a plain yes when nothing more is (the accord alone).
         return await _ask_the_chain_again(

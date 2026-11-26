@@ -8,6 +8,7 @@ person's message; without them, in a turn nobody asked for, the plan is Domo's o
 
 import json
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -236,6 +237,20 @@ async def test_their_exact_words_are_kept_only_when_they_are_in_their_message(se
         (None, True),
         (None, True),
     ]
+
+
+async def test_a_plan_set_on_his_own_is_marked_his(session_factory):
+    # A turn he acts in on his own is nobody's answer: whatever it carries, the plan is his own
+    # (``acts_alone``), even when the context still holds the id of a message.
+    alex, _ = await two_people(session_factory)
+    ctx = replace(context(alex, session_factory), on_his_own=True)
+    arguments = {"why": "Check the bins myself.", "on_return": True}
+    await TOOLS["plan_set"].describe(arguments, ctx.actor, ctx)
+    await TOOLS["plan_set"].execute(arguments, ctx)
+    # In a turn that answers the person's message, it stays what they asked for.
+    await run("plan_set", {"why": "Ask about the exam.", "on_return": True}, alex, session_factory)
+    kept = [(p.person_id, p.made_by_domo) for p in await stored(session_factory)]
+    assert kept == [(alex.id, True), (alex.id, False)]
 
 
 async def test_a_turn_with_someone_elses_words_keeps_none_of_theirs(session_factory):

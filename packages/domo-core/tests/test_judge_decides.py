@@ -29,6 +29,7 @@ from domo_core.conversation.prepare import TurnRequest, prepare_turn
 from domo_core.conversation.speaker import Speaker
 from domo_core.household.models import Invitation
 from domo_core.llm.types import ChatMessage, JsonObject, ToolCall, ToolDefinition
+from domo_core.memory.service import keep
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.models import PolicyRight
 from domo_core.policy.roles import Actor
@@ -403,6 +404,38 @@ async def test_a_silent_judge_means_a_yes_in_a_turn_that_was_told_a_note(
     assert await count_invitations() == 1
 
 
+INVITE_TOM = {"display_name": "Tom", "role": "guest"}
+
+
+async def test_a_judge_silent_once_in_a_turn_told_a_note_is_asked_again(
+    owner_chat, a_note_for_owner, count_invitations, chat_server
+):
+    # Audit CNV-2 (ruling R6): in a turn that answers the person and was told words from
+    # outside, a silent judge is asked once more before the fallback asks them a yes.
+    invite = ToolCall("r1", "household_invite", json.dumps(INVITE_TOM))
+    owner_chat.use_model(FakeChatModel(tool_script=[invite, "Done."], judge=["maybe", "do"]))
+    calls = len(judge_calls(chat_server))
+    reply = await owner_chat.say("Hello")
+    assert len(judge_calls(chat_server)) - calls == 2
+    assert reply.actions == [{"tool": "household_invite", "status": "done"}]
+    assert await count_invitations() == 1
+    async with chat_server.session_factory() as reader:
+        assert (await reader.scalars(select(Confirmation))).all() == []
+
+
+async def test_a_judge_silent_twice_in_a_turn_told_a_note_falls_back_to_a_yes(
+    owner_chat, a_note_for_owner, confirmation_ask, count_invitations, chat_server
+):
+    invite = ToolCall("r1", "household_invite", json.dumps(INVITE_TOM))
+    owner_chat.use_model(FakeChatModel(tool_script=[invite, "Asked."], judge="maybe"))
+    calls = len(judge_calls(chat_server))
+    reply = await owner_chat.say("Hello")
+    assert len(judge_calls(chat_server)) - calls == 2
+    assert reply.actions == [{"tool": "household_invite", "status": "waiting"}]
+    assert await confirmation_ask(reply.pending_confirmation_id) == ("yes", "judge", None)
+    assert await count_invitations() == 0
+
+
 async def test_the_judge_reads_a_reply_that_told_a_note_as_relayed(
     owner_chat, a_note_for_owner, chat_server
 ):
@@ -491,6 +524,24 @@ async def test_what_an_approver_said_of_a_request_that_waits_is_words_from_outsi
     assert reply.actions == [{"tool": "profile_rename", "status": "waiting"}]
     assert await confirmation_ask(reply.pending_confirmation_id) == ("yes", "judge", None)
     assert await own_answer_of(session_factory, reply) is False
+
+
+async def test_a_reply_after_text_of_a_program_came_into_the_turn_is_not_his_own_answer(
+    owner_chat, session_factory, monkeypatch
+):
+    # What a tool he made or a program gave back is text nobody of the house said
+    # (``ToolContext.outside_text``): the reply written after it is no answer of his own, though
+    # the turn was told nothing from outside to begin with.
+    alone = await owner_chat.say_with_tool("profile_rename", {"name": "Owner B"}, judge="maybe")
+    assert await own_answer_of(session_factory, alone) is True
+
+    monkeypatch.setattr(
+        "domo_core.conversation.execution.brings_outside_text",
+        lambda action_type: action_type == "profile.rename",
+    )
+    after = await owner_chat.say_with_tool("profile_rename", {"name": "Owner C"}, judge="maybe")
+    assert after.actions == [{"tool": "profile_rename", "status": "done"}]
+    assert await own_answer_of(session_factory, after) is False
 
 
 async def test_a_history_that_quotes_an_approvers_note_is_words_from_outside(
@@ -914,14 +965,21 @@ async def test_the_judge_may_refuse_and_says_why(
     owner_chat, adult_member, stored_notes, last_audit_entry
 ):
     reply = await owner_chat.say_with_tool(
-        "note_leave", {"recipient": "Alex", "text": "you are lazy"}, judge="do_not: that is unkind"
+        "note_leave",
+        {"recipient": "Alex", "text": "you are lazy"},
+        judge="do_not: that is unkind\nlog: the note insults its reader",
     )
     assert reply.actions == [{"tool": "note_leave", "status": "refused", "reason": "judge"}]
     assert "that is unkind" in plain(reply.cards_html)
     assert t("action.card.refused.judge", "en", reason="that is unkind") in plain(reply.cards_html)
+    # The reason kept for the journal is never shown nor told to the model that talks.
+    assert "insults" not in plain(reply.cards_html)
     assert await stored_notes() == []
     entry = await last_audit_entry("judge.verdict")
-    assert (entry.details["verdict"], entry.details["reason"]) == ("do_not", "that is unkind")
+    assert (entry.details["verdict"], entry.details["reason"]) == (
+        "do_not",
+        "the note insults its reader",
+    )
     result = reply.model_results[-1]
     assert (result["status"], result["reason"], result["why"]) == (
         "refused",
@@ -1012,7 +1070,7 @@ async def test_a_chain_let_through_that_meets_a_step_needing_an_adult_waits_for_
     assert await stored_notes() == []
 
 
-async def test_a_chain_let_through_with_a_request_stops_at_a_step_that_needs_an_adult(
+async def test_a_chain_let_through_with_a_request_waits_for_an_adult_at_a_step_that_needs_one(
     child_chat,
     owner_member,
     grant,
@@ -1022,7 +1080,7 @@ async def test_a_chain_let_through_with_a_request_stops_at_a_step_that_needs_an_
     confirmation_status,
     steps_rows,
     session_factory,
-):  # F28
+):  # F28, JDG-9: no longer a dead end
     sam = child_chat.person
     await grant("household.invite", person=sam, access="allow", approver="self")
     by_themselves = await grant(
@@ -1045,16 +1103,17 @@ async def test_a_chain_let_through_with_a_request_stops_at_a_step_that_needs_an_
     invitation = await invitation_named(session_factory, "Gil")
     await join_with_invitation(invitation.id, "gil")
     await upkeep_pass()
-    # Nobody said yes: the chain stops there, it is not sent to an adult.
-    assert await confirmation_status(cid) == "failed"
+    # Nobody said yes: the rest of the chain waits for an adult's, asking a plain yes of them.
+    assert await confirmation_status(cid) == "pending"
     request = await request_of(session_factory, cid)
-    assert request.approver_kind == "self"
+    assert (request.approver_kind, request.concerned_id) == ("adult", None)
+    assert (request.ask, request.asked_by) == ("yes", "approver")
     rows = await steps_rows(cid)
-    assert [row.status for row in rows] == ["done", "failed"]
-    assert rows[1].result is not None and rows[1].result["reason"] == "needs_confirmation"
-    # Review I2: Domo reads that it stopped, never that it was done.
+    assert [row.status for row in rows] == ["done", "planned"]
+    # Review I2: Domo's line follows the request: it waits, it was neither done nor failed.
     told = await history_told(child_chat)
-    assert "[action chain.run: failed]" in told and "[action chain.run: done]" not in told
+    assert "[action chain.run: waiting]" in told
+    assert "[action chain.run: done]" not in told and "[action chain.run: failed]" not in told
 
 
 async def test_an_amend_in_words_never_runs_what_asked_an_explicit_yes_or_a_proof(
@@ -1173,6 +1232,8 @@ async def test_the_judge_reads_who_speaks(owner_chat, owner_member, chat_server)
                 "minutes_ago": 0,
             }
         ],
+        # Their first message of this conversation: never heard in it before.
+        "last_heard_minutes_ago": None,
     }
     # Who it is stays the code's: the judge never reads an identifier of the person or a device.
     assert str(owner_member.person.id) not in json.dumps(case)
@@ -1213,3 +1274,131 @@ async def test_an_unestablished_speaker_has_nobodys_rights(
         chat_server, owner_member, settings, gk_client, rename
     )
     assert entry.details["decision"] == "allow"
+
+
+# --- an agreement left to the judge first (task 25) ----------------------------------------------
+
+FRIEND = "Is Robin a friend of Alex?"
+
+
+async def test_a_judge_limit_lets_through_what_the_judge_knows(
+    adult_chat, owner_member, grant, count_invitations, count_confirmations
+):
+    # The owner's limit leaves it to the judge (spec part 13): it knows, it is done, and the
+    # owner is not bothered.
+    await grant("household.invite", role="adult", limit='"judge"', judge_question=FRIEND)
+    reply = await adult_chat.say_with_tool(
+        "household_invite", INVITE_ROBIN, judge="do: Robin is Alex's friend"
+    )
+    assert reply.actions == [{"tool": "household_invite", "status": "done"}]
+    assert await count_invitations() == 1
+    assert await count_confirmations() == 0
+    case = judge_cases(adult_chat.server)[-1]
+    assert case["rights"] == {
+        "allowed": True,
+        "needs": "owner",
+        "question": FRIEND,
+        "judge_decides": True,
+    }
+
+
+@pytest.mark.parametrize("verdict", ["yes: I do not know Robin", "maybe"])
+async def test_a_judge_limit_the_judge_doubts_goes_to_the_owner(
+    adult_chat, owner_member, grant, count_invitations, confirmation_status, verdict
+):
+    # A doubt, or a judge that does not answer, sends it to the owner, with the question.
+    await grant("household.invite", role="adult", limit='"judge"', judge_question=FRIEND)
+    reply = await adult_chat.say_with_tool("household_invite", INVITE_ROBIN, judge=verdict)
+    assert reply.actions == [{"tool": "household_invite", "status": "waiting"}]
+    assert reply.model_results[-1]["by"] == "the owner"
+    assert await confirmation_status(reply.pending_confirmation_id) == "pending"
+    assert await count_invitations() == 0
+
+
+async def test_an_ask_owner_limit_always_goes_to_the_owner(
+    adult_chat, owner_member, grant, count_invitations
+):
+    # "ask_owner" is the owner's own word (ruling P4): whatever the judge says, he is asked.
+    await grant("household.invite", role="adult", limit='"ask_owner"', judge_question=FRIEND)
+    reply = await adult_chat.say_with_tool("household_invite", INVITE_ROBIN, judge="do")
+    assert reply.actions == [{"tool": "household_invite", "status": "waiting"}]
+    assert reply.model_results[-1]["by"] == "the owner"
+    assert judge_cases(adult_chat.server)[-1]["rights"]["judge_decides"] is False
+    assert await count_invitations() == 0
+
+
+async def test_a_chain_step_under_a_judge_limit_goes_to_the_owner(
+    adult_chat, owner_member, grant, count_invitations
+):
+    # Ruling P4: only a single action is judged first; a chain's step asks as it says.
+    await grant("household.invite", role="adult", limit='"judge"', judge_question=FRIEND)
+    reply = await adult_chat.say_with_tool(
+        TOOL, chain(("household_invite", INVITE_ROBIN)), judge="do"
+    )
+    assert reply.actions == [{"tool": TOOL, "status": "waiting"}]
+    assert reply.model_results[-1]["by"] == "the owner"
+    assert await count_invitations() == 0
+
+
+async def _heard(pilot: ChatPilot, said_by: uuid.UUID, content: str) -> None:
+    """A memory of ``said_by``'s own words about the pilot's person, checked in their message,
+    committed."""
+    async with pilot.server.session_factory() as writer:
+        await keep(
+            writer,
+            said_by=said_by,
+            subject="leaving the household",
+            content=content,
+            kind="fact",
+            origin="own_words",
+            kept_private=False,
+            core=False,
+            now=pilot.server.clock(),
+            about_id=pilot.person.id,
+            words_checked=True,
+        )
+        await writer.commit()
+
+
+LEAVE_OK = "Sam may leave the household whenever he wants"
+
+
+async def test_an_adults_yes_already_heard_lets_a_childs_request_through(
+    child_chat, adult_member, count_confirmations
+):
+    # The owner's decision D9: an adult already said yes to this very request; nobody is asked
+    # again, the adult included.
+    await _heard(child_chat, adult_member.person.id, LEAVE_OK)
+    reply = await child_chat.say_with_tool("household_leave", {}, judge="do: Alex already said yes")
+    assert reply.actions == [{"tool": "household_leave", "status": "done"}]
+    assert await count_confirmations() == 0
+    case = judge_cases(child_chat.server)[-1]
+    assert case["rights"]["needs"] == "adult" and case["rights"]["judge_decides"] is True
+    # The line is found by the words of the action ("Leave the household."), whatever else the
+    # case holds.
+    [line] = [line for line in case.get("others_said", []) if line["content"] == LEAVE_OK]
+    assert (line["who"], line["may_agree"]) == ("Alex", True)
+
+
+async def test_an_adults_yes_heard_the_judge_doubts_goes_to_the_adult(child_chat, adult_member):
+    await _heard(child_chat, adult_member.person.id, LEAVE_OK)
+    reply = await child_chat.say_with_tool("household_leave", {}, judge="yes: not this time")
+    assert reply.actions == [{"tool": "household_leave", "status": "waiting"}]
+    assert reply.model_results[-1]["by"] == "an adult"
+
+
+@pytest.mark.parametrize("who", ["guest", "child"])
+async def test_a_yes_of_someone_who_may_not_agree_is_never_enough(
+    child_chat, adult_member, add_member, confirmation_ask, who
+):
+    # A guest's or another child's "yes" is no adult's agreement: the code does not mark it,
+    # the case does not leave the decision to the judge, and its do changes nothing.
+    other = await add_member("Tom", who)
+    await _heard(child_chat, other.id, LEAVE_OK)
+    reply = await child_chat.say_with_tool("household_leave", {}, judge="do: Tom said yes")
+    assert reply.actions == [{"tool": "household_leave", "status": "waiting"}]
+    assert reply.model_results[-1]["by"] == "an adult"
+    assert await confirmation_ask(reply.pending_confirmation_id) == ("yes", "approver", None)
+    case = judge_cases(child_chat.server)[-1]
+    assert case["rights"]["judge_decides"] is False
+    assert all("may_agree" not in line for line in case.get("others_said", []))

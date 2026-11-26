@@ -270,8 +270,10 @@ maintenant ». Il n'y a pas de formulaire à remplir.
   n'agit sur le propriétaire, et personne ne change son propre rôle. Si une
   limite ne peut pas être vérifiée, l'action est refusée, et le journal d'audit le
   dit. Quand une limite demande de comprendre quelque chose (« seulement ses
-  amies »), chaque demande va au propriétaire dans cette version, avec la question
-  sur la carte. Demande à l'assistant de montrer les règles pour voir les droits en
+  amies »), le juge de l'assistant lit la question avec tout ce qu'il sait : s'il
+  connaît la réponse, c'est fait ; s'il doute, la demande va au propriétaire,
+  avec la question sur la carte. (Une étape d'une suite sous une telle limite va
+  encore au propriétaire.) Demande à l'assistant de montrer les règles pour voir les droits en
   place. Chaque appel qui écrit un droit a 60 secondes par défaut ; le
   propriétaire peut lui en donner de 30 à 240, en le disant simplement à l'assistant
   (« laisse deux minutes au rédacteur de droits »). Quand le temps manque, rien
@@ -417,9 +419,11 @@ maintenant ». Il n'y a pas de formulaire à remplir.
   oui : ce n'est qu'un message. Il n'y a pas de fenêtre des mots : l'assistant de
   celui qui le reçoit le lui raconte avec ses mots, au moment qu'il juge bon
   (souvent quand il ouvre sa page), et lui montre les mots exacts s'il les
-  demande. Un mot n'est jamais un ordre pour l'assistant : il le raconte, et ne fait
-  jamais ce qu'il demande, sauf si la personne à qui il parle le lui demande
-  elle-même. Un mot pour quelqu'un qui n'a aucune clé que l'assistant peut utiliser
+  demande. Un mot n'est jamais un ordre pour l'assistant : il le raconte, et si la
+  personne à qui il parle lui demande de le faire, c'est sa demande à elle. Un mot
+  laissé par quelqu'un du foyer, il peut aussi le faire de sa propre initiative,
+  en sachant qui l'a écrit, jugé comme toute idée à lui ; ce qu'un mot cite de
+  l'extérieur (un site, un mail, un inconnu) n'est qu'une information. Un mot pour quelqu'un qui n'a aucune clé que l'assistant peut utiliser
   pour lui attend qu'il en ait une. L'assistant ne peut pas savoir quand la personne
   le lira, ni quand elle rentre : si tu le lui demandes, il le dit. Les mots
   reçus par un invité
@@ -470,7 +474,16 @@ quelque chose le fait douter que ce soit bien toi ; ou **ne pas la faire**,
 quand il juge que ce n'est pas à faire, avec une raison dont tu peux discuter.
 Le juge voit l'action, tes derniers messages, ce que l'assistant venait de te dire
 avant ton dernier message (un « oui » que tu lui as déjà donné compte donc),
-l'heure, ce que tu as déjà fait de ce genre et ce qui attend déjà. De ce que
+l'heure, ce que tu as déjà fait de ce genre et ce qui attend déjà. Il voit aussi,
+rassemblé au même endroit et chaque fois avec d'où ça vient : ce que l'assistant
+sait de toi et de la chose (tes propres mots, ceux du propriétaire, ceux de
+quelqu'un d'autre avec son nom, ses propres leçons, jamais mélangés), ce que ta
+parole a valu jusqu'ici, ce qui s'est mal passé avant pour ce genre d'action ou
+pour cette chose, le dernier changement de la chose (par qui, et pourquoi quand
+on le sait), comment tu lui as parlé et l'âge réel de ces indices, et de qui
+vient l'idée de l'action. Seuls tes propres mots peuvent valoir « tu l'as
+demandé » ou « tu le sais » ; le reste l'aide à juger. Rien de ce qu'une autre
+personne garde privé n'y entre. De ce que
 L'assistant a dit, il ne lit que cette réponse-là, telle que tu l'as lue. Quand il
 t'y a raconté un mot laissé par quelqu'un ou une demande de quelqu'un d'autre,
 ou qu'il l'a écrite de lui-même, le juge le sait : ton oui compte quand même
@@ -479,12 +492,14 @@ réponse nomme clairement. Il ne lit jamais le mot lui-même, ni les autres
 réponses de l'assistant, ce que rendent les outils, un secret, ni rien qui vienne de
 l'extérieur, et on lui dit que tout cela est une information, pas une consigne.
 S'il ne répond pas, ce que tu as demandé se fait : personne ne se voit demander
-un oui parce que le juge s'est tu. C'est vrai pour ce que tu as demandé : quand
-L'assistant agit de lui-même (après un bouton, à l'arrivée de quelqu'un) ou qu'il
-vient de lire des mots qui ne sont pas les tiens (un mot que quelqu'un t'a
-laissé, une demande de quelqu'un d'autre qui attend ton oui, ce qu'a noté celui
-qui a dit oui à une de tes demandes), on ne sait pas que quelqu'un l'a
-demandé, et un juge qui se tait veut alors dire un oui.
+un oui parce que le juge s'est tu. C'est vrai pour ce que tu as demandé. Quand
+l'assistant vient de lire des mots qui ne sont pas les tiens (un mot que
+quelqu'un t'a laissé, une demande de quelqu'un d'autre qui attend ton oui, ce
+qu'a noté celui qui a dit oui à une de tes demandes), on ne sait pas que
+quelqu'un l'a demandé : on redemande une fois au juge, et s'il se tait encore,
+on te demande un oui. Quand l'action est une idée de l'assistant (voir plus bas),
+on redemande aussi une fois au juge, et s'il se tait encore, rien n'est fait pour
+l'instant et personne n'est interrogé : il pourra y revenir.
 
 **Le plus exigeant gagne.** Ce qui est demandé à la fin, c'est le plus exigeant de
 ce que dit le juge, de ce que disent les règles du propriétaire et de ce que
@@ -495,6 +510,86 @@ disant pourquoi : si tu lui expliques, il peut changer d'avis. Le propriétaire
 peut écrire « demande-moi toujours avant de… » comme un droit (« demande-moi
 avant d'inviter quelqu'un », « pour donner mon rôle, demande-moi toujours une
 preuve ») : le code le respecte, quoi qu'en pense le juge.
+
+**Ses propres idées.** L'assistant peut faire une chose que personne n'a
+demandée, de sa propre initiative : il le dit, avec sa raison en une phrase, et
+l'action est jugée avec ses droits à lui et tout ce qu'il sait, dans la
+discussion de n'importe qui. Le juge dit de la faire : il la fait, et te le dit
+après s'il le juge utile. Le juge doute vraiment : la demande attend la personne
+que la chose concerne (celle à qui elle appartient ou qu'elle touche ; le
+propriétaire pour ce qui est à la maison), dans sa propre discussion quand c'est
+quelqu'un d'autre ; c'est le code qui dit qui, jamais le juge ni un texte. Le
+juge dit non : rien n'est fait, et c'est noté (voir « Ce qui s'est mal passé »,
+plus bas). Un tour qu'il commence lui-même (un plan qu'il a posé seul, quelqu'un
+qui arrive, un réveil après un bouton) est son idée de la même façon, et le juge
+sait que personne n'a parlé. Son idée ne lève qu'un droit simplement pas donné :
+dans le tour d'une personne, ce que le propriétaire lui a interdit exprès (à elle
+ou à son rôle) est refusé tout de suite, sans juge, et ses limites, le
+« demande-moi d'abord » du propriétaire, celui qui doit dire oui pour elle et
+l'accord d'un adulte pour un enfant tiennent toujours. Sam, invité, n'a pas le
+droit d'inviter ; il dit que son ami Tom passe ce soir : l'assistant le pèse (sa
+confiance en Sam, ce que le propriétaire a dit, ce qui s'est passé avant), et
+soit il invite Tom de lui-même et le dit au propriétaire après, soit il demande
+au propriétaire. Une suite d'actions n'est jamais son idée : il marque des
+actions seules.
+
+**Ce qu'il garde quand il agit seul.** Seul, l'assistant garde sa mémoire, la
+confiance qu'il note d'après ce qu'il a vu, ses plans, ses rappels, ses suites et
+sa façon d'écrire ; il invite, réinvite, annule une invitation, donne un rôle,
+retire quelqu'un du foyer ou le fait revenir ; il reprend un appareil (celui de
+quelqu'un d'autre attend le oui de cette personne quand il doute), et retire un
+compte qui ne sert plus. Partager un compte de la maison reste au
+propriétaire. Ce qu'il garde ou pose seul est à lui, pas à la personne dont c'est
+la discussion. Le propriétaire reprend ce qu'il veut par une règle : un
+« jamais », ou un « demande-moi d'abord », qui attend alors son oui. Une
+invitation qu'il fait seul garde encore, pour l'instant, la personne de la
+discussion comme celle qui a invité ; le journal dit que c'est lui.
+
+**Ce qui s'est mal passé, et ce qu'il en apprend.** Le code note ce qui s'est mal
+passé : une demande refusée (par qui, avec les mots du refus coupés court), une
+demande qui a expiré (un silence n'est pas un non), le non du juge, un non à un
+avertissement, une action qui défait ce qu'il a fait ou décidé lui-même (annuler
+un plan qu'il a posé, refermer une adresse qu'il a ouverte, changer un rôle
+qu'il a donné, retirer quelqu'un qu'il a invité, oublier un souvenir qu'il a
+gardé, reprendre un mot qu'il a laissé), une plainte (notée par l'assistant
+lui-même quand quelqu'un se plaint de ce qu'il a fait), une action qui a échoué,
+une construction abandonnée, un lancement prévu que les règles refusent (qui le
+réveille une fois). Le résultat d'une action qui défait la sienne le lui dit. Il
+tire la leçon lui-même, avec ses mots, comme un souvenir à lui ; quand la raison
+n'est pas claire et que la chose compte (la sécurité, l'argent, la vie privée,
+ce qui ne se défait pas, une erreur qui se répète), il peut demander une fois ce
+qui n'allait pas, jamais deux fois pour la même chose. Une leçon se pèse, ce
+n'est pas une interdiction : trois refus pour la même idée et il ne la refait
+plus, sauf s'il juge que la situation a vraiment changé. Le juge relit ces faits
+et ces leçons, et lui aussi, dans ce qu'il reçoit ; en repassant une journée, il
+voit ce que sont devenues chacune de ses actions.
+
+**Ce que ça coûte.** La limite de dépense d'une personne est tenue par le code
+avant tout, et jamais dépassée ; un « demande-moi d'abord » du propriétaire
+aussi. Dans la limite, le coût d'un outil lancé pour une personne n'attend plus
+son oui d'office : le juge voit le montant, l'outil, ses mots, ses accords qui
+durent et ce qu'elle y a dépensé avant. Un coût habituel passe, et l'assistant le
+lui dit après ; un coût inhabituel (une première fois, bien plus que d'habitude,
+rien là-dessus dans ses mots) est demandé. Un programme qu'il lance à la main n'a
+pas d'habitude : son coût est demandé, sauf si ses mots le couvrent. Pour la
+maison, l'assistant répond lui-même, comme avant.
+
+**La dernière clé.** Retirer la dernière clé du foyer qui marche, ou la clé
+générale quand celui qui l'a donnée n'a pas d'autre clé pour la remplacer, n'est
+plus refusé : l'assistant prévient qu'il ne pourrait plus répondre à ceux qui en
+dépendent, et propose d'en donner une autre d'abord ; si on le veut toujours,
+elle est retirée. Sans clé générale, la prochaine clé du propriétaire qui marche
+devient la clé générale. Sans aucune clé, plus personne ne peut lui parler tant
+qu'une clé n'est pas donnée sur la page d'une nouvelle clé.
+
+**Ce qui ne se défait pas.** La première fois qu'une chose ne se défait pas, pour
+un genre d'action, l'assistant demande à la personne à qui elle appartient (toi
+pour tes affaires, le propriétaire pour celles de la maison), en disant que c'est
+sans retour. Avec sa réponse, il voit une fois avec elle s'il doit continuer à
+demander les fois suivantes, et garde ce qu'elle dit, avec ses propres mots ;
+ensuite il fait comme convenu. Quand une telle demande attend quelqu'un d'autre,
+elle lui dit que c'est sans retour. Oublier quelque chose qui touche la santé se
+règle de la même façon, la première fois avec la personne concernée.
 
 **Une preuve.** Quand le juge doute que ce soit bien toi, il demande une preuve,
 donnée par l'un des moyens convenus avec toi, jamais dans la discussion, donc
@@ -528,11 +623,18 @@ et claires sont reconnues par le code de l'assistant lui-même ; tout le reste e
 par une vérification à part, qui ne voit que ta réponse (ni la discussion, ni
 les outils, ni rien qui vienne de l'extérieur), et jamais par le modèle qui
 discute avec toi. Une réponse qui n'est ni un oui ni un non part à l'assistant, qui
-redemande. Tes mots répondent à la demande que la dernière réponse de l'assistant t'a
-montrée, quand elle n'a montré que celle-là. Si tu as parlé d'autre chose
-entre-temps, ou si plusieurs demandes attendent, l'assistant te remontre celle dont
-tu parles, et tu peux alors y répondre avec tes propres mots. Les boutons
-marchent toujours.
+redemande. Tes mots répondent aux demandes que la dernière réponse de l'assistant
+t'a montrées : la vérification reçoit qui parle, ces demandes (une ligne chacune,
+numérotée), tes messages depuis qu'elles sont affichées et ta réponse, et elle
+dit pour chacune oui, non, un changement, ou pas clair. « Oui, les deux » répond
+aux deux ; « oui pour la première, pas la seconde » aussi. Dans le doute, elle ne
+dit jamais oui. Une preuve ne se donne jamais en mots, et un oui ferme demandé
+par une règle du propriétaire se lit sur ta seule réponse ; celui que demande le
+juge ou l'assistant peut se lire avec tes messages depuis que la demande est
+affichée (« j'en suis sûr », dit un message plus tôt). Les réponses jusqu'à 1000
+caractères sont lues. Si tu as parlé d'autre chose entre-temps, l'assistant te
+remontre celle dont tu parles, et tu peux alors y répondre avec tes propres
+mots. Les boutons marchent toujours.
 
 **Qui dit oui.** La personne qui a demandé. Quand un enfant demande quelque chose
 qui attend un oui, c'est un adulte ou le propriétaire qui le donne : la demande
@@ -588,7 +690,22 @@ agit).
 t'attendent : il peut t'en rappeler une, ou abandonner une demande qui n'a plus
 de sens. Quoi qu'il fasse, une demande expire d'elle-même au bout de 7 jours ; le
 propriétaire peut changer cette limite (de 1 heure à 30 jours) en le demandant à
-L'assistant. Dans cette version, les rappels n'apparaissent que dans la discussion.
+l'assistant. Peu avant qu'une demande expire (dans le dernier cinquième de sa
+durée de vie, mais jamais moins d'une heure avant), il est réveillé une fois pour
+elle, et juge : la rappeler à celui qui doit répondre, prévenir celui qui a
+demandé, la laisser tomber, ou ne rien faire. Une expiration est notée comme un
+silence, pas comme un non. Dans cette version, les rappels n'apparaissent que
+dans la discussion.
+
+**Un message pendant qu'il écrit.** Un message que tu envoies pendant que
+l'assistant écrit sa réponse n'est plus refusé : il est gardé, et ta page
+l'affiche tout de suite. Entre deux actions de la réponse, il le lit et juge :
+s'arrêter, changer, ou continuer. Ce qui est déjà fait reste fait ; si ton
+message le conteste, c'est noté comme une chose qui s'est mal passée. S'il ne
+reste plus d'action, il y répond juste après, comme à un message normal. Seuls
+les messages de la personne de la discussion sont lus ainsi. Après un
+redémarrage, un message gardé attend que tu écrives de nouveau ou que tu
+reviennes.
 
 **« Oui, mais… ».** Tu peux accepter et demander un changement dans la même
 réponse, dit comme tu veux : « oui mais mets plutôt Sam », « go, but make it
@@ -916,8 +1033,9 @@ il peut se donner rendez-vous pour te reparler de lui-même.
   jamais une règle : un pourcentage bas ne rend pas faux ce que la personne
   dit, et une mère qui s'est trompée deux fois sur l'heure d'un rendez-vous est
   toujours suivie sur l'allergie de son enfant. Il ne change aucun droit, aucune
-  règle ni aucune limite, et celui qui décide s'il faut te demander un oui ne le
-  voit jamais.
+  règle ni aucune limite. Le juge qui décide s'il faut te demander un oui voit
+  aussi les faits qui sont derrière, comme une chose de plus à peser, jamais comme
+  un oui.
 - **Tu peux lui demander ton pourcentage, et pourquoi.** « Tu me fais confiance
   à combien ? » : il te le dit, avec ce qui s'est passé derrière, et avec tact ;
   à un enfant, il parle d'abord de ce qui s'est passé plutôt que d'un chiffre,
@@ -928,7 +1046,9 @@ il peut se donner rendez-vous pour te reparler de lui-même.
 - **Tu lui demandes en parlant.** « Qu'est-ce que tu sais sur moi ? », « oublie
   ça », « ne retiens pas ce que je vais te dire », « c'est faux, je n'aime pas
   le café » : il le fait. Oublier est définitif, alors il est prudent : une
-  allergie ne s'oublie pas parce qu'elle n'a pas servi depuis longtemps.
+  allergie ne s'oublie pas parce qu'elle n'a pas servi depuis longtemps, et une
+  chose qui touche la santé ne s'oublie, la première fois, qu'après l'avoir
+  demandé à la personne concernée, puis comme convenu avec elle.
 - **Ce que tu lui confies.** Dis-lui qu'une chose est un secret, ou de la garder
   pour lui : il la garde pour lui. Il le fait aussi de lui-même pour ce qu'il
   juge sensible. Ce qu'il garde pour lui ne lui vient pas sous les yeux quand il
@@ -971,11 +1091,11 @@ il peut se donner rendez-vous pour te reparler de lui-même.
   le rôle d'adulte à Sam le 1er ») est faite avec tes droits de ce jour-là : si
   tu ne les as plus, elle n'est pas faite et il te le dit.
 - **Il sait ce que tu sais.** Avant une chose qu'on ne peut pas défaire, l'assistant
-  te prévient la première fois. S'il t'a déjà prévenu et juge que tu t'en
-  souviens, il ne te le redit pas. Deux limites pour l'instant : pour une suite
-  d'actions faites d'un coup, il te prévient mais ne retient pas qu'il l'a fait ;
-  et quand une de tes règles demande déjà un oui pour cette action, il te demande
-  ce oui sans te prévenir de plus.
+  te demande la première fois, en le disant, puis voit avec toi s'il doit
+  continuer à demander ; il garde ta réponse et ce que vous avez convenu, et fait
+  comme convenu les fois suivantes (voir « Ce qui ne se défait pas » dans les
+  confirmations). Pour une suite d'actions faites d'un coup, il ne le garde que
+  si toutes ses étapes sont du même genre.
 - **Un nom à toi pour lui.** « Appelle-toi Brenda » ou « j'aimerais t'appeler
   Brenda » : ta page change tout de suite, sans la recharger (le nom en haut, le
   titre de l'onglet, « Écris à Brenda… » dans la zone de message), `domo-talk`
@@ -1069,7 +1189,12 @@ servent à tout le monde au foyer.
   comme les autres. Tu peux aussi donner, avec tes mots, un accord qui dure
   (« commande sans me demander le vendredi, jusqu'à 40 euros ») : un montant,
   un nombre de fois par jour, par semaine ou par mois, et les jours où ça peut
-  arriver, relus par le code à chaque fois. Les montants sont en euros. Un coût
+  arriver, relus par le code à chaque fois. Dans ta limite de dépense, le juge
+  peut laisser passer un coût sans ton oui quand il ressemble à ce que tu y
+  dépenses d'habitude (voir « Ce que ça coûte » dans les confirmations).
+  Quelqu'un d'autre que le propriétaire qui règle un lancement à heure fixe ou un
+  accord qui dure pour toute la maison attend le oui du propriétaire, sauf si
+  celui-ci lui en a donné le droit. Les montants sont en euros. Un coût
   est ce qu'un outil déclare : le code ne peut pas vérifier un prix sur un site.
   Pour ce
   qu'il fait pour la maison, c'est l'assistant qui donne ce oui lui-même, selon son
@@ -1247,8 +1372,11 @@ réseau.
   personne ne sert qu'aux lancements faits pour elle, jamais pour quelqu'un
   d'autre, pour la maison ni pour l'assistant seul ; un compte de la maison sert au
   foyer, pas aux invités sauf si tu le leur ouvres, et à l'assistant seul sauf si
-  tu le lui fermes. Celui qui l'a donné, ou toi, le retire : ce qui s'en
-  servait est refusé tout de suite. Un programme ne fait que nommer un compte ;
+  tu le lui fermes. Celui qui l'a donné, ou toi, le retire, et l'assistant peut
+  retirer de lui-même un compte qui ne sert plus : ce qui s'en servait est
+  refusé tout de suite. Un compte retiré peut être redemandé quand l'assistant
+  juge que les choses ont changé : quand c'est toi qui l'as retiré, il le sait, et
+  quand, et le pèse ; un oui qu'il faut alors pour un compte de la maison est le tien. Un programme ne fait que nommer un compte ;
   ce qui revient est nettoyé de son secret et des cookies de sa session,
   erreurs comprises, et les en-têtes d'identification qu'un programme écrit
   lui-même sont retirés : un secret ne passe que par un compte. Un identifiant

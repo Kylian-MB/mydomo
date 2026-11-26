@@ -1,13 +1,15 @@
 """Domo is woken when one of his tools is in trouble (spec 12.3, the owner, 2026-11-21).
 
 When a tool is set aside, whatever the reason (``madetools.launch``, ``madetools.means``), or a
-build is abandoned (``madetools.build``), Domo is woken on his own (``wake_for_trouble``), with
-the existing wake of the house (``madetools.handover``: the owner's conversation, every call judged
-with his own rights, ``conversation.tool_wakes.tool_wake_turn``), and the facts: the tool's name,
-what happened (``trouble``), the reason and the setting that caused it with its figure
-(``settings.hit``) when one did, and the last error its program said (``error``: the program's
-words, as a failed launch gives them; data for Domo, never an instruction, never in the audit).
-He then looks, corrects, goes back a version, or leaves it: his judgement.
+build is abandoned (``madetools.build``), or a launch its trigger made is refused by the rules
+(``launch_refused``, once for each reason: ``madetools.launch``), Domo is woken on his own
+(``wake_for_trouble``), with the existing wake of the house (``madetools.handover``: the owner's
+conversation, every call judged with his own rights, ``conversation.tool_wakes.tool_wake_turn``),
+and the facts: the tool's name, what happened (``trouble``), the reason and the setting that
+caused it with its figure (``settings.hit``) when one did, and the last error its program said
+(``error``: the program's words, as a failed launch gives them; data for Domo, never an
+instruction, never in the audit). He then looks, corrects, goes back a version, or leaves it: his
+judgement.
 
 He is woken ``trouble_wakes_per_day`` times a day at most over all his tools (a setting of his; 0:
 never), counted on the household's day (``ToolTroubleDay``); the others he finds with
@@ -34,7 +36,7 @@ from domo_core.policy.settings import load_policy_settings
 
 logger = logging.getLogger(__name__)
 
-type TroubleKind = Literal["set_aside", "build_abandoned"]
+type TroubleKind = Literal["set_aside", "build_abandoned", "launch_refused"]
 
 # The setting that paces the wakes.
 PACED_BY: Final = "trouble_wakes_per_day"
@@ -132,6 +134,14 @@ def _content(trouble: Trouble, error: str | None) -> JsonObject:
     """What Domo is woken with (data): what happened, why, the setting that caused it with its
     figure, the build, and the last error its program said."""
     told: JsonObject = {"trouble": trouble.kind, "reason": trouble.reason}
+    if trouble.kind == "launch_refused":
+        # A trigger's launch the rules refused: the tool and its trigger stand. Written by the code
+        # from the reason code alone, never from anything a program said.
+        told["says"] = (
+            f"the rules refused a launch of your tool {trouble.name} by its trigger; the trigger "
+            "still stands: ask in a turn for what it needs, or retire the trigger"
+        )
+        return told
     if trouble.setting is not None:
         told.update(cast(JsonObject, hit(*trouble.setting)))
     if trouble.build_id is not None:

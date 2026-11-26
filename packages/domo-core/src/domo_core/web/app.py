@@ -48,8 +48,9 @@ showed them (when Domo has a reason to), and of the version of a new language
 (``app.state.text_writing``, ``texts.scheduler.TextWriting``, on the person's keys, on those of the
 one who invited, or on the house's key: with what the application's database, factory of models and
 clock are when each one runs). The arrival turns that run are kept on ``app.state.arrival_turns``,
-so that a message of the person stops theirs, and whoever listens to a person on
-``app.state.listeners`` (``conversation.listeners``): what Domo says on his own goes to them. The
+so that a message of the person stops theirs, whoever listens to a person on
+``app.state.listeners`` (``conversation.listeners``): what Domo says on his own goes to them, and
+what people wrote while a turn of theirs ran on ``app.state.kept`` (``conversation.kept``). The
 lifespan stops the tasks that still run in the same way, before the HTTP client (a wake may be
 talking to a model through the gatekeeper) and the engine are closed.
 
@@ -87,6 +88,8 @@ from domo_core.channels.page import routes as page_routes
 from domo_core.config import CoreSettings
 from domo_core.confirmations import routes as confirmation_routes
 from domo_core.confirmations.arrivals import arrivals_pass
+from domo_core.confirmations.expiring import expiring_pass
+from domo_core.conversation.kept import KeptMessages
 from domo_core.conversation.listeners import Listeners
 from domo_core.conversation.prepare import TurnDeps
 from domo_core.conversation.starts import Wakes
@@ -306,6 +309,9 @@ def create_app(settings: CoreSettings) -> FastAPI:
             departures_pass(app.state.session_factory),
             corners_pass(app.state.session_factory, tools_admin),
             arrivals_pass(arrival_deps(app), app.state.wakes),
+            # The requests past their lifetime are expired as they lapse, and the assistant
+            # is woken once for those about to: each wake runs in a task of the wakes.
+            expiring_pass(arrival_deps(app), app.state.wakes),
             stale_reservations_pass(app.state.session_factory),
             # It only starts the reviews due: each one runs in a task of the wakes.
             review_pass(turns.app_turn_deps(app)),
@@ -376,6 +382,8 @@ def create_app(settings: CoreSettings) -> FastAPI:
     # (``channels.api.routes``).
     app.state.pairing_throttle = LoginThrottle()
     app.state.streaming_replies = set()
+    # What people wrote while a turn of theirs ran, for that turn or the one after it.
+    app.state.kept = KeptMessages()
     app.state.wakes = Wakes()
     # The arrival turns that run, by their reply: a message the person says stops theirs.
     app.state.arrival_turns = ArrivalTurns()

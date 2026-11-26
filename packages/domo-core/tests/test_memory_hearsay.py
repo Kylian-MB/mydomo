@@ -14,11 +14,14 @@ from typing import Any
 
 from chat_support import ChatPilot
 from domo_core.accounts.models import Person
+from domo_core.audit.models import AuditEntry
+from domo_core.confirmations.case import gather
 from domo_core.memory.embedder import NO_EMBEDDER
 from domo_core.memory.models import Memory
-from domo_core.memory.told import for_judge
+from domo_core.policy.actions import DescribedAction
 from domo_core.policy.catalog import DEFAULT_POLICY
 from domo_core.policy.roles import Actor
+from domo_core.policy.subjects import Subject
 from domo_core.prompts import build_system_prompt
 from domo_core.tools.context import ToolContext
 from domo_core.tools.registry import TOOLS
@@ -115,13 +118,38 @@ async def test_sam_cannot_confirm_what_she_said_about_alex(
     adult_chat: ChatPilot, child_chat: ChatPilot, owner_chat: ChatPilot
 ):
     memory_id = await kept(child_chat, PINE_NUTS, "Alex")
-    for chat in (child_chat, owner_chat):
-        reply = await chat.say_with_tool("memory_change", {"id": memory_id, "confirmed": True})
-        assert reply.actions == [
-            {"tool": "memory_change", "status": "invalid", "reason": "not_possible"}
-        ]
-        assert "only the person this memory is about confirms it" in reply.model_result_text
+    # The one who said it never confirms it in their own turn, whatever reason is given.
+    reply = await child_chat.say_with_tool(
+        "memory_change", {"id": memory_id, "confirmed": True, "confirmed_reason": "I say so."}
+    )
+    assert reply.actions == [
+        {"tool": "memory_change", "status": "invalid", "reason": "not_possible"}
+    ]
+    assert "the one who said it does not confirm it" in reply.model_result_text
+    # A third person's turn: not without his reason (he judges, he says why).
+    reply = await owner_chat.say_with_tool("memory_change", {"id": memory_id, "confirmed": True})
+    assert reply.actions == [{"tool": "memory_change", "status": "invalid", "reason": "invalid"}]
+    assert "confirmed_reason" in reply.model_result_text
     assert (await the_memory(adult_chat, memory_id)).confirmed_at is None
+
+
+async def test_he_confirms_what_he_heard_elsewhere_in_a_third_person_s_turn(
+    adult_chat: ChatPilot, child_chat: ChatPilot, owner_chat: ChatPilot
+):
+    # The owner's decision of 2026-11-24: what he hears elsewhere, he judges. In the owner's turn
+    # (not Alex's, not Sam's) he marks it confirmed with his reason; the audit keeps the reason.
+    memory_id = await kept(child_chat, PINE_NUTS, "Alex")
+    reply = await owner_chat.say_with_tool(
+        "memory_change",
+        {"id": memory_id, "confirmed": True, "confirmed_reason": "Alex told me in the kitchen."},
+    )
+    assert reply.actions == [{"tool": "memory_change", "status": "done"}]
+    after = await the_memory(adult_chat, memory_id)
+    assert after.confirmed_at is not None and after.said_by_id == child_chat.person.id
+    async with adult_chat.server.session_factory() as reader:
+        entry = await reader.scalar(select(AuditEntry).where(AuditEntry.action == "memory.changed"))
+    assert entry is not None
+    assert entry.details["confirmed_reason"] == "Alex told me in the kitchen."
 
 
 async def test_what_alex_says_of_himself_and_of_the_boiler_is_never_marked(
@@ -143,12 +171,23 @@ async def test_what_alex_says_of_himself_and_of_the_boiler_is_never_marked(
 
 
 async def judge_reads(chat: ChatPilot) -> list[str]:
-    """The ids of the memories the yes-judge may read of the person of ``chat`` about pine nuts."""
+    """What the yes-judge reads as the own words of the person of ``chat`` about pine nuts (the
+    ``remembered`` of their case)."""
     async with chat.server.session_factory() as session:
-        found = await for_judge(
-            session, chat.person.id, "household.invite", "pine nuts", embedder=NO_EMBEDDER
+        case = await gather(
+            session,
+            about=chat.person.id,
+            private_of=chat.person.id,
+            action=DescribedAction("core", "household.invite", None, "permissions", "household"),
+            subject=Subject(None, chat.person.id),
+            says="pine nuts",
+            extra_query=None,
+            embedder=NO_EMBEDDER,
+            zone=None,
+            now=datetime.now(UTC),
+            start_trust=50,
         )
-    return [str(memory.id) for memory in found]
+    return [line.content for line in case.remembered]
 
 
 async def test_alexs_correction_with_his_own_words_makes_it_his(
@@ -166,7 +205,7 @@ async def test_alexs_correction_with_his_own_words_makes_it_his(
     assert memory.confirmed_at is not None
     line = line_of(await context_of(adult_chat), memory_id)
     assert line["said_by"] == "you" and "unconfirmed" not in line
-    assert memory_id in await judge_reads(adult_chat)
+    assert "Alex loves pine nuts." in await judge_reads(adult_chat)
 
 
 async def test_alexs_correction_without_his_words_is_confirmed_but_not_his(
@@ -186,7 +225,7 @@ async def test_alexs_correction_without_his_words_is_confirmed_but_not_his(
     assert memory.origin == "others_words" and before.origin == "own_words"
     line = line_of(await context_of(adult_chat), memory_id)
     assert line["said_by"] == "Sam" and "unconfirmed" not in line
-    assert memory_id not in await judge_reads(adult_chat)
+    assert "Alex loves pine nuts." not in await judge_reads(adult_chat)
 
 
 async def test_the_search_marks_it_too(adult_chat: ChatPilot, child_chat: ChatPilot):

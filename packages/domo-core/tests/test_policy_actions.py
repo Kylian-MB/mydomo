@@ -504,6 +504,13 @@ _CALLS: dict[str, Any] = {
         lambda s: {"key": s.alexs_key, "with": "person", "person": "Sam"},
         lambda s: {"key_kind": "openai_compatible", "key_of": "Alex"},
     ),
+    # Removing a key says whether it is the last that works, or the general key with no other
+    # key of its giver's to take over (task 25: facts the judge weighs, never a refusal).
+    "key.remove": (
+        "key_remove",
+        lambda s: {"key": s.alexs_key},
+        lambda s: {"last_key": False, "general_key_without_heir": False},
+    ),
     "spending.limit": (
         "key_limit",
         lambda s: {"key": s.alexs_key, "amount": 5, "currency": "EUR"},
@@ -564,6 +571,9 @@ _CALLS: dict[str, Any] = {
             "giver": f"person:{s.owner.id}",
             "hosts": 2,
             "outward": True,
+            # Never removed by the owner: no day (Task 27).
+            "removed_by_owner": False,
+            "removed_on": None,
         },
     ),
     "account.remove": (
@@ -584,6 +594,7 @@ _CALLS: dict[str, Any] = {
 _CALLERS: dict[str, Any] = {
     "household.leave": lambda s: s.sam,
     "key.share": lambda s: s.alex,
+    "key.remove": lambda s: s.alex,
     "spending.limit": lambda s: s.alex,
     "key.admin": lambda s: s.alex,
     "account.remove": lambda s: s.alex,

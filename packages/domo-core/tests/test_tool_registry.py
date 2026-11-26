@@ -67,6 +67,10 @@ REQUEST_TOOLS = [
     "confirmation_require_explicit",
     "confirmation_amend",
     "ask_before_acting",
+    # Domo says his next action is his own idea (spec part 7): everyone's, a guest's too.
+    "act_on_my_own",
+    # What the person agreed about being asked again before what cannot be undone (Task 26).
+    "asking_agreed",
 ]
 # The tools with which the owner reads and changes their rules (task 8, decision D8).
 POLICY_TOOLS = ["policy_show", "policy_update"]
@@ -137,6 +141,7 @@ DELIVERY_TOOLS = ["delivery_look"]
 # The tools with which Domo notes what a person's word was worth, looks at a score and corrects
 # a fact (0.9.1, trust per person): everyone's, a guest's too.
 TRUST_TOOLS = ["trust_note", "trust_look", "trust_correct"]
+LEARNING_TOOLS = ["went_wrong_note", "went_wrong_asked"]
 # The tools with which Domo makes, changes, removes, looks at, finds and times the tools of his
 # own (0.10.0): everyone's, a guest's too; the tools are all his (2026-11-18).
 MADE_TOOLS = [
@@ -191,6 +196,7 @@ def test_the_registry_knows_its_tools_by_the_name_the_model_uses():
         *NAME_TOOLS,
         *DELIVERY_TOOLS,
         *TRUST_TOOLS,
+        *LEARNING_TOOLS,
         *MADE_TOOLS,
         *OUTWARD_TOOLS,
         *CHAIN_TOOLS,
@@ -216,6 +222,8 @@ def test_every_tool_is_an_action_of_the_catalog():
         "confirmation.require_explicit",
         "confirmation.amend",
         "confirmation.ask_before",
+        "confirmation.own_idea",
+        "confirmation.agree_asking",
         "policy.show",
         "policy.update",
         "rights.propose",
@@ -268,6 +276,8 @@ def test_every_tool_is_an_action_of_the_catalog():
         "trust.note",
         "trust.look",
         "trust.correct",
+        "learning.note",
+        "learning.asked",
         "tool.build",
         "tool.change",
         "tool.remove",
@@ -482,6 +492,7 @@ def test_the_registry_cannot_be_changed():
                 *NAME_TOOLS,
                 *DELIVERY_TOOLS,
                 *TRUST_TOOLS,
+                *LEARNING_TOOLS,
                 *MADE_TOOLS,
                 *OUTWARD_TOOLS,
                 *CHAIN_TOOLS,
@@ -510,6 +521,7 @@ def test_the_registry_cannot_be_changed():
                 *NAME_TOOLS,
                 *DELIVERY_TOOLS,
                 *TRUST_TOOLS,
+                *LEARNING_TOOLS,
                 *MADE_TOOLS,
                 *ADDRESS_TOOLS,
                 "account_ask",
@@ -536,6 +548,7 @@ def test_the_registry_cannot_be_changed():
                 *NAME_TOOLS,
                 *DELIVERY_TOOLS,
                 *TRUST_TOOLS,
+                *LEARNING_TOOLS,
                 *MADE_TOOLS,
                 *ADDRESS_TOOLS,
                 "account_ask",
@@ -549,6 +562,8 @@ def test_the_registry_cannot_be_changed():
             [
                 *OWN_TOOLS,
                 *RECEIVED_NOTE_TOOLS,
+                "act_on_my_own",
+                "asking_agreed",
                 *GUEST_KEY_TOOLS,
                 "models_step_up",
                 *OWN_TEXT_TOOLS,
@@ -558,6 +573,7 @@ def test_the_registry_cannot_be_changed():
                 *NAME_TOOLS,
                 *DELIVERY_TOOLS,
                 *TRUST_TOOLS,
+                *LEARNING_TOOLS,
                 *MADE_TOOLS,
                 *ADDRESS_TOOLS,
                 "accounts_look",
@@ -627,6 +643,7 @@ def test_a_person_is_shown_the_tools_of_their_own_rights():  # spec 5.9
         *NAME_TOOLS,
         *DELIVERY_TOOLS,
         *TRUST_TOOLS,
+        *LEARNING_TOOLS,
         *MADE_TOOLS,
         *ADDRESS_TOOLS,
         "account_ask",
@@ -653,6 +670,8 @@ def test_a_right_of_a_role_shows_or_hides_a_tool_to_the_whole_role():
     ) == [
         "household_leave",
         *RECEIVED_NOTE_TOOLS,
+        "act_on_my_own",
+        "asking_agreed",
         *GUEST_KEY_TOOLS,
         "models_step_up",
         *OWN_TEXT_TOOLS,
@@ -662,6 +681,7 @@ def test_a_right_of_a_role_shows_or_hides_a_tool_to_the_whole_role():
         *NAME_TOOLS,
         *DELIVERY_TOOLS,
         *TRUST_TOOLS,
+        *LEARNING_TOOLS,
         *MADE_TOOLS,
         *ADDRESS_TOOLS,
         "accounts_look",

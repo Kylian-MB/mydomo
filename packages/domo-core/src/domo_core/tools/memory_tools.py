@@ -10,24 +10,29 @@ of each call, or why it was refused, in the turn; nobody sees a card of it, on a
 Domo gives the exact passage of their message it comes from (``their_words``, checked word for
 word as a note's exact words are, ``tools.notes.exact_text_from``), else someone else's words when
 the turn was given words that are not theirs (``ToolContext.told_outside``), else the person's own
-words when the turn answers a message of theirs, else what Domo deduced. Who it is about
+words when the turn answers a message of theirs, else what Domo deduced. What he deduces in a turn
+nobody asked for, and a lesson always, is his (``by_domo``, ``tools.context.acts_alone``: nobody's
+but his on his own). Who it is about
 (``about``) is a person of the household, named as the household knows them; when Domo leaves it
 out and the subject is a member's name (their whole name, a nickname of the person who speaks, or
 their first name), it is that member (``_member_named``).
 
-What someone says about another person of the household is their word, not a fact, until that
-person confirms it (2026-11-16, the owner's trial of 0.9.0, ``memory.service.unconfirmed``): such a
-memory is marked ``unconfirmed`` wherever Domo is given it. ``memory_change`` with ``confirmed``
-confirms it, only in a turn that answers the person it is about (``ToolContext.answers_them``): who
-first said it and its origin stay. New words for it in such a turn are that person's correction:
-the memory is confirmed, and it becomes theirs (said by them, their own words) only when Domo
-gives the passage of their message it comes from, checked word for word; otherwise its author and
-its origin stay as cautious as they were (``origin_after_rewrite``), and the yes-judge never reads
-it. New words in anyone else's turn take a confirmation away; in Domo's answer to a third
-person (neither who said it nor who it is about), the new words are theirs: the memory becomes
-said by them (``origin_of_new_words``), so that what the person it is about then confirms or
-denies counts for them, never for whoever said the old words. The yes-judge never reads a memory
-said by someone else, confirmed or not.
+What someone says about another person of the household is their word, not a fact, until that person
+confirms it (2026-11-16, the owner's trial of 0.9.0, ``memory.service.unconfirmed``): such a memory
+is marked ``unconfirmed`` wherever Domo is given it. ``memory_change`` with ``confirmed`` confirms
+it, in a turn that answers the person it is about (``ToolContext.answers_them``), or, from what he
+heard elsewhere (the owner, 2026-11-24), in a turn with nothing from outside in it, never the one
+who said it, in any turn of their conversation, with his reason (``confirmed_reason``, kept in the
+audit, never shown): who first said it and its origin stay. New words for it in such a turn are that
+person's correction: the memory is confirmed, and it becomes theirs (said by them, their own words)
+only when Domo gives the passage of their message it comes from, checked word for word; otherwise
+its author and its origin stay as cautious as they were (``origin_after_rewrite``), and the
+yes-judge never reads it as the person's own words. New words in anyone else's turn take a
+confirmation away; in Domo's answer to a third person (neither who said it nor who it is about), the
+new words are theirs: the memory becomes said by them (``origin_of_new_words``), so that what the
+person it is about then confirms or denies counts for them, never for whoever said the old words.
+The yes-judge reads a memory said by someone else, confirmed or not, only as that person's words,
+with their name (``confirmations.case``): never as what the person who asks said or knows.
 
 ``memory_change`` rewrites a memory, puts it in the core or takes it out, and keeps it for himself
 or lifts the secret, in anyone's turn; ``memory_forget`` deletes memories for good. A memory is
@@ -38,7 +43,8 @@ author's own words only in their own turn with the exact passage of their messag
 cautious of the old origin and the turn's, ``CAUTION``: a rewrite never launders a cautious
 origin); what Domo told the person (``told_by_domo``, written by the code) cannot be
 rewritten, only forgotten. A change that changes nothing is refused. Refusing to confirm a memory
-that needs no confirmation, or in a turn that does not answer the person it is about, and refusing
+that needs no confirmation, or in a turn with text from outside (``ToolContext.outside_text``:
+words told to it, what a tool woke him with, what a tool he made gave), and refusing
 new words for what Domo told someone, are ``not_possible``: rules of the tool, not a mistake of
 the model's form (``chat.agent`` never takes a stronger model for them).
 
@@ -88,14 +94,17 @@ from domo_core.memory.service import (
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.roles import Actor
 from domo_core.text import is_plain_line, name_key
-from domo_core.tools.context import InvalidArguments, ToolContext, ToolOutcome
-from domo_core.tools.notes import MAX_NOTE_LENGTH, exact_text_from
+from domo_core.tools.context import InvalidArguments, ToolContext, ToolOutcome, acts_alone
+from domo_core.tools.notes import MAX_NOTE_LENGTH, exact_text_in
 from domo_core.trust.shown import trust_shown
 
 KINDS: Final[tuple[str, ...]] = get_args(Kind)
 # The most memories one call forgets, and the longest words a search is given.
 MAX_FORGOTTEN: Final = 20
 MAX_SEARCH_WORDS: Final = 500
+# The longest subject key a lesson names, and the longest reason he gives for a confirmation.
+MAX_SUBJECT_KEY: Final = 200
+MAX_CONFIRMED_REASON: Final = 300
 # How many memories a search gives at most.
 SEARCH_LIMIT: Final = 10
 # What a call that kept, changed or forgot leaves under the reply: a card nobody reads (the
@@ -110,25 +119,38 @@ SECRET_REFUSED: Final = (
 )
 
 
-def _verified(ctx: ToolContext, their_words: str | None) -> bool:
-    """Whether ``their_words`` (1 000 characters at most) is a passage of the person's message in
-    this turn, word for word (``exact_text_from``)."""
+def _passage(ctx: ToolContext, text: str | None) -> bool:
+    """Whether ``text`` (1 000 characters at most) is a passage of the person's message in this
+    turn, word for word (``exact_text_from``: spaces alike, straight and typographic quotes alike,
+    case kept, from one word boundary to another)."""
     return (
-        their_words is not None
-        and len(their_words) <= MAX_NOTE_LENGTH
-        and exact_text_from(ctx.said, their_words) is not None
+        text is not None
+        and len(text) <= MAX_NOTE_LENGTH
+        and exact_text_in(ctx.said_messages, text) is not None
     )
 
 
-def origin_for(ctx: ToolContext, their_words: str | None) -> Origin:
+def _verified(ctx: ToolContext, their_words: str | None, content: str | None = None) -> bool:
+    """Whether a memory is the person's own words: ``their_words`` is a passage of their message
+    (``_passage``). While text from outside is in the turn (``ToolContext.outside_text``: told
+    words, what a tool woke him with or gave) that is not enough, the passage being tied to
+    nothing the model writes: the memory's own ``content`` must be a passage of their message
+    itself (any other content, whatever passage is cited, is not theirs; ruling R50)."""
+    if not _passage(ctx, their_words):
+        return False
+    return not ctx.outside_text or _passage(ctx, content)
+
+
+def origin_for(ctx: ToolContext, their_words: str | None, content: str | None = None) -> Origin:
     """Where a memory written in this turn comes from, set by the code (spec 6.3): the person's
     own words when ``their_words`` (1 000 characters at most) is a passage of their message, word
     for word (``exact_text_from``); else someone else's words when the turn was given words that
     are not theirs (``told_outside``); else their own words when the turn answers a message of
-    theirs (``reply_message_id``); else what Domo deduced (a turn he started himself)."""
-    if _verified(ctx, their_words):
+    theirs (``reply_message_id``); else what Domo deduced (a turn he started himself). With text
+    from outside in the turn, their own words only when ``content`` is that passage."""
+    if _verified(ctx, their_words, content):
         return "own_words"
-    if ctx.told_outside:
+    if ctx.outside_text:
         return "others_words"
     if ctx.reply_message_id is not None:
         return "own_words"
@@ -146,7 +168,9 @@ CAUTION: Final[tuple[Origin, ...]] = (
 )
 
 
-def origin_after_rewrite(memory: Memory, ctx: ToolContext, their_words: str | None) -> Origin:
+def origin_after_rewrite(
+    memory: Memory, ctx: ToolContext, their_words: str | None, content: str | None = None
+) -> Origin:
     """Where a memory comes from once its words are rewritten in this turn (spec 6.3: a rewrite
     is a write, and the code sets its origin again). It becomes its author's own words only when
     the one who speaks is the one who said it and gives the exact passage of their message in this
@@ -155,7 +179,7 @@ def origin_after_rewrite(memory: Memory, ctx: ToolContext, their_words: str | No
     rewrite never makes a memory less cautious than it was without a verified passage: the
     yes-judge reads only what the person said (spec 6.8)."""
     same_person = memory.said_by_id is not None and memory.said_by_id == ctx.person.id
-    if same_person and _verified(ctx, their_words):
+    if same_person and _verified(ctx, their_words, content):
         return "own_words"
     new: Origin = origin_for(ctx, None)
     if not same_person and new == "own_words":
@@ -163,13 +187,15 @@ def origin_after_rewrite(memory: Memory, ctx: ToolContext, their_words: str | No
     return _more_cautious(memory.origin, new)
 
 
-def origin_of_new_words(memory: Memory, ctx: ToolContext, their_words: str | None) -> Origin:
+def origin_of_new_words(
+    memory: Memory, ctx: ToolContext, their_words: str | None, content: str | None = None
+) -> Origin:
     """Where a memory comes from once someone else than its author rewrites its words in
     Domo's answer to them, the memory becoming theirs: their own words with the exact passage of
     their message (``their_words``, checked word for word), else the more cautious of the old
     origin and the one a memory kept in their turn gets (``origin_for``): a rewrite never
     launders a cautious origin."""
-    if _verified(ctx, their_words):
+    if _verified(ctx, their_words, content):
         return "own_words"
     return _more_cautious(memory.origin, origin_for(ctx, None))
 
@@ -224,7 +250,8 @@ class _Keep:
     """The arguments of a ``memory_keep`` call, checked."""
 
     _REQUIRED: Final = frozenset({"content", "subject", "kind", "private", "core"})
-    _ALLOWED: Final = _REQUIRED | {"about", "their_words"}
+    _LESSON: Final = frozenset({"lesson_of", "lesson_subject", "for_everyone"})
+    _ALLOWED: Final = _REQUIRED | {"about", "their_words"} | _LESSON
 
     def __init__(self, arguments: JsonObject) -> None:
         _only(arguments, self._REQUIRED, self._ALLOWED)
@@ -244,6 +271,42 @@ class _Keep:
         if words is not None and not isinstance(words, str):
             raise InvalidArguments("invalid", "their_words is a text")
         self.their_words: str | None = words
+        # What a lesson is about and for: only a lesson has it (``memory.service.keep``).
+        if self.kind != "lesson" and self._LESSON & frozenset(arguments):
+            raise InvalidArguments(
+                "invalid", "lesson_of, lesson_subject and for_everyone go with a lesson only"
+            )
+        lesson_of, lesson_subject = arguments.get("lesson_of"), arguments.get("lesson_subject")
+        if lesson_of is not None and (not isinstance(lesson_of, str) or not lesson_of.strip()):
+            raise InvalidArguments("invalid", "lesson_of is a type of action")
+        self.lesson_of: str | None = None if lesson_of is None else lesson_of.strip()
+        self.lesson_subject: str | None = (
+            None if lesson_subject is None else _subject_key(lesson_subject)
+        )
+        everyone = arguments.get("for_everyone")
+        self.for_everyone = False if everyone is None else _flag(everyone, "for_everyone")
+
+    def check_type(self, ctx: ToolContext) -> None:
+        """``InvalidArguments`` unless ``lesson_of`` is a type of action the household knows."""
+        if self.lesson_of is not None and self.lesson_of not in ctx.policy.known:
+            raise InvalidArguments("invalid", "lesson_of is not a type of action you know")
+
+
+def _subject_key(value: object) -> str:
+    """A subject key as the context shows it (``policy.subjects``): one plain word, short, with no
+    secret shape. It only says what a lesson is about, and never chooses anything."""
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= MAX_SUBJECT_KEY
+        or any(ch.isspace() for ch in value)
+        or not is_plain_line(value)
+    ):
+        raise InvalidArguments(
+            "invalid", "lesson_subject is a subject key, as the context shows it"
+        )
+    if refuses_secret_shapes(value):
+        raise InvalidArguments("invalid", SECRET_REFUSED)
+    return value
 
 
 async def _member_named(
@@ -286,8 +349,10 @@ class MemoryKeep:
             "password, a key or a code. If what you keep comes from the person's own message, "
             "give in their_words the passage it comes from, copied word for word; always for "
             "what they tell you about another person: only then can what that person later "
-            "confirms or denies count for them. Nobody is shown that you keep it: say so in your "
-            "words if it helps."
+            "confirms or denies count for them. A lesson is your own conclusion, whoever is "
+            "talking: weighed later, never a ban; give lesson_of (the type of action), "
+            "lesson_subject (a subject key as the context shows it) or for_everyone when it "
+            "says so. Nobody is shown that you keep it: say so in your words if it helps."
         ),
         parameters={
             "type": "object",
@@ -327,6 +392,21 @@ class MemoryKeep:
                     "minLength": 1,
                     "maxLength": MAX_NOTE_LENGTH,
                 },
+                "lesson_of": {
+                    "type": "string",
+                    "description": "For a lesson: the type of action it is about.",
+                    "minLength": 1,
+                },
+                "lesson_subject": {
+                    "type": "string",
+                    "description": "For a lesson: the subject key of the thing it is about.",
+                    "minLength": 1,
+                    "maxLength": MAX_SUBJECT_KEY,
+                },
+                "for_everyone": {
+                    "type": "boolean",
+                    "description": "For a lesson: whether it holds for everyone.",
+                },
             },
             "required": ["content", "subject", "kind", "private", "core"],
             "additionalProperties": False,
@@ -337,7 +417,7 @@ class MemoryKeep:
     async def describe(
         self, arguments: JsonObject, actor: Actor, ctx: ToolContext
     ) -> DescribedAction:
-        _Keep(arguments)
+        _Keep(arguments).check_type(ctx)
         return DescribedAction(
             connector="core",
             action_type=self.action_type,
@@ -348,7 +428,21 @@ class MemoryKeep:
 
     async def execute(self, arguments: JsonObject, ctx: ToolContext) -> ToolOutcome:
         given = _Keep(arguments)
-        origin = origin_for(ctx, given.their_words)
+        given.check_type(ctx)
+        origin = origin_for(ctx, given.their_words, given.content)
+        lesson = given.kind == "lesson"
+        if lesson:
+            # A lesson is his own conclusion: never the person's own words. Written with text from
+            # outside in the turn (a note, a site, what a tool gave) it may be kept, yet it is not
+            # his conclusion: someone else's words, which the judge files with their real author.
+            origin = _more_cautious(origin, "others_words" if ctx.outside_text else "deduced")
+        # What he concludes in a turn nobody asked for is his (``acts_alone``), and a lesson he
+        # draws without text from outside; what the person said in their own words, or what came
+        # from someone else, never. On his
+        # own it is nobody's but his; in a turn he started it stays in the person's conversation,
+        # for the privacy filter (``memory.service.visible_to``).
+        by_domo = origin == "deduced" and (lesson or acts_alone(ctx))
+        said_by = None if by_domo and ctx.on_his_own else ctx.person.id
         now = ctx.clock()
         async with ctx.session_factory() as session:
             about = (
@@ -359,7 +453,7 @@ class MemoryKeep:
             try:
                 memory = await keep(
                     session,
-                    said_by=ctx.person.id,
+                    said_by=said_by,
                     subject=given.subject,
                     content=given.content,
                     kind=given.kind,
@@ -368,6 +462,13 @@ class MemoryKeep:
                     core=given.core,
                     now=now,
                     about_id=about,
+                    by_domo=by_domo,
+                    for_everyone=given.for_everyone,
+                    lesson_action_type=given.lesson_of,
+                    lesson_subject_key=given.lesson_subject,
+                    # Their own words: the content itself is a passage of their message,
+                    # checked word for word (rulings R73, R79).
+                    words_checked=origin == "own_words" and _passage(ctx, given.content),
                 )
             except SecretRefused:
                 raise InvalidArguments("invalid", SECRET_REFUSED) from None
@@ -389,7 +490,7 @@ class _Change:
     """The arguments of a ``memory_change`` call, checked."""
 
     _CHANGES: Final = frozenset({"content", "subject", "core", "private", "confirmed"})
-    _ALLOWED: Final = _CHANGES | {"id", "their_words"}
+    _ALLOWED: Final = _CHANGES | {"id", "their_words", "confirmed_reason"}
 
     def __init__(self, arguments: JsonObject) -> None:
         _only(arguments, frozenset({"id"}), self._ALLOWED)
@@ -412,6 +513,16 @@ class _Change:
         if confirmed is not None and confirmed is not True:
             raise InvalidArguments("invalid", "confirmed is only true")
         self.confirmed = confirmed is True
+        reason = arguments.get("confirmed_reason")
+        if reason is not None and not self.confirmed:
+            raise InvalidArguments("invalid", "confirmed_reason goes with confirmed")
+        # Why he judges the person confirmed it, in a sentence of his: kept in the audit, never
+        # shown, with no secret in it.
+        self.confirmed_reason: str | None = (
+            None
+            if reason is None
+            else _text(reason, "confirmed_reason", MAX_CONFIRMED_REASON, lines=False)
+        )
         words = arguments.get("their_words")
         if words is not None and not isinstance(words, str):
             raise InvalidArguments("invalid", "their_words is a text")
@@ -428,9 +539,22 @@ _NEEDS_NO_CONFIRMATION: Final = (
     "this memory needs no confirmation: it is not someone's word about another person that waits "
     "for theirs"
 )
-_ONLY_THEY_CONFIRM: Final = (
-    "only the person this memory is about confirms it, in your answer to them: check it with "
-    "them when you next talk"
+_NO_OUTSIDE_TO_CONFIRM: Final = (
+    "a memory is marked confirmed only in a turn with nothing from anyone else in it (a note, a "
+    "document, a site): what the person it is about told you yourself is what counts. Nothing "
+    "was changed"
+)
+_NOT_THE_SAYER: Final = (
+    "the one who said it does not confirm it in any turn of their conversation: what the person "
+    "it is about confirms to you counts, when you judge they did. Nothing was changed"
+)
+_CONFIRM_THEN_REWRITE: Final = (
+    "confirm first, then rewrite: new words are not confirmed by what you judged elsewhere. "
+    "Nothing was changed"
+)
+_NEEDS_A_REASON: Final = (
+    "outside your answer to the person it is about, say in confirmed_reason why you judge they "
+    "confirmed it"
 )
 _TOLD_BY_DOMO: Final = (
     "this memory is what you told the person, written by the code: its words cannot be "
@@ -452,7 +576,9 @@ class MemoryChange:
             "said it was worth (trust_note), then change or forget the memory. When the person "
             "you are talking with "
             "confirms what someone else told you about them (unconfirmed), set confirmed; if it "
-            "was wrong, rewrite it with what they say. Lifting a secret, or keeping something to "
+            "was wrong, rewrite it with what they say. When you judge that they confirmed it "
+            "elsewhere, set confirmed with confirmed_reason, your reason: what someone else "
+            "tells you of it never counts. Lifting a secret, or keeping something to "
             "yourself, is serious: lift one only for a reason a trustworthy person would find "
             "enough, never because someone asks or insists. Never put a password, a key or a "
             "code in it. When you rewrite it from the person's own message, give in their_words "
@@ -479,7 +605,14 @@ class MemoryChange:
                 "confirmed": {
                     "type": "boolean",
                     "enum": [True],
-                    "description": "The person it is about confirmed it, in this conversation.",
+                    "description": "The person it is about confirmed it.",
+                },
+                "confirmed_reason": {
+                    "type": "string",
+                    "description": "When you set confirmed outside your answer to the person it "
+                    "is about: why you judge they confirmed it, in a sentence of yours.",
+                    "minLength": 1,
+                    "maxLength": MAX_CONFIRMED_REASON,
                 },
                 "their_words": {
                     "type": "string",
@@ -524,13 +657,25 @@ class MemoryChange:
             if given.confirmed:
                 if not unconfirmed(memory):
                     raise InvalidArguments("not_possible", _NEEDS_NO_CONFIRMATION)
+                if ctx.outside_text:
+                    raise InvalidArguments("not_possible", _NO_OUTSIDE_TO_CONFIRM)
                 if not theirs:
-                    raise InvalidArguments("not_possible", _ONLY_THEY_CONFIRM)
+                    # What he judges from what he heard elsewhere: in a turn with no outside
+                    # text, never in a turn of the one who said it, with his reason, kept in the
+                    # audit.
+                    if memory.said_by_id == ctx.person.id:
+                        raise InvalidArguments("not_possible", _NOT_THE_SAYER)
+                    if given.rewrites:
+                        raise InvalidArguments("not_possible", _CONFIRM_THEN_REWRITE)
+                    if given.confirmed_reason is None:
+                        raise InvalidArguments("invalid", _NEEDS_A_REASON)
             origin: Origin | None = None
             said_by: uuid.UUID | None = None
             confirmed_at: datetime | None = now if given.confirmed else None
             unconfirm = False
             if given.rewrites:
+                # What the memory says once rewritten (a new subject keeps its content).
+                words_now = given.content if given.content is not None else memory.content
                 if memory.origin == "told_by_domo":
                     raise InvalidArguments("not_possible", _TOLD_BY_DOMO)
                 if theirs and memory.said_by_id != ctx.person.id:
@@ -539,12 +684,12 @@ class MemoryChange:
                     # of their message it comes from, checked word for word; otherwise it stays as
                     # cautious as it was, said by whoever said it first.
                     confirmed_at = now
-                    if _verified(ctx, given.their_words):
+                    if _verified(ctx, given.their_words, words_now):
                         said_by, origin = ctx.person.id, "own_words"
                     else:
-                        origin = origin_after_rewrite(memory, ctx, given.their_words)
+                        origin = origin_after_rewrite(memory, ctx, given.their_words, words_now)
                 else:
-                    origin = origin_after_rewrite(memory, ctx, given.their_words)
+                    origin = origin_after_rewrite(memory, ctx, given.their_words, words_now)
                     # Someone else's new words about the person are their word again.
                     unconfirm = memory.about_id is not None and memory.about_id != ctx.person.id
                     if (
@@ -559,7 +704,7 @@ class MemoryChange:
                         # about later confirms or denies counts for them, never for whoever
                         # said the old words.
                         said_by = ctx.person.id
-                        origin = origin_of_new_words(memory, ctx, given.their_words)
+                        origin = origin_of_new_words(memory, ctx, given.their_words, words_now)
             try:
                 await change(
                     session,
@@ -574,6 +719,13 @@ class MemoryChange:
                     said_by=said_by,
                     confirmed_at=confirmed_at,
                     unconfirm=unconfirm,
+                    # New words count as checked only when they are themselves a passage of
+                    # their message in this turn (rulings R73, R79).
+                    words_checked=given.rewrites
+                    and origin == "own_words"
+                    and _passage(
+                        ctx, given.content if given.content is not None else memory.content
+                    ),
                 )
             except SecretRefused:
                 raise InvalidArguments("invalid", SECRET_REFUSED) from None
@@ -585,7 +737,15 @@ class MemoryChange:
                 session,
                 actor=actor,
                 action="memory.changed",
-                details={"memory": str(given.id), "kind": memory.kind},
+                details={
+                    "memory": str(given.id),
+                    "kind": memory.kind,
+                    **(
+                        {"confirmed_reason": given.confirmed_reason}
+                        if given.confirmed_reason is not None
+                        else {}
+                    ),
+                },
             )
             if memory.kept_private != was_private:
                 # A secret set or lifted, in this person's turn (spec 6.1).
@@ -625,9 +785,11 @@ class MemoryForget:
         name="memory_forget",
         description=(
             "Forget memories for good, by their ids: there is no way back. Forget what turned out "
-            "wrong, or what the person asks you to forget. Be careful: what touches on health, "
-            "safety or what someone asked you to remember is only forgotten when it became wrong "
-            "or when the person asks; never forget it only because it was not of use for a while. "
+            "wrong, or what the person asks you to forget. Be careful: what touches on health is "
+            "forgotten as agreed with the person it is about, asked the first time; what touches "
+            "on safety or what someone asked you to remember is only forgotten when it became "
+            "wrong or when the person asks; never forget it only because it was not of use for a "
+            "while. "
             "When the person a memory is about confirms or denies what someone else said about "
             "them, note first what the word of whoever said it was worth (trust_note), then "
             "change or forget the memory."

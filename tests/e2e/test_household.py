@@ -123,7 +123,8 @@ goes on or stops by itself (the core's upkeep looks every 5 seconds here, ``shar
 the server, in the conversation of the person who asked, and an open page finds his reply by
 asking every few seconds. A scenario that clicks a button therefore waits for that reply
 (``confirm_and_hear_back``, ``no_new_reply``) before it goes on: a message sent while Domo
-answers is refused as busy, and a bubble that arrives while a test counts them would confuse it.
+answers is kept and answered after that reply (spec 11.3), and a bubble that arrives while a test
+counts them would confuse it.
 """
 
 import re

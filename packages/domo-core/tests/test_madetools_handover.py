@@ -837,11 +837,14 @@ async def test_a_wake_runs_a_turn_with_the_content_as_data_alone(
     [line] = [line for line in call.system.splitlines() if HOSTILE in line]
     assert line.startswith(tool_wake_heading("tally"))
     assert json.loads(line.removeprefix(tool_wake_heading("tally")))["note"] == HOSTILE
-    # The judge of the action taken in that turn never reads it.
-    [judged] = model.judge_calls()
-    case = json.dumps([str(m) for m in judged.messages], ensure_ascii=False) + judged.system
-    assert HOSTILE not in case
-    assert '"total"' not in case
+    # The judge of the action taken in that turn never reads it (asked twice: it is an idea of
+    # his, the tool's wake his reason, and the judge stays silent).
+    judged = model.judge_calls()
+    assert len(judged) == 2
+    for asked in judged:
+        case = json.dumps([str(m) for m in asked.messages], ensure_ascii=False) + asked.system
+        assert HOSTILE not in case
+        assert '"total"' not in case
 
 
 async def test_a_wake_for_someone_who_left_runs_no_turn(

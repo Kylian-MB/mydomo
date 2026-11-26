@@ -364,7 +364,8 @@ async def test_a_hand_run_stops_for_a_yes_and_is_run_again_by_it(
     assert told["launch"] == "stopped" and told["run"] == str(run.id)
     assert told["result"]["stop"] == str(stop.id)
     assert told["result"]["says"] == ORDER["order"]["says"]
-    # The yes is asked and shown like any request that waits; the judge is never asked.
+    # The yes is asked and shown like any request that waits, once the judge weighed the cost
+    # (Task 24: the pilots' judge answers a yes).
     asked = await adult_chat.say_with_tool("program_run", {"yes_for": str(stop.id)})
     assert asked.actions == [{"tool": "program_run", "status": "waiting"}]
     [waiting] = asked.model_results
@@ -375,7 +376,8 @@ async def test_a_hand_run_stops_for_a_yes_and_is_run_again_by_it(
     )
     assert waiting["why"] == ORDER["order"]["says"]
     assert "32.50 €" in asked.cards_html
-    assert not [call for call in chat_server.calls if is_judge_call(call.system)]
+    [weighed] = [call for call in chat_server.calls if is_judge_call(call.system)]
+    assert json.loads(str(weighed.messages[0].content))["cost"]["amount_cents"] == 3250
     # Any other argument with it is refused: the stop's own program and arguments are used.
     mixed = await adult_chat.say_with_tool("program_run", {"yes_for": str(stop.id), "code": CODE})
     assert mixed.actions == [{"tool": "program_run", "status": "invalid", "reason": "invalid"}]

@@ -54,6 +54,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from domo_core.audit.log import append_audit
 from domo_core.conversation.prepare import TurnDeps
+from domo_core.learning.record import note_went_wrong
 from domo_core.llm.picker import ModelPicker
 from domo_core.madetools.checks import CheckReport
 from domo_core.madetools.launch import action_type_of
@@ -96,6 +97,8 @@ MAX_OUTCOME: Final = 300
 CHECKED: Final = "madetool.checked"
 BUILT: Final = "madetool.built"
 ABANDONED: Final = "madetool.build_abandoned"
+# The type of action of a build (``tool.build``): what went wrong with one is noted under it.
+_BUILD: Final = "tool.build"
 # What a new version took back of the yeses given for its old operations.
 YES_WITHDRAWN: Final = "madetool.yes_withdrawn"
 
@@ -240,14 +243,28 @@ async def _abandon_in(
     reason: str,
     now: datetime,
     setting: tuple[str, int] | None = None,
+    *,
+    went_wrong: bool = True,
 ) -> Trouble:
     """The build is abandoned for ``reason`` (the setting that caused it, with its figure:
-    ``setting``), its submission waiting for its checks refused; what Domo is woken with."""
+    ``setting``), its submission waiting for its checks refused; what Domo is woken with. Unless
+    he caused it himself (``went_wrong`` false: he removed its tool), it is a fact of what went
+    wrong with an act of his (``build_abandoned``), noted in the same transaction."""
     await refuse_unchecked(session, [build.id])
     build.state = "abandoned"
     build.outcome = reason[:MAX_OUTCOME]
     build.last_progress_at = now
     await session.flush()
+    if went_wrong:
+        await note_went_wrong(
+            session,
+            kind="build_abandoned",
+            action_type=_BUILD,
+            now=now,
+            subject_key=f"tool:{build.name}",
+            of_domo=True,
+            reason=reason,
+        )
     await append_audit(
         session,
         actor="system",
@@ -281,7 +298,7 @@ async def abandoned(
             return RoundOutcome("lost")
         if counted:
             build.rounds += 1
-        trouble = await _abandon_in(session, build, reason, deps.clock())
+        trouble = await _abandon_in(session, build, reason, deps.clock(), went_wrong=in_trouble)
         await session.commit()
     return RoundOutcome("abandoned", trouble=trouble if in_trouble else None)
 

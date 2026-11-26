@@ -22,6 +22,7 @@ from domo_common.sandbox_api import (
     ScanFinding,
     ScanResult,
 )
+from domo_core.confirmations.intent import classifier_prompt
 from domo_core.llm.models import Provider
 from domo_core.llm.types import (
     ChatChunk,
@@ -60,6 +61,24 @@ JUDGE_DEFAULT: Final = "yes"
 def is_judge_call(system: str) -> bool:
     """Whether a call under the system prompt ``system`` is the yes-judge's."""
     return system.startswith(JUDGE_FIRST_LINE)
+
+
+# The words of the isolated reader of the replies to requests (``confirmations.intent``): a test
+# that scripts one of them alone means the line of the first request shown ("1: yes").
+READER_WORDS: Final = frozenset({"yes", "firm", "no", "change", "unclear"})
+
+
+def is_reader_call(system: str) -> bool:
+    """Whether a call under the system prompt ``system`` is the reader's of the replies."""
+    return system == classifier_prompt()
+
+
+def as_the_reader_says(item: ChatChunk | ToolCall) -> ChatChunk | ToolCall:
+    """What the reader streams for ``item`` of a script: a bare word of its five is its line for
+    the first request shown; anything else, as it is."""
+    if isinstance(item, ChatChunk) and item.text.strip() in READER_WORDS:
+        return ChatChunk(f"1: {item.text.strip()}")
+    return item
 
 
 # What a fake writer of texts writes for a key: ``(key, meaning, for_whom) -> text``; and what a
@@ -125,6 +144,10 @@ class FakeChatModel:
       or a list whose next entry each call takes (``"yes"`` once it is used up). The script is
       not touched, and ``fail_after``, ``delay_s`` and ``refuse_tools`` do not count for it.
       ``judge=None`` turns that off: the judge's call is then served like any other.
+    * The isolated reader of the replies to requests (``is_reader_call``) answers one line per
+      request, ``<n>: word``: a script entry that is one of its words alone (``READER_WORDS``)
+      is streamed as the line of the first request, ``1: word``, as the tests of one request
+      shown write it; any other entry, as it is.
     * The writer of the texts (a call whose system prompt starts with ``TEXT_WRITER_FIRST_LINE``)
       and their checker (``TEXT_CHECKER_FIRST_LINE``) are answered apart too, always, by a call of
       their tool, followed by the usage. The writer gives each key of its message its text:
@@ -293,6 +316,8 @@ class FakeChatModel:
             if tools and self._refuse_tools:
                 raise ModelCallError("bad_request")
             items = self._items_for(bool(tools) and tool_choice == "auto")
+            if is_reader_call(system):
+                items = [as_the_reader_says(item) for item in items]
             for index, item in enumerate(items):
                 if self._fail_after == index:
                     raise ModelCallError(self._error_kind)

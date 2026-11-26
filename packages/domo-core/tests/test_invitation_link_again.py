@@ -389,4 +389,4 @@ def test_whoever_may_invite_with_a_role_may_give_its_link_again():
     child_again = again("adult", None)
     assert decide(
         child, child_again, DEFAULT_POLICY, child_rights, moment(child, child_again)
-    ) == NeedsApproval("adult")
+    ) == NeedsApproval("adult", judge_first=True)

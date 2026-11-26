@@ -249,7 +249,7 @@ def test_an_event_whose_data_is_not_an_object_is_skipped() -> None:
 @respx.mock
 @pytest.mark.parametrize(
     ("status", "error"),
-    [(409, "busy"), (409, "no_key"), (413, "too_long"), (400, "not_sayable")],
+    [(409, "no_key"), (413, "too_long"), (400, "not_sayable")],
 )
 def test_a_message_that_is_refused_says_why(status: int, error: str) -> None:
     respx.post(f"{API}/messages").respond(status, json={"error": error})
@@ -430,11 +430,13 @@ def test_a_secret_is_not_sent_over_plain_http_to_another_machine() -> None:
 
 
 @respx.mock
-def test_busy_on_a_message_says_a_reply_is_being_written() -> None:
-    respx.post(f"{API}/messages").respond(409, json={"error": "busy"})
-    with pytest.raises(Refused) as caught:
-        list(Client(SAVED).say("x"))
-    assert "writing" in str(caught.value)
+def test_a_message_kept_while_a_reply_is_written_gives_no_event() -> None:
+    # Spec 11.3: no stream of its own; what answers it comes on the listening stream.
+    respx.post(f"{API}/messages").respond(202, json={"reply_id": None, "kept": True})
+    stream = respx.get(url__startswith=f"{API}/stream/")
+    client = Client(SAVED)
+    assert list(client.say("x")) == []
+    assert not stream.called and client.last_reply is None
 
 
 @respx.mock

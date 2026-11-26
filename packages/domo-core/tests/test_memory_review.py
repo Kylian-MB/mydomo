@@ -21,10 +21,12 @@ from domo_core.accounts.models import Person
 from domo_core.channels.turns import app_turn_deps
 from domo_core.chat.models import Conversation, Message, MessageAction
 from domo_core.chat.store import ConversationStore
+from domo_core.confirmations.models import Confirmation
 from domo_core.conversation.channel import Abilities
 from domo_core.conversation.events import Event
 from domo_core.conversation.prepare import TurnDeps
 from domo_core.household.service import GUEST_DAYS_DEFAULT, disable, set_role
+from domo_core.learning.models import WentWrong
 from domo_core.llm.models import ModelChoices, Provider
 from domo_core.llm.types import (
     ChatChunk,
@@ -358,6 +360,9 @@ async def test_others_words_never_become_domo_s_own_through_a_review(owner_chat:
         reviewer(
             keep_call("Dana lives in Lyon."),
             keep_call("The assistant said ok.", their_words="ok"),
+            # Their exact words, the memory being the passage itself (ruling R50).
+            keep_call("My sister Dana lives in Lyon", their_words="My sister Dana lives in Lyon"),
+            # A paraphrase that cites them is not theirs while someone else's words are there.
             keep_call(
                 "The owner's sister lives in Lyon.", their_words="My sister Dana lives in Lyon"
             ),
@@ -370,8 +375,9 @@ async def test_others_words_never_become_domo_s_own_through_a_review(owner_chat:
         "Dana lives in Lyon.": "others_words",
         # Only the person's own words are theirs, never Domo's.
         "The assistant said ok.": "others_words",
-        # Their exact words, checked.
-        "The owner's sister lives in Lyon.": "own_words",
+        # Their exact words, checked: the memory is the passage itself.
+        "My sister Dana lives in Lyon": "own_words",
+        "The owner's sister lives in Lyon.": "others_words",
     }
 
     # Without words of someone else nor their exact words, it is what Domo deduced.
@@ -381,6 +387,36 @@ async def test_others_words_never_become_domo_s_own_through_a_review(owner_chat:
     owner_chat.clock.advance(QUIET)
     assert await review(deps_of(server), person.id, owner_chat.clock()) == "done"
     assert (await origins(server))["The owner works too much."] == "deduced"
+
+
+async def test_what_the_review_concludes_is_his_and_a_lesson_always(owner_chat: ChatPilot):
+    server = owner_chat.server
+    person = owner_chat.person
+    await owner_chat.say("I am tired today. I drink green tea.")
+    owner_chat.use_model(
+        reviewer(
+            # His conclusion, in a turn nobody asked for: his own, in the person's conversation.
+            keep_call("The owner works too much."),
+            # The person's exact words stay theirs.
+            keep_call("The owner drinks green tea.", their_words="I drink green tea"),
+            # A lesson is his whatever its words come from.
+            keep_call("Asking about the lamp twice was too much.", kind="lesson"),
+            keep_call(
+                "A warning about the hall light.",
+                kind="lesson",
+                their_words="I am tired today",
+            ),
+        )
+    )
+    owner_chat.clock.advance(QUIET)
+    assert await review(deps_of(server), person.id, owner_chat.clock()) == "done"
+    kept = await memories(server)
+    assert {content: (m.by_domo, m.said_by_id, m.origin) for content, m in kept.items()} == {
+        "The owner works too much.": (True, person.id, "deduced"),
+        "The owner drinks green tea.": (False, person.id, "own_words"),
+        "Asking about the lamp twice was too much.": (True, person.id, "deduced"),
+        "A warning about the hall light.": (True, person.id, "deduced"),
+    }
 
 
 async def test_a_failed_review_leaves_the_messages_to_review(owner_chat: ChatPilot):
@@ -706,3 +742,249 @@ async def test_a_review_done_clears_the_wait(owner_chat: ChatPilot):
     assert await pass_with(FakeChatModel(fail_after=0), QUIET) == 1
     # A first failure again (ten minutes), not a second one in a row (twenty).
     assert await pass_with(reviewer(), timedelta(minutes=11)) == 1
+
+
+# --- what became of what he did -------------------------------------------------------------------
+
+
+async def an_action(
+    server: ChatServer, reply_id: uuid.UUID, action_type: str = "net.open", **fields: Any
+) -> MessageAction:
+    """An action of a reply, ``done`` unless said otherwise."""
+    action = MessageAction(
+        message_id=reply_id,
+        tool_name=action_type.replace(".", "_"),
+        action_type=action_type,
+        status=fields.pop("status", "done"),
+        summary=fields.pop("summary", {"key": "action.card.done", "params": {}}),
+        **fields,
+    )
+    async with server.session_factory() as session:
+        session.add(action)
+        await session.commit()
+    return action
+
+
+async def a_review_reads(chat: ChatPilot, *calls: ToolCall) -> list[dict[str, Any]]:
+    """What the first call of a review of the pilot's conversation was given to go over."""
+    server = chat.server
+    chat.use_model(reviewer(*calls))
+    chat.clock.advance(QUIET)
+    assert await review(deps_of(server), chat.person.id, chat.clock()) == "done"
+    return read_in(review_calls(server)[0])
+
+
+async def test_a_refused_card_is_seen_with_who_refused(
+    owner_chat: ChatPilot, adult_chat: ChatPilot
+):
+    server = owner_chat.server
+    reply = await owner_chat.say("Please open the garage door.")
+    async with server.session_factory() as session:
+        conversation = await ConversationStore(session).latest_conversation(owner_chat.person.id)
+        assert conversation is not None
+        request = Confirmation(
+            requester_id=owner_chat.person.id,
+            approver_kind="adult",
+            conversation_id=conversation.id,
+            message_id=reply.message_id,
+            tool_name="net_open",
+            arguments={},
+            action={},
+            status="refused",
+            decided_by=adult_chat.person.id,
+            refusal_words="Not before the supper, said by someone else",
+        )
+        session.add(request)
+        await session.commit()
+        request_id = request.id
+    await an_action(server, reply.message_id, status="waiting", confirmation_id=request_id)
+
+    read = await a_review_reads(owner_chat)
+    assert read[1]["actions"] == [
+        {
+            "type": "net.open",
+            "status": "refused",
+            "decided_by": "an adult",
+            "why": None,
+            "undone": False,
+            "of_yours": False,
+            "subject": None,
+        }
+    ]
+    # Another person's name and words never reach the review of someone else's conversation.
+    sent = json.dumps(read)
+    assert adult_chat.person.display_name not in sent
+    assert "Not before the supper" not in sent
+
+
+async def test_a_done_then_undone_action_says_undone(owner_chat: ChatPilot):
+    server = owner_chat.server
+    reply = await owner_chat.say("Open the box for me.")
+    opened = await an_action(server, reply.message_id, by_domo=True, subject_key="address:box")
+    async with server.session_factory() as session:
+        session.add(
+            WentWrong(
+                at=owner_chat.clock(),
+                kind="undone",
+                action_type="net.close",
+                action_id=opened.id,
+                of_domo=True,
+                reason="the person closed it",
+            )
+        )
+        await session.commit()
+
+    read = await a_review_reads(owner_chat)
+    assert read[1]["actions"] == [
+        {
+            "type": "net.open",
+            "status": "done",
+            "decided_by": None,
+            "why": None,
+            "undone": True,
+            "of_yours": True,
+            "subject": "address:box",
+        }
+    ]
+    # What the person said when they undid it is not in what the review reads.
+    assert "closed it" not in json.dumps(read)
+
+
+async def test_a_failed_silent_action_is_seen(owner_chat: ChatPilot):
+    server = owner_chat.server
+    reply = await owner_chat.say("Open the box for me.")
+    await an_action(
+        server,
+        reply.message_id,
+        status="failed",
+        summary={"key": "action.card.failed.timeout", "params": {}, "reason": "timeout"},
+    )
+    judged = await an_action(
+        server,
+        reply.message_id,
+        "net.close",
+        status="refused",
+        summary={
+            "key": "action.card.refused.judge",
+            "params": {"reason": "It is late"},
+            "reason": "judge",
+        },
+    )
+    async with server.session_factory() as session:
+        session.add(
+            WentWrong(
+                at=owner_chat.clock(),
+                kind="judge_refused",
+                action_type="net.close",
+                action_id=judged.id,
+                by_domo=True,
+                reason="NOTED: the owner asked it twice, be careful",
+            )
+        )
+        await session.commit()
+
+    read = await a_review_reads(owner_chat)
+    first, second = read[1]["actions"]
+    assert (first["type"], first["status"], first["why"]) == ("net.open", "failed", "timeout")
+    # His judge refused: said by it, with what it said to the person, never what it noted.
+    assert (second["status"], second["decided_by"], second["why"]) == (
+        "refused",
+        "your judge",
+        "It is late",
+    )
+    assert "NOTED" not in json.dumps(read)
+
+
+async def test_a_reply_in_error_with_actions_is_shown_by_its_actions(owner_chat: ChatPilot):
+    server = owner_chat.server
+    reply = await owner_chat.say("Open the box for me.")
+    await an_action(server, reply.message_id)
+    async with server.session_factory() as session:
+        await session.execute(
+            update(Message)
+            .where(Message.id == reply.message_id)
+            .values(status="error", content="half of a text that was never an answer")
+        )
+        await session.commit()
+
+    read = await a_review_reads(owner_chat)
+    assert (read[1]["who"], read[1]["text"]) == ("you", "")
+    assert [a["type"] for a in read[1]["actions"]] == ["net.open"]
+    assert "never an answer" not in json.dumps(read)
+
+
+async def test_a_lesson_of_the_review_is_the_assistant_s_and_names_its_type(
+    owner_chat: ChatPilot,
+):
+    server = owner_chat.server
+    reply = await owner_chat.say("Open the box for me.")
+    await an_action(
+        server,
+        reply.message_id,
+        status="refused",
+        summary={"key": "action.card.refused.not_allowed", "params": {}, "reason": "not_allowed"},
+        subject_key="address:box",
+    )
+    read = await a_review_reads(
+        owner_chat,
+        keep_call(
+            "Opening the box was refused by the rules: ask first next time.",
+            kind="lesson",
+            lesson_of="net.open",
+            lesson_subject="address:box",
+        ),
+    )
+    assert read[1]["actions"][0]["subject"] == "address:box"
+    assert read[1]["actions"][0]["decided_by"] == "the rules"
+    assert read[1]["actions"][0]["why"] == "not_allowed"
+    (lesson,) = (await memories(server)).values()
+    assert (lesson.kind, lesson.by_domo, lesson.lesson_action_type, lesson.lesson_subject_key) == (
+        "lesson",
+        True,
+        "net.open",
+        "address:box",
+    )
+
+
+async def test_a_failure_is_shown_by_a_code_never_by_a_text(owner_chat: ChatPilot):
+    reply = await owner_chat.say("Open the box for me.")
+    await an_action(
+        owner_chat.server,
+        reply.message_id,
+        status="failed",
+        summary={
+            "key": "action.card.failed",
+            "params": {},
+            "reason": "Library said: no route to 10.0.0.1",
+        },
+    )
+    read = await a_review_reads(owner_chat)
+    assert read[1]["actions"][0]["why"] is None
+    assert "10.0.0.1" not in json.dumps(read)
+
+
+async def test_at_most_eight_actions_of_a_message_are_shown(owner_chat: ChatPilot):
+    reply = await owner_chat.say("Open everything.")
+    for _ in range(10):
+        await an_action(owner_chat.server, reply.message_id)
+    read = await a_review_reads(owner_chat)
+    assert len(read[1]["actions"]) == 8
+
+
+async def test_a_lesson_kept_with_outside_text_in_the_slice_is_not_the_assistant_s_own(
+    owner_chat: ChatPilot,
+):
+    server = owner_chat.server
+    reply = await owner_chat.say("Open the box for me.")
+    await an_action(server, reply.message_id, status="failed")
+    async with server.session_factory() as session:
+        await session.execute(
+            update(Message).where(Message.id == reply.message_id).values(own_answer=False)
+        )
+        await session.commit()
+    await a_review_reads(
+        owner_chat,
+        keep_call("Opening the box failed: look first.", kind="lesson", lesson_of="net.open"),
+    )
+    (lesson,) = (await memories(server)).values()
+    assert (lesson.kind, lesson.by_domo) == ("lesson", False)

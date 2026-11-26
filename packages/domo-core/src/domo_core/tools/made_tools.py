@@ -23,8 +23,10 @@ right. Removing a tool keeps
 the owner's rules on its kind: a tool made again under its name is closed to the same people. Each
 launch is made for someone: ``tool_launch_when`` sets a trigger for the person of the turn
 (``for: "me"``) or for the house (``for: "house"``), stored in ``for_person_id``; one for the house
-only in the owner's turn or in a turn Domo acts in on his own (R15: a launch for the house is
-judged with his rights, and his own yes answers its cost). In a turn he acts in on his own nobody
+at once in a turn Domo acts in on his own or for whom the rights allow ``house.set`` (the owner by
+default), anyone else's waiting for the owner's yes as Domo's request (ruling R17, Task 27; R15: a
+launch for the house is judged with his rights, and his own yes answers its cost). In a turn he
+acts in on his own nobody
 asked: a trigger he sets there is for the house, and one for the person is refused (it would
 launch later with their rights); a build he opens there is nobody's (``opened_by`` empty).
 
@@ -48,9 +50,9 @@ nothing acts, nobody is woken) and gives, for each, what it should give, what it
 they are the same; what a program gave or said is its words, data for Domo.
 
 ``tool_build`` may start from a program Domo ran by hand (``from_run``, ``tools.program_run``):
-only a run the person of the turn could have opened (one for them, or one for the house in the
-owner's turn or a turn of his own), else ``not_found``, in the same words whether the run exists
-or not.
+only a run the person of the turn could have opened (one for them, or one for the house where the
+house's may be set: a turn of his own, or someone the rights allow ``house.set``), else
+``not_found``, in the same words whether the run exists or not.
 
 A name is unique in the household: a build in progress for a name is handed to whoever asks for
 that name (``open_build``), a name in use by a tool is refused with what Domo needs to do next.
@@ -118,13 +120,21 @@ from domo_core.outward.models import DOMO, OpenAddress
 from domo_core.outward.service import closed_by_the_owner
 from domo_core.plans.schedule import as_local, next_after
 from domo_core.policy.actions import DescribedAction
+from domo_core.policy.asks import Asked
 from domo_core.policy.catalog import MADE_PREFIX
 from domo_core.policy.open_catalog import load_policy
 from domo_core.policy.rights import load_rights
 from domo_core.policy.roles import Actor, actor_label
 from domo_core.sandbox_client import SandboxUnavailable
 from domo_core.text import MAX_DISPLAY_NAME_LENGTH, is_plain_line
-from domo_core.tools.context import InvalidArguments, ToolContext, ToolOutcome
+from domo_core.tools.context import (
+    HOUSE_SET_ON_A_YES,
+    InvalidArguments,
+    ToolContext,
+    ToolOutcome,
+    WaitsForAYes,
+    set_on_a_yes,
+)
 from domo_core.tools.plan_tools import (
     REPEAT_SCHEMA,
     WHEN_SCHEMA,
@@ -174,9 +184,10 @@ _NO_RUN: Final = (
     "no program you ran by hand in this conversation has this id (one is kept for "
     "hand_runs_kept_days, a setting of yours): open the build without from_run"
 )
-_HOUSE_IS_THE_OWNERS: Final = (
-    "a tool launched for the house is timed by the owner, or by you on your own: time it for the "
-    'person you are talking with (for: "me"). Nothing was done'
+_HOUSE_NEEDS_THE_OWNER: Final = (
+    "a tool launched for the house is timed at once by the owner, by whom the rights allow it, or "
+    "by you on your own; anyone else's waits for the owner's yes: call it on its own, and it "
+    'waits for it (or time it for the person you are talking with, for: "me"). Nothing was done'
 )
 _NOBODY_ASKED: Final = (
     "nobody asked you here, you act on your own: a tool you time here launches for the house "
@@ -440,13 +451,14 @@ class _Build:
 async def _run_to_start_from(session: AsyncSession, ctx: ToolContext, run_id: uuid.UUID) -> None:
     """``not_found`` unless the program run by hand ``run_id`` is kept and is one the person of the
     turn could have opened: run for them (never in a turn Domo acts in on his own), or for the
-    house in the owner's turn or a turn of his own (``ToolContext.may_act_for_the_house``). The
-    same words whether the run exists or not: nothing says whose another run is."""
+    house where the house's may be set (``ToolContext.may_set_for_the_house``: a turn of his own,
+    or someone the rights allow ``house.set``). The same words whether the run exists or not:
+    nothing says whose another run is."""
     run = await session.get(HandRun, run_id)
     if run is None:
         raise InvalidArguments("not_found", _NO_RUN)
     if run.for_person_id is None:
-        theirs = ctx.may_act_for_the_house
+        theirs = await ctx.may_set_for_the_house(session)
     else:
         theirs = run.for_person_id == ctx.person.id and not ctx.on_his_own
     if not theirs:
@@ -778,6 +790,10 @@ class MadeToolLook:
                 # The description and the state alone: the rest is for those who use it.
                 return ToolOutcome(status="done", model_result=result, card=_CARD)
             await self._add_the_rest(session, tool, result, look, zone, ctx.clock())
+        launches = cast(list[JsonValue], result.get("launches", []))
+        if any(isinstance(line, dict) and line.get("error") for line in launches):
+            # The error text a program said enters the turn: it is nobody of the house's.
+            ctx.raise_outside_text()
         return ToolOutcome(status="done", model_result=result, card=_CARD)
 
     async def _add_the_rest(
@@ -918,8 +934,8 @@ async def _addresses_of(
                 "closed_by_the_owner": row.closed_by_owner,
             }
         )
-    # A missing one the owner closed, for this tool or another (ruling R20), opens again only
-    # with the owner's yes.
+    # A missing one the owner closed, for this tool or another (ruling R20), may be opened again
+    # when Domo judges things changed; a yes asked for it is the owner's.
     missing: list[JsonValue] = [
         {
             "host": host,
@@ -1243,6 +1259,8 @@ class MadeToolCheck:
             "examples": told,
             "all_same": all(run.passed for run in runs),
         }
+        # What the program gave and said enters the turn: it is nobody of the house's.
+        ctx.raise_outside_text()
         return ToolOutcome(status="done", model_result=result, card=_CARD)
 
 
@@ -1407,12 +1425,11 @@ class MadeToolLaunchWhen:
             "(on: return; the person you are talking with's return, or the return of someone "
             "you name in person). for: whom it launches for, me (the person you are talking "
             "with, with their rights of the moment; it waits while they are away) or house "
-            "(the whole household, with your own rights: when you act on your own, or for "
-            "the owner only; anyone else's is refused, time it for them instead); me "
-            "unless you say otherwise. The tool is yours and serves anyone: someone it is closed "
-            "to cannot have it timed. One trigger per call. Its result may wake you or launch "
-            "another "
-            "tool, never more than the rights of whom it launches for; a tool keeps "
+            "(the whole household, with your own rights: set at once when you act on your own, "
+            "or for whom the owner's rules allow it; anyone else's waits for the owner's yes); "
+            "me unless you say otherwise. The tool is yours and serves anyone: someone it "
+            "is closed to cannot have it timed. One trigger per call. Its result may wake you or "
+            "launch another tool, never more than the rights of whom it launches for; a tool keeps "
             "triggers_per_tool triggers at most (a setting of yours, tool_set). To cancel one, "
             "give its id (cancel): tool_look shows them. " + _SILENT_WORDS
         ),
@@ -1434,7 +1451,8 @@ class MadeToolLaunchWhen:
                     "type": "string",
                     "enum": ["me", "house"],
                     "description": "Whom it launches for: me (the person you are talking with, "
-                    "the default) or house (on your own, or for the owner only).",
+                    "the default) or house (at once on your own, or for whom the owner's rules "
+                    "allow it; anyone else's waits for the owner's yes).",
                 },
                 "arguments": {
                     "type": "object",
@@ -1458,17 +1476,35 @@ class MadeToolLaunchWhen:
     @staticmethod
     def _given(arguments: JsonObject, ctx: ToolContext) -> _When:
         """The arguments, checked; in a turn Domo acts in on his own a trigger is the house's
-        (nobody asked: one for the person, said so, is refused). A trigger for the house is the
-        owner's or Domo's on his own (``ToolContext.may_act_for_the_house``)."""
+        (nobody asked: one for the person, said so, is refused)."""
         given = _When(arguments)
         if ctx.on_his_own and given.cancel is None:
             if given.for_me:
                 raise InvalidArguments("not_possible", _NOBODY_ASKED)
             given.house = True
-        if given.house and not ctx.may_act_for_the_house:
-            # The owner's, as an agreement for the house (R15): anyone else times it for themselves.
-            raise InvalidArguments("not_possible", _HOUSE_IS_THE_OWNERS)
         return given
+
+    @staticmethod
+    async def _needs_the_owner(session: AsyncSession, ctx: ToolContext, given: _When) -> bool:
+        """Whether a trigger for the house waits for the owner's yes (ruling R17): asked by
+        someone who may not set it for the house (``ToolContext.may_set_for_the_house``). So does
+        cancelling one that is for the house (ruling R74): it needs what setting it needs; any
+        other trigger is cancelled as before."""
+        if given.cancel is not None:
+            house = await session.scalar(
+                select(MadeToolTrigger.for_person_id.is_(None))
+                .join(MadeTool, MadeTool.id == MadeToolTrigger.tool_id)
+                .where(
+                    MadeToolTrigger.id == given.cancel,
+                    MadeTool.name == given.name,
+                    MadeToolTrigger.state == "waiting",
+                )
+            )
+            if not house:
+                return False
+        elif not given.house:
+            return False
+        return not await ctx.may_set_for_the_house(session)
 
     async def describe(
         self, arguments: JsonObject, actor: Actor, ctx: ToolContext
@@ -1478,13 +1514,35 @@ class MadeToolLaunchWhen:
             await _reach_to_act(session, given.name, ctx)
         return _described(self.action_type, given.name)
 
+    async def waits_for(self, arguments: JsonObject, ctx: ToolContext) -> WaitsForAYes | None:
+        """A trigger for the house asked by someone who may not set it: Domo's request waiting
+        for the owner's yes (ruling R17), never refused. Any other call: ``None``."""
+        given = self._given(arguments, ctx)
+        async with ctx.session_factory() as session:
+            if not await self._needs_the_owner(session, ctx, given):
+                return None
+        return WaitsForAYes(approver="owner", asked=Asked("yes", "approver", None), domo_asks=True)
+
+    async def never_a_step(self, arguments: JsonObject, ctx: ToolContext) -> str | None:
+        """A trigger for the house that waits for the owner's yes is never a step of a chain
+        (``NeverAStep``): its call waits on its own."""
+        given = self._given(arguments, ctx)
+        async with ctx.session_factory() as session:
+            needs = await self._needs_the_owner(session, ctx, given)
+        return _HOUSE_NEEDS_THE_OWNER if needs else None
+
     async def execute(self, arguments: JsonObject, ctx: ToolContext) -> ToolOutcome:
         given = self._given(arguments, ctx)
         now = ctx.clock()
         async with ctx.session_factory() as session:
             tool = await _reach_to_act(session, given.name, ctx)
+            if await self._needs_the_owner(session, ctx, given):
+                # Run without the owner's yes (a step of a chain, a request of someone else's):
+                # nothing is set, nor cancelled for the house.
+                raise InvalidArguments("not_possible", _HOUSE_NEEDS_THE_OWNER)
             if given.cancel is not None:
                 return await self._cancel(session, ctx, tool, given.cancel)
+            told_after = given.house and await set_on_a_yes(session, ctx)
             chars = await settings.value(session, "trigger_argument_chars", tool)
             arguments_within(given.arguments, chars)
             problem = schema_problem(tool.parameters, given.arguments)
@@ -1550,9 +1608,10 @@ class MadeToolLaunchWhen:
                 details={"tool": tool.name, "kind": trigger.kind},
             )
             await session.commit()
-        return ToolOutcome(
-            status="done", model_result={"status": "done", "trigger": result}, card=_CARD
-        )
+        told: JsonObject = {"status": "done", "trigger": result}
+        if told_after:
+            told["detail"] = HOUSE_SET_ON_A_YES
+        return ToolOutcome(status="done", model_result=told, card=_CARD)
 
     @staticmethod
     async def _cancel(

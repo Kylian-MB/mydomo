@@ -16,14 +16,19 @@ from uuid import uuid4
 import domo_core
 import pytest
 from chat_support import last_audit
+from domo_core.confirmations.case import Gathered, IdeaTold
 from domo_core.confirmations.judge import RightsSay, build_case
 from domo_core.policy import barrier
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.barrier import Allow, Refuse, record_decision
 from domo_core.policy.catalog import (
     ACTION_FACTS,
+    CLOSED_TO_DOMO,
     CODE_RISKS,
     DEFAULT_POLICY,
+    DOMO_ACTIONS,
+    DOMO_DEVICE_ACTIONS,
+    DOMO_HOUSEHOLD_ACTIONS,
     DOMO_NOT_BY_DEFAULT,
     KNOWN_ACTIONS,
     NO_RISK,
@@ -193,9 +198,19 @@ PERMISSIONS = {
     "policy.update",
     "models.set_level",
 }
-# Going out (spec 13.5, 13.10): removing and sharing an account are never his; a port of the
-# machine that hosts him is not his by default.
-ACCOUNT_SECRETS = {"account.remove", "account.share"}
+# Going out (spec 13.5, 13.10): sharing an account is never his; a port of the machine that hosts
+# him is not his by default. Removing an account that no longer serves is his on his own (the
+# owner, 2026-11-24), and so are the household's people and the devices (2026-11-23, 2026-11-24).
+ACCOUNT_SECRETS = {"account.share"}
+HOUSEHOLD_PEOPLE = {
+    "household.invite",
+    "household.invite_again",
+    "household.cancel_invitation",
+    "household.change_role",
+    "household.remove",
+    "household.bring_back",
+}
+DEVICES = {"device.entrust", "device.remove"}
 
 
 def test_domo_starts_with_every_right_but_the_owners_own_and_the_socle_s():
@@ -207,8 +222,7 @@ def test_domo_starts_with_every_right_but_the_owners_own_and_the_socle_s():
         | {"texts.for_someone"}
         | ACCOUNT_SECRETS
         | {"net.open_host"}
-        == DOMO_NOT_BY_DEFAULT
-    )
+    ) - (HOUSEHOLD_PEOPLE | DEVICES) == DOMO_NOT_BY_DEFAULT
     assert PERMISSION_TYPES == PERMISSIONS
     assert "models.step_up" in DEFAULT_POLICY.domo and "policy.update" not in DEFAULT_POLICY.domo
 
@@ -283,6 +297,101 @@ def test_what_domo_lacks_by_default_is_refused_to_him_until_the_owner_opens_it()
     update = DescribedAction("core", "policy.update", None, "permissions", "household")
     given = RightsTable((right("policy.update", access="allow", for_domo=True),))
     assert decide(domo, update, given) == Refuse("not_allowed")
+
+
+def test_the_assistant_has_the_six_household_types_by_default():
+    assert DOMO_HOUSEHOLD_ACTIONS == HOUSEHOLD_PEOPLE
+    assert DOMO_HOUSEHOLD_ACTIONS <= DOMO_ACTIONS
+    assert not DOMO_HOUSEHOLD_ACTIONS & (DOMO_NOT_BY_DEFAULT | CLOSED_TO_DOMO)
+    assert DEFAULT_POLICY.domo >= DOMO_HOUSEHOLD_ACTIONS
+
+
+def test_keys_limits_and_sharing_stay_closed_to_him_and_devices_and_removing_an_account_are_his():
+    # The owner, 2026-11-24: he entrusts a device, removes one and removes an account on his own.
+    assert DOMO_DEVICE_ACTIONS == DEVICES
+    for action_type in DEVICES | {"account.remove"}:
+        assert action_type in DOMO_ACTIONS, action_type
+        assert action_type not in DOMO_NOT_BY_DEFAULT | CLOSED_TO_DOMO, action_type
+    # What stays closed to him: leaving, handing the owner's role over, the keys, the limits,
+    # sharing an account, the successors, the rights and the policy.
+    closed = {"household.leave", "household.transfer_ownership", "spending.limit"}
+    closed |= SECRETS | ACCOUNT_SECRETS | {"successors.set", "rights.apply", "policy.update"}
+    for action_type in closed:
+        assert action_type in DOMO_NOT_BY_DEFAULT, action_type
+        assert action_type not in DOMO_ACTIONS, action_type
+    assert closed - OWNER_ONLY_ACTIONS <= CLOSED_TO_DOMO
+
+
+def test_on_his_own_he_keeps_memory_trust_plans_reminders_chains_and_his_writing():
+    alone = on_his_own_tables(DEFAULT_POLICY)
+    kept = {
+        "memory.keep",
+        "memory.change",
+        "memory.forget",
+        "memory.search",
+        "trust.note",
+        "trust.look",
+        "trust.correct",
+        "plan.set",
+        "plan.change",
+        "plan.cancel",
+        "confirmation.remind",
+        "confirmation.require_explicit",
+        "delivery.look",
+        "chain.run",
+        "chain.continue",
+        "writing.choose",
+    }
+    assert not kept & NOT_ON_HIS_OWN
+    for action_type in kept | HOUSEHOLD_PEOPLE | DEVICES | {"account.remove"}:
+        assert action_type in alone.domo, action_type
+
+
+def test_the_person_s_texts_profile_and_devices_stay_theirs():
+    assert {
+        "profile.rename",
+        "profile.name_domo",
+        "note.told",
+        "note.show",
+        "texts.find",
+        "texts.rewrite",
+        "texts.restore",
+        "texts.language",
+        "texts.note",
+        "device.list",
+        "people.nickname_keep",
+        "people.nickname_forget",
+        "spending.show",
+    } == NOT_ON_HIS_OWN
+    alone = on_his_own_tables(DEFAULT_POLICY)
+    for action_type in NOT_ON_HIS_OWN:
+        assert action_type not in alone.domo, action_type
+
+
+# (Inviting again takes the rights of inviting: a right on it alone is never read.)
+@pytest.mark.parametrize(
+    "held", sorted((HOUSEHOLD_PEOPLE - {"household.invite_again"}) | DEVICES | {"account.remove"})
+)
+def test_the_owner_denies_him_what_he_holds_and_the_barrier_refuses(held):
+    kinds = {"person": "person:x", "role": "adult", "boolean": False, "number": None, "text": "a"}
+    facts = {name: kinds[kind] for name, kind in ACTION_FACTS[held].items()}
+    action = DescribedAction("core", held, None, "permissions", "household", facts)
+    # He does it on his own, nothing of the socle in the way: his judge weighs it.
+    assert decide(domo_actor(), action) == Allow()
+    denied = RightsTable((right(held, access="deny", for_domo=True),))
+    assert decide(domo_actor(), action, denied) == Refuse("not_allowed")
+    # Given back after the deny: a right written again replaces the one in force.
+    given_back = RightsTable((right(held, access="allow", for_domo=True),))
+    assert decide(domo_actor(), action, given_back) == Allow()
+
+
+def test_the_owner_s_ask_me_first_on_his_plans_is_asked_before_any_judgement():
+    action = DescribedAction("core", "plan.set", None, "message", "household")
+    first = RightsTable((right("plan.set", ask="yes", for_domo=True),))
+    decision = decide(domo_actor(), action, first)
+    assert decision == Allow("yes")
+    # Without his rule nothing is imposed: the judge weighs it.
+    assert decide(domo_actor(), action) == Allow()
 
 
 def test_domo_is_a_subject_of_his_own():
@@ -477,7 +586,7 @@ async def test_a_request_of_domo_counts_once_however_many_yeses_it_went_through(
     facts = await decision_facts(session, domo, launch, now, None)
     assert facts["history"] == {"day": 1, "week": 1, "month": 1}
     judged = await domo_judge_history(session, "made.order", now)
-    assert (judged.day, judged.ever, judged.refused_or_dropped) == (1, 1, 0)
+    assert (judged.day, judged.ever, judged.refused, judged.expired) == (1, 1, 0, 0)
     assert judged.last_at is not None
 
 
@@ -485,17 +594,21 @@ async def test_the_judge_s_case_of_domo_on_his_own_is_his(session):
     case = await build_case(
         session,
         actor=domo_actor(),
+        asks=None,
         action=NOTE,
         says="Leave a note.",
         rights=RightsSay(allowed=True, needs=None, question=None),
         conversation_id=uuid4(),
         now=NOW,
         zone=None,
+        idea=IdeaTold("domo", "the house asked for it"),
+        gathered=Gathered((), (), (), (), None, (), None, ()),
     )
-    # His name, nobody's words nor requests, his own history: never the owner's.
+    # His name, nobody's words nor requests, his own history: never the owner's; his idea.
     assert case.person == {"name": "Domo", "role": "adult"}
     assert (case.words, case.pending, case.asked_them, case.speaker) == ((), (), None, None)
     assert case.history.ever == 0
+    assert case.as_json()["idea"]["reason"] == "the house asked for it"
 
 
 async def test_an_example_about_domo_names_him(session):
@@ -511,8 +624,8 @@ def test_what_is_the_persons_own_is_not_domo_s_on_his_own():
         assert action_type in DEFAULT_POLICY.domo or action_type in DOMO_NOT_BY_DEFAULT
         assert not NO_RIGHTS.resolve(domo_actor(), action_type, alone).allowed, action_type
     # A right the owner gives him opens one, as any right of his.
-    opened = RightsTable((right("memory.search", access="allow", for_domo=True),))
-    assert opened.resolve(domo_actor(), "memory.search", alone).allowed
+    opened = RightsTable((right("texts.find", access="allow", for_domo=True),))
+    assert opened.resolve(domo_actor(), "texts.find", alone).allowed
     # What is the house's or his own stays his.
     # A note he leaves on his own is his own (the owner, 2026-11-21), never in someone's name.
     assert "note.leave" not in NOT_ON_HIS_OWN

@@ -345,7 +345,8 @@ def confirm_and_hear_back(
     what follows in that page, without reloading it: the card says what became of the request
     (``status``), and Domo, woken by the button, adds a bubble that says ``said`` (the fake
     model's words for a decided request). Waiting for that bubble also leaves the conversation
-    free: a message sent while Domo answers is refused as busy. Returns the bubble."""
+    free: a message sent while Domo answers is kept for that reply, and answered after it (spec
+    11.3), which would add bubbles a test does not expect. Returns the bubble."""
     before = assistant_replies(page).count()
     confirm_with_the_button(card, status)
     heard = wait_for_a_new_reply(page, before)

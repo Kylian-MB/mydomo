@@ -9,7 +9,10 @@
      a box that holds nothing but spaces. On a touch screen (no hover, a coarse pointer: a phone,
      whose keyboard has no Shift+Enter), Enter starts a new line and the button sends, as in a
      phone's messaging app;
-   - the text box is emptied once its message was accepted;
+   - the text box is emptied once its message was accepted; nothing holds a message back while the
+     assistant writes a reply (only the same message, while it is being sent): one sent then is
+     kept for that reply (202, its bubble alone, put at the end), and what answers it comes as any
+     reply the assistant starts, with what is new;
    - a reply that has ended (the "done" event) stops being "busy", and its stream is not opened
      again: the htmx extension would otherwise try to reconnect to a stream that was closed by the
      server, for ever. A stream that stopped short (the browser reconnected and the server answered

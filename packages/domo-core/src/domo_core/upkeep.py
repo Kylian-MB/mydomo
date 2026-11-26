@@ -5,7 +5,9 @@ A pass (``UpkeepPass``) is a function of the time of the pass that does its own 
 its own and commits it: erasing the notes of the guests who left (``notes.upkeep.notes_pass``),
 pausing the rights of the people who left (``household.upkeep.departures_pass``, spec 5.7),
 resuming or stopping the chains paused until someone's arrival
-(``confirmations.arrivals.arrivals_pass``, spec 4.3b), settling at their maximum the reservations
+(``confirmations.arrivals.arrivals_pass``, spec 4.3b), expiring the requests past their
+lifetime and waking Domo once for those about to lapse
+(``confirmations.expiring.expiring_pass``), settling at their maximum the reservations
 of the calls to a model that never said what they cost (``stale_reservations_pass``,
 ``llm.spending.settle_stale``), listing again the models of the keys used in the last day once
 their list is a day old (``model_lists_pass``, ``llm.refresh``), and reading the real spending

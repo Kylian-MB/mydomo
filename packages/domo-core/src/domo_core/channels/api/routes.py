@@ -16,8 +16,10 @@ The routes
   (``app.state.pairing_throttle``: 429 ``held_back`` with ``Retry-After``). The only route without
   the device's secret.
 * ``POST /messages`` ``{"text"}``: the person says something (``Conversation.say``): 200
-  ``{"reply_id"}``; 409 ``busy`` while a reply is being written in the conversation (the page's
-  too), 409 ``no_key`` for someone Domo has no key for, 413 ``too_long``, 400 ``not_sayable``.
+  ``{"reply_id"}``; 202 ``{"reply_id": null, "kept": true}`` while a reply is being written in the
+  conversation (the page's too): the message is kept for it (spec 11.3), and what answers it comes
+  as any reply Domo starts (``/listen``, ``/since``); 409 ``no_key`` for someone Domo has no key
+  for, 413 ``too_long``, 400 ``not_sayable``.
 * ``GET /stream/{reply_id}``: the reply, as it is written (``Conversation.answer``): ``words``,
   ``acted``, ``failed``, then ``ended``. The turn runs in a task of the application, never in this
   connection: a device that goes away stops only the relay, and Domo finishes his reply all the
@@ -106,11 +108,11 @@ from domo_core.conversation.prepare import (
 )
 from domo_core.conversation.service import (
     MAX_TEXT_LENGTH,
-    Busy,
     Conversation,
     NotSayable,
     fetched_since,
 )
+from domo_core.conversation.speaker import Speaker
 from domo_core.conversation.visits import touch_visit
 from domo_core.devices.models import Device
 from domo_core.devices.service import device_of, finish_pairing
@@ -145,6 +147,12 @@ def get_api_deps(deps: Annotated[TurnDeps, Depends(get_turn_deps)]) -> TurnDeps:
     """What a turn of this channel needs of the application: the page's, but for the heads of
     the cards, which only a page shows."""
     return replace(deps, card_heads=None)
+
+
+def _turn_request(request: Request, speaker: Speaker) -> TurnRequest:
+    """What this channel says of a turn of ``speaker``: what a device can do, and the address it
+    reached Domo at."""
+    return TurnRequest(speaker=speaker, abilities=API, origin=str(request.base_url))
 
 
 def _id_of(value: str) -> uuid.UUID:
@@ -230,16 +238,18 @@ async def post_message(
         return refusal(413, "too_long")
     device, person = known
     said = text.replace("\r\n", "\n").replace("\r", "\n")
+    speaker = api_speaker(person.id, device.id, device.created_at)
     try:
         _, reply = await Conversation(deps).say(
-            person, said, api_speaker(person.id, device.id, deps.clock())
+            person, said, speaker, _turn_request(request, speaker)
         )
     except NotSayable:
         return refusal(400, "not_sayable")
     except NoKey:
         return refusal(409, "no_key")
-    except Busy:
-        return refusal(409, "busy")
+    if reply is None:
+        # Kept for the reply being written (spec 11.3): what answers it comes as any reply.
+        return JSONResponse({"reply_id": None, "kept": True}, status_code=202)
     return JSONResponse({"reply_id": str(reply.id)})
 
 
@@ -259,11 +269,7 @@ async def stream_reply(
         relay,
         Render(person=person, texts=texts, session_factory=deps.session_factory, clock=deps.clock),
     )
-    turn_request = TurnRequest(
-        speaker=api_speaker(person.id, device.id, deps.clock()),
-        abilities=API,
-        origin=str(request.base_url),
-    )
+    turn_request = _turn_request(request, api_speaker(person.id, device.id, device.created_at))
     try:
         answering = await Conversation(deps).answer(
             person, rid, turn_request, listener, when_over=relay.close
@@ -357,7 +363,7 @@ async def prove_confirmation(
             ctx_factory=requester_context(moment),
             registry=deps.registry,
             policy=policy,
-            speaker=api_speaker(person.id, device.id, deps.clock()),
+            speaker=api_speaker(person.id, device.id, device.created_at),
         )
     except ProofHeldBack as held:
         return refusal(429, "held_back", {"Retry-After": str(math.ceil(held.wait))})

@@ -502,9 +502,13 @@ async def test_a_yes_call_waits_and_is_shown_and_the_judge_never_reads_the_outpu
         "domo",
     )
     assert result["why"] == ORDER["order"]["says"]
-    # Shown, as any request that waits; the judge was never asked.
+    # Shown, as any request that waits; the judge weighed her cost first (Task 24) and asked
+    # her yes (the pilots' judge answers a yes), with the amount and what it does, never the
+    # program's output.
     assert reply.pending_confirmation_id is not None
-    assert not [call for call in chat_server.calls if is_judge_call(call.system)]
+    [weighed] = [call for call in chat_server.calls if is_judge_call(call.system)]
+    case = json.loads(str(weighed.messages[0].content))
+    assert (case["cost"]["amount_cents"], case["cost"]["operation"]) == (3250, "order")
     # Any other argument with it is refused: the stop's own arguments are used.
     mixed = await adult_chat.say_with_tool("t_order", {"yes_for": str(stop.id), "n": 9})
     assert mixed.actions == [{"tool": "t_order", "status": "invalid", "reason": "invalid"}]

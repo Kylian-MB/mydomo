@@ -3,11 +3,14 @@ when the person is there.
 
 ``Conversation.say`` records the person's words and opens the reply that will answer them, as one
 step: the words are checked (``MAX_TEXT_LENGTH``), the conversation is locked, and while a reply is
-being written there (``reply_is_alive``) nothing more is said (``Busy``); a reply that nobody
-writes any more, older than ``STALE_AFTER`` (a turn that never ended, say after a crash), is marked
-as failed and no longer blocks anyone. An arrival turn that runs never makes the person busy: it
-stops, and its reply goes (``visits.step_aside``). Someone who has no key Domo may use for
-them, and whom no upkeep turn answers, is refused (``NoKey``).
+being written there (``reply_is_alive``) their words are stored all the same, and kept for the
+turn that writes it (spec 11.3, ``conversation.kept``): it reads them between two of its actions,
+or, when it has no round left, they are answered right after it by a reply of their own
+(``answer_kept``, given to whoever listens: ``Fanout``). One turn at a time still writes in a
+conversation. A reply that nobody writes any more, older than ``STALE_AFTER`` (a turn that never
+ended, say after a crash), is marked as failed and holds nothing back. An arrival turn that runs
+stops for their words, and its reply goes (``visits.step_aside``). Someone who has no key Domo may
+use for them, and whom no upkeep turn answers, is refused (``NoKey``).
 
 ``Conversation.answer`` writes that reply, once. The first one to ask for it claims it (in
 ``TurnDeps.streaming_replies``: the core is one process) and starts its turn; the others are told
@@ -31,20 +34,25 @@ kept for someone (``Conversation.notify``), or that a decision was made
 (``conversation.listeners``).
 """
 
+import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from itertools import takewhile
 from typing import TYPE_CHECKING, Final
 
+from sqlalchemy import select
+
 from domo_core.accounts.models import Person
+from domo_core.accounts.sessions import is_active
 from domo_core.chat.agent import ActionRecord
 from domo_core.chat.models import Message
 from domo_core.chat.store import ConversationStore
 from domo_core.confirmations.service import AmendOutcome, DecideOutcome
-from domo_core.conversation.channel import Listener, ListenerGone
+from domo_core.conversation.channel import NOBODY_LISTENS, Listener, ListenerGone
 from domo_core.conversation.events import Ended, Event, Failed
+from domo_core.conversation.listeners import Fanout
 from domo_core.conversation.prepare import (
     NoKey,
     TurnDeps,
@@ -65,14 +73,12 @@ if TYPE_CHECKING:
     # Only for the way a wake is given: the turns Domo starts are written there.
     from domo_core.conversation.starts import WakeVia
 
+logger = logging.getLogger(__name__)
+
 # The longest message a person may send, in characters.
 MAX_TEXT_LENGTH: Final = 8000
 # A reply that has been streaming for this long, and that nobody writes, is taken for dead.
 STALE_AFTER: Final = timedelta(minutes=2)
-
-
-class Busy(Exception):
-    """A reply is being written in the conversation: nothing more is said until it is over."""
 
 
 class NotSayable(Exception):
@@ -176,49 +182,190 @@ class Conversation:
     def __init__(self, deps: TurnDeps) -> None:
         self._deps = deps
 
-    async def say(self, person: Person, text: str, speaker: Speaker) -> tuple[Message, Message]:
+    async def say(
+        self,
+        person: Person,
+        text: str,
+        speaker: Speaker,
+        request: TurnRequest | None = None,
+    ) -> tuple[Message, Message | None]:
         """Record what ``person`` says through ``speaker``'s channel, and open the reply that will
-        answer it (``streaming``, empty): both, in that order. The proofs they gave on that channel
-        live on while they speak (``identity.clues.still_speaking``). Raises ``NotSayable``,
-        ``NoKey`` or ``Busy`` (see the module docstring); nothing is recorded then."""
+        answer it (``streaming``, empty): both, in that order. While a reply is being written in
+        their conversation, none is opened (``None``): their words are kept for the turn that
+        writes it, with what the channel says of a turn (``request``; without it, one through
+        which nobody listens: ``NOBODY_LISTENS``), see the module docstring. The proofs they gave
+        on that channel live on while they speak (``identity.clues.still_speaking``). Raises
+        ``NotSayable`` or ``NoKey`` (see the module docstring); nothing is recorded then."""
         if not text.strip() or len(text) > MAX_TEXT_LENGTH or "\x00" in text:
             raise NotSayable
         deps = self._deps
+        # The reply being written that their words come during, if any.
+        during: Message | None = None
         async with deps.session_factory() as session:
             if not await usable_keys(session, person) and await upkeep_key(session) is None:
                 raise NoKey
             store = ConversationStore(session)
             conversation = await store.active_conversation(person.id)
-            # From here to the commit nobody else adds a message to this conversation: checking
-            # that no reply is streaming, and adding one, are one step.
+            # From here to the commit nobody else adds a message to this conversation: looking at
+            # the reply being written, and adding theirs, are one step.
             await store.lock_conversation(conversation.id)
             streaming = await store.streaming_message(conversation.id)
             turns = deps.arrival_turns
             if streaming is not None and turns is not None and turns.stop(streaming.id):
-                # Domo was writing first, as the person came back: never busy, his arrival
-                # turn steps aside for their words (``conversation.starts``).
+                # Domo was writing first, as the person came back: his arrival turn steps aside
+                # for their words (``conversation.starts``).
                 await step_aside(session, streaming.id)
             elif streaming is not None:
                 if reply_is_alive(streaming, deps.streaming_replies, deps.clock()):
-                    raise Busy
-                await store.finish_message(streaming.id, content=streaming.content, status="error")
+                    during = streaming
+                else:
+                    await store.finish_message(
+                        streaming.id, content=streaming.content, status="error"
+                    )
             said = await store.add_message(
                 conversation.id, role="user", content=text, status="complete", provenance="person"
             )
             # The model that writes it is chosen by the turn, call by call: the reply says which
             # once it is over.
-            reply = await store.add_message(
-                conversation.id,
-                role="assistant",
-                content="",
-                status="streaming",
-                provenance="model",
+            reply = (
+                None
+                if during is not None
+                else await store.add_message(
+                    conversation.id,
+                    role="assistant",
+                    content="",
+                    status="streaming",
+                    provenance="model",
+                )
             )
             await still_speaking(
                 session, person_id=person.id, channel=speaker.channel, now=deps.clock()
             )
             await session.commit()
+        if during is None:
+            # What was kept for a turn that ended without answering it (one nobody wrote any
+            # more) comes before this reply, which answers it with the rest.
+            deps.kept.take(conversation.id)
+        else:
+            # Stored first, kept then: what the turn takes is in the database.
+            deps.kept.keep(
+                conversation.id,
+                said.id,
+                request if request is not None else TurnRequest(speaker, NOBODY_LISTENS),
+            )
+            await self._kept_unless_over(person.id, conversation.id, during.id)
         return said, reply
+
+    async def _kept_unless_over(
+        self, person_id: uuid.UUID, conversation_id: uuid.UUID, reply_id: uuid.UUID
+    ) -> None:
+        """Just after something was kept for ``conversation_id`` while the reply ``reply_id`` was
+        being written. Its turn takes what is kept once that reply is settled: when it is still
+        being written now, the turn will; when it is over, the turn may have taken what was kept
+        before this, and what is kept is answered now, apart (``answer_kept``)."""
+        deps = self._deps
+        async with deps.session_factory() as session:
+            status = await session.scalar(select(Message.status).where(Message.id == reply_id))
+        if status == "streaming":
+            return
+        taken = deps.kept.take(conversation_id)
+        if taken:
+            deps.wakes.spawn(self.answer_kept(person_id, conversation_id, taken))
+
+    async def answer_kept(
+        self,
+        person_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        kept: Sequence[tuple[uuid.UUID, TurnRequest]],
+    ) -> None:
+        """Answer what ``person_id`` wrote in ``conversation_id`` while a turn ran there and that
+        it had no round left to read (``kept``, oldest first): a reply of its own, opened after
+        them, written by a turn as for a message said once that turn was over, with what the
+        channel of the last one said of a turn (its ``TurnRequest``), its events given to whoever
+        listens to them (``Fanout``). Nothing when a later message of theirs came since (its reply
+        answers them all), or when they are no longer in the household. While another reply is
+        being written there, they are kept for that one's turn instead. Never raises: what goes
+        wrong is logged, by its kind."""
+        if not kept:
+            return
+        deps = self._deps
+        last, request = kept[-1]
+        try:
+            async with deps.session_factory() as session:
+                store = ConversationStore(session)
+                await store.lock_conversation(conversation_id)
+                latest = await session.scalar(
+                    select(Message.id)
+                    .where(
+                        Message.conversation_id == conversation_id,
+                        Message.role == "user",
+                        Message.provenance == "person",
+                    )
+                    .order_by(Message.created_at.desc(), Message.id.desc())
+                    .limit(1)
+                )
+                person = await session.get(Person, person_id)
+                if latest != last or person is None or not is_active(person, deps.clock()):
+                    return
+                streaming = await store.streaming_message(conversation_id)
+                reply: Message | None = None
+                if streaming is None or not reply_is_alive(
+                    streaming, deps.streaming_replies, deps.clock()
+                ):
+                    if streaming is not None:
+                        # Nobody writes it any more: it no longer holds anyone.
+                        await store.finish_message(
+                            streaming.id, content=streaming.content, status="error"
+                        )
+                    reply = await store.add_message(
+                        conversation_id,
+                        role="assistant",
+                        content="",
+                        status="streaming",
+                        provenance="model",
+                    )
+                    await session.commit()
+                    deps.streaming_replies.add(reply.id)
+            if reply is None:
+                assert streaming is not None
+                for message_id, said_with in kept:
+                    deps.kept.keep(conversation_id, message_id, said_with)
+                await self._kept_unless_over(person_id, conversation_id, streaming.id)
+                return
+            await self._write_kept_reply(person, reply, request)
+        except Exception as error:
+            logger.error(
+                "What was written during a turn could not be answered (%s)", type(error).__name__
+            )
+
+    async def _write_kept_reply(self, person: Person, reply: Message, request: TurnRequest) -> None:
+        """Write ``reply``, claimed, opened for what ``person`` wrote during a turn: its events go
+        to whoever listens to them. For a person without a key, it is marked as failed
+        (``no_key``)."""
+        deps = self._deps
+        handed_over = False
+        try:
+            try:
+                turn = await prepare_turn(
+                    deps,
+                    person=person,
+                    reply=reply,
+                    request=request,
+                    wake=self._wake_starter(),
+                    notify=self.notify,
+                )
+            except NoKey:
+                async with deps.session_factory() as session:
+                    await ConversationStore(session).finish_message(
+                        reply.id, content=reply.content, status="error", failure="no_key"
+                    )
+                    await session.commit()
+                return
+            handed_over = True  # the turn lets go of the claim when it ends
+        finally:
+            if not handed_over:
+                deps.streaming_replies.discard(reply.id)
+        await turn.run(Fanout(deps.listeners, person.id, reply.id))
 
     async def answer(
         self,

@@ -48,7 +48,7 @@ from domo_core.llm.catalog import CATALOG_KINDS, Catalog, catalog_from_json, tri
 from domo_core.llm.catalog_store import current_catalog
 from domo_core.llm.listing import ModelLister
 from domo_core.llm.models import Provider, ProviderModel
-from domo_core.llm.provider_keys import key_still_there
+from domo_core.llm.provider_keys import general_when_none, key_still_there
 from domo_core.llm.spending import amount_text, usd_per
 from domo_core.llm.spending_models import CatalogSnapshot, ExchangeRate, ModelCall
 from domo_core.llm.types import JsonObject, ModelCallError
@@ -285,6 +285,8 @@ async def relist_key(
                 set_={"listed_at": now},
             )
         )
+        # A key of the owner's that works again takes the general key's place when there is none.
+        await general_when_none(session, provider)
     else:
         await session.execute(
             update(ProviderModel)

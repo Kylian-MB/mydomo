@@ -48,7 +48,7 @@ from domo_core.devices.service import (
 from domo_core.household.service import resolve_person
 from domo_core.llm.types import JsonObject, ToolDefinition
 from domo_core.policy.actions import DescribedAction, FactValue, Present
-from domo_core.policy.roles import Actor
+from domo_core.policy.roles import Actor, actor_label
 from domo_core.text import name_key
 from domo_core.tools.context import InvalidArguments, ToolContext, ToolOutcome
 from domo_core.tools.household_admin import card_date, described_target, name_from
@@ -178,8 +178,10 @@ class DeviceRemove:
     @staticmethod
     def fixed_refusal(actor: Actor, facts: Mapping[str, FactValue], present: Present) -> str | None:
         """What no right moves (``RefusesWhateverTheRights``): a device that is not the one's who
-        asks is the owner's to take back, nobody else's."""
-        if facts.get("is_self") is True or actor.role == "owner":
+        asks is the owner's to take back, nobody else's; and the assistant's, as an act of his
+        own (``Actor.subject`` ``domo``), which the barrier and his judge then weigh: a doubt
+        waits for the person it belongs to."""
+        if facts.get("is_self") is True or actor.role == "owner" or actor.subject == "domo":
             return None
         return _NOT_YOURS
 
@@ -278,12 +280,14 @@ class DeviceRemove:
 
     async def execute(self, arguments: JsonObject, ctx: ToolContext) -> ToolOutcome:
         now = ctx.clock()
+        # Who it was judged as: the assistant for an act of his own, else the person who asks.
+        acting = ctx.judged_as or ctx.actor
         async with ctx.session_factory() as session:
-            device, _ = await self._device_of_the_call(session, arguments, ctx.actor, ctx, now)
+            device, _ = await self._device_of_the_call(session, arguments, acting, ctx, now)
             described_target(ctx, f"device:{device.id}")
             name = device.name
             device_id: uuid.UUID = device.id
-            if not await remove_device(session, device_id, now, actor=f"person:{ctx.person.id}"):
+            if not await remove_device(session, device_id, now, actor=actor_label(acting)):
                 raise InvalidArguments("not_found", _NO_DEVICE)
             await session.commit()
         return ToolOutcome(

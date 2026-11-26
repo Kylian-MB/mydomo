@@ -1,54 +1,85 @@
-"""Reading a person's answer to a pending request: yes, no, a yes with a change, or unclear.
+"""Reading a person's answer to the requests the reply just before showed them: for each, yes,
+no, a yes with a change, or unclear (spec 11.1).
 
 This is the plan's decision D2. The answer comes from the person's own words, and never from the
 main model:
 
-1. the code first compares the **whole** message, once normalised (``normalize``), with short
-   phrases it knows in French and English (``match_phrase``): "oui", "non merci", "I confirm".
-   A phrase only counts when it is the entire message: "oui mais mets B" is not a "oui";
-2. otherwise an isolated classifier reads it (``classify_reply``): a call to a model of the key
-   of the request, of medium level or stronger (``llm.picker``, kind of task ``intent``; without
-   one the answer is ``unclear``), with a prompt of its own (``prompts/confirm_classifier.md``)
-   that is given **only** the person's message, with no history, no tool and no external
-   content, and whose answer is read strictly (one word: ``yes``, ``no`` or ``change``; anything
-   else is ``unclear``).
+1. when one request was shown, the code first compares the **whole** message, once normalised
+   (``normalize``), with short phrases it knows in French and English (``match_phrase``): "oui",
+   "non merci", "I confirm". A phrase only counts when it is the entire message: "oui mais mets
+   B" is not a "oui";
+2. otherwise an isolated reader reads it (``read_replies``): a call to a model of the key of the
+   request, of medium level or stronger (``llm.picker``, kind of task ``intent``; without one the
+   answer is ``unclear``), with a prompt of its own (``prompts/confirm_classifier.md``), no tool,
+   no thinking and a tiny output. It is given one message, a JSON object: who speaks
+   (``conversation.speaker.Speaker.as_json``, as the judge reads it), the requests shown, each
+   numbered as the person saw them, with what it does and what it asks, the person's last few
+   messages before the reply (``READ_BEFORE``, each cut) and the reply. All of it is data: its
+   answer is read strictly, one line per request, ``<n>: yes|firm|no|change|unclear``; any other
+   line, or a line for a number that was not shown, is ignored, and a request without its line
+   is ``unclear``. "Yes, both" answers two requests; "yes, the first one", one.
 
-``read_reply`` puts the two together for a request, by what it asks (``ask``, from
-``confirmations.store.ask_of``): a yes asked (or nothing) is given by any yes; an explicit yes
-by a firm yes, whatever its words (or the button): "I confirm" is the phrase the code knows, and
-for any other wording the classifier is asked, with a prompt of its own for such a request
-(``prompts/confirm_classifier_explicit.md``, one more word: ``firm``), whether the yes is a firm,
-deliberate one ("yes, go ahead, I am sure") or a bare one ("ok"), which is ``unclear``
-(``not_enough``) as a known plain yes is; a proof is never given in words, however firm. A
-refusal and a yes with a change are read the same way whatever is asked.
+What each request asks (``ask``, from ``confirmations.store.ask_of``) decides what a yes gives: a
+yes asked (or nothing) is given by any yes; an explicit yes by a firm yes, whatever its words (or
+the button): "I confirm" is the phrase the code knows, and for any other wording the reader says
+whether the yes is a firm, deliberate one ("yes, go ahead, I am sure") or a bare one ("ok"),
+which is ``unclear`` (``not_enough``); a known plain yes ("oui") to such a request is asked of
+the reader too, since the messages before may make it firm ("je suis sûre", said just before).
+A proof is never given in words, however firm. A refusal and a yes with a change are read the same
+way whatever is asked.
+
+An explicit yes the owner's rule asks (``asked_by == "rule"``) is read on the reply alone: in a
+call of its own that carries no message before. One the judge or Domo asked may be read with
+them.
 
 The intent counts, not the formula (the owner's decision, 2026-11-15: in his trial of 0.8.0 only
 the literal "je confirme" gave an explicit yes, and "oui, je t'ai déjà dit que c'était ok" did
-not). A firm yes the classifier read is recorded as an explicit yes given in words
-(``explicit_phrase``), like the phrase.
+not). A firm yes the reader read is recorded as an explicit yes given in words
+(``explicit_phrase``), like the phrase. In doubt, the reader never says yes.
+
+Who may answer a request is never the reader's to say: the code shows it only the requests the
+reply just before showed this person, and decides who may decide each one.
 """
 
+import json
 import re
 import unicodedata
+from collections.abc import Iterable, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass
 from functools import cache
 from importlib import resources
-from typing import Final, Literal
+from typing import Final, Literal, cast, get_args
 
-from domo_core.llm.types import ChatChunk, ChatMessage, ChatModel, ModelCallError, ToolCall
-from domo_core.policy.asks import Ask
+from domo_core.llm.types import (
+    ChatChunk,
+    ChatMessage,
+    ChatModel,
+    JsonObject,
+    ModelCallError,
+    ToolCall,
+)
+from domo_core.policy.asks import Ask, AskedBy
+from domo_core.prompts import sendable
 
 PhraseMatch = Literal["explicit_yes", "yes", "no"]
 Classification = Literal["firm", "yes", "no", "change", "unclear"]
 Verdict = Literal["approve", "refuse", "change", "unclear"]
 ReplySource = Literal["explicit_phrase", "phrase", "classifier"]
 
-# The longest reply the classifier is asked about: a longer one is not a short answer to a
-# request (and the classifier is a cheap call, not a reader of essays).
-MAX_CLASSIFIED_LENGTH: Final = 300
-# The classifier answers in one word (asked without thinking first: ``ChatModel.stream``).
-_CLASSIFIER_OUTPUT_TOKENS: Final = 4
+# The longest reply the reader is asked about: a longer one is not an answer to requests (and the
+# reader is a cheap call, not a reader of essays).
+MAX_CLASSIFIED_LENGTH: Final = 1000
+# How many of the person's messages before the reply the reader is given, and how much of each.
+READ_BEFORE: Final = 3
+_BEFORE_LENGTH: Final = 300
+# The reader answers one short line per request (asked without thinking first), and never more
+# than a few lines' worth.
+_TOKENS_PER_REQUEST: Final = 8
+_MAX_OUTPUT_TOKENS: Final = 64
+# One line of the reader's answer: a number, a colon, a word (a final period is forgiven).
+_LINE = re.compile(r"(\d+)\s*:\s*([a-z]+)\.?")
+_CLASSIFICATIONS: Final[frozenset[str]] = frozenset(get_args(Classification))
 
 # What ``normalize`` removes: the sentence punctuation (the three dots too, which NFKC turns into
 # periods anyway).
@@ -159,71 +190,27 @@ def match_phrase(text: str) -> PhraseMatch | None:
 
 @cache
 def classifier_prompt() -> str:
-    """The system prompt of the classifier (``prompts/confirm_classifier.md``), read once."""
+    """The system prompt of the reader (``prompts/confirm_classifier.md``), read once."""
     path = resources.files("domo_core.prompts").joinpath("confirm_classifier.md")
     return path.read_text(encoding="utf-8").strip()
 
 
-@cache
-def explicit_classifier_prompt() -> str:
-    """The system prompt of the classifier for a request that asks an explicit yes
-    (``prompts/confirm_classifier_explicit.md``), read once: the same first line and the same
-    rules, with one more word, ``firm``, for a yes the person means."""
-    path = resources.files("domo_core.prompts").joinpath("confirm_classifier_explicit.md")
-    return path.read_text(encoding="utf-8").strip()
+@dataclass(frozen=True)
+class ShownRequest:
+    """A request the reply just before showed the person, as the reader is told of it: its
+    ``number``, as the person saw it (from 1), what it does (``says``: never the words of a note,
+    ``confirmations.describe.description_for_a_model``), what it asks (``ask``; ``None`` asks
+    nothing, which a plain yes gives) and who asked it (``asked_by``)."""
 
-
-async def classify_reply(
-    model: ChatModel | None, text: str, *, explicit: bool = False
-) -> Classification:
-    """What the person meant, as the isolated classifier reads it.
-
-    The call holds one user message, the person's text, under the classifier's prompt, with no
-    tool, ``max_output_tokens=4`` and ``think=False`` (one word: a model that thinks first would
-    spend its four tokens on it and say nothing). Its answer, normalised, must be exactly
-    ``yes``, ``no`` or ``change``; anything else is ``unclear``, and so is a call that fails or
-    that answers with a tool call. A text over ``MAX_CLASSIFIED_LENGTH`` characters is
-    ``unclear`` without a call, and so is any text when there is no model (the key of the request
-    has none strong enough: the request waits for its button).
-
-    For a request that asks an explicit yes (``explicit``), the prompt is the one that also tells
-    a firm yes from a bare one (``explicit_classifier_prompt``), and ``firm`` is one more answer;
-    it is ``unclear`` like any other unexpected word when the request asks none.
-    """
-    if model is None or len(text) > MAX_CLASSIFIED_LENGTH:
-        return "unclear"
-    pieces: list[str] = []
-    try:
-        stream = model.stream(
-            system=explicit_classifier_prompt() if explicit else classifier_prompt(),
-            messages=[ChatMessage("user", text)],
-            max_output_tokens=_CLASSIFIER_OUTPUT_TOKENS,
-            # One word: thinking first would take the few tokens it has.
-            think=False,
-        )
-        async with aclosing(stream) as items:
-            async for item in items:
-                if isinstance(item, ToolCall):
-                    return "unclear"
-                if isinstance(item, ChatChunk):
-                    pieces.append(item.text)
-    except ModelCallError:
-        return "unclear"
-    answer = normalize("".join(pieces))
-    if answer == "firm" and explicit:
-        return "firm"
-    if answer == "yes":
-        return "yes"
-    if answer == "no":
-        return "no"
-    if answer == "change":
-        return "change"
-    return "unclear"
+    number: int
+    says: str
+    ask: Ask | None
+    asked_by: AskedBy | None
 
 
 @dataclass(frozen=True)
 class Reading:
-    """A reply read as an answer to one pending request: its ``verdict``, how it was recognised
+    """A reply read as an answer to one request: its ``verdict``, how it was recognised
     (``source``), and whether it was a yes that is not enough for what the request asks
     (``not_enough``: a plain yes for an explicit yes, any yes in words for a proof; the verdict is
     then ``unclear``, though the person did answer the request)."""
@@ -233,58 +220,161 @@ class Reading:
     not_enough: bool = False
 
 
+_UNCLEAR: Final = Reading("unclear", None)
+_NOT_ENOUGH: Final = Reading("unclear", None, not_enough=True)
+
+
 def _a_plain_yes_does(ask: Ask | None) -> bool:
     """Whether a plain yes in words gives what the request asks: a yes, or nothing asked."""
     return ask is None or ask == "yes"
 
 
-async def read_reply_in_full(text: str, ask: Ask | None, model: ChatModel | None) -> Reading:
-    """``read_reply``, with ``not_enough`` besides (see ``Reading``)."""
-    match match_phrase(text):
+def _read_alone(request: ShownRequest) -> bool:
+    """Whether the request is read on the reply alone, with no message before it: an explicit
+    yes the owner's rule asks."""
+    return request.ask == "explicit_yes" and request.asked_by == "rule"
+
+
+def _phrase_reading(phrase: PhraseMatch, ask: Ask | None) -> Reading:
+    """What a phrase the code knows gives a request that asks ``ask``: "I confirm" approves, but
+    a proof; a no refuses; a plain yes approves a yes asked (or nothing), and is not enough for a
+    proof or an explicit yes (unless the reader finds it firm: ``read_replies``)."""
+    match phrase:
         case "explicit_yes":
-            if ask == "proof":
-                return Reading("unclear", None, not_enough=True)
-            return Reading("approve", "explicit_phrase")
+            return _NOT_ENOUGH if ask == "proof" else Reading("approve", "explicit_phrase")
         case "no":
             return Reading("refuse", "phrase")
         case "yes":
-            if _a_plain_yes_does(ask):
-                return Reading("approve", "phrase")
-            return Reading("unclear", None, not_enough=True)
-        case None:
-            pass
-    match await classify_reply(model, text, explicit=ask == "explicit_yes"):
-        case "firm":
-            # Asked of a request that asks an explicit yes only: their words give it.
+            return Reading("approve", "phrase") if _a_plain_yes_does(ask) else _NOT_ENOUGH
+
+
+def _reading_of(word: Classification, ask: Ask | None) -> Reading:
+    """What the reader's word gives a request that asks ``ask``: a firm yes gives an explicit yes
+    (``explicit_phrase``) and any yes a plain one; a yes is never enough for a proof; ``no``
+    refuses, ``change`` is a yes with a change, and the rest is unclear."""
+    match word:
+        case "firm" if ask == "explicit_yes":
             return Reading("approve", "explicit_phrase")
+        case "firm" | "yes":
+            return Reading("approve", "classifier") if _a_plain_yes_does(ask) else _NOT_ENOUGH
         case "no":
             return Reading("refuse", "classifier")
         case "change":
             return Reading("change", "classifier")
-        case "yes":
-            if _a_plain_yes_does(ask):
-                return Reading("approve", "classifier")
-            return Reading("unclear", None, not_enough=True)
-        case _:
-            return Reading("unclear", None)
+        case "unclear":
+            return _UNCLEAR
 
 
-async def read_reply(
-    text: str, ask: Ask | None, model: ChatModel | None
-) -> tuple[Verdict, ReplySource | None]:
-    """The verdict of a reply to the one pending request, which asks ``ask``, and how it was
-    recognised.
+def _lines(answer: str, numbers: Iterable[int]) -> dict[int, Classification]:
+    """The reader's word for each request it was asked about, from its lines ``<n>: word``:
+    anything else is ignored, and so is a line for a number it was not asked about. An unknown
+    word, or two different words for one request, is ``unclear`` (in doubt, never yes)."""
+    asked = set(numbers)
+    said: dict[int, Classification] = {}
+    for line in answer.splitlines():
+        found = _LINE.fullmatch(line.strip().casefold())
+        if found is None or int(found.group(1)) not in asked:
+            continue
+        number, word = int(found.group(1)), found.group(2)
+        read = cast(Classification, word) if word in _CLASSIFICATIONS else "unclear"
+        said[number] = read if said.get(number, read) == read else "unclear"
+    return said
 
-    1. "I confirm" approves (``explicit_phrase``), but for a proof (``unclear``); a known no
-       refuses (``phrase``);
-    2. a known yes approves (``phrase``) when a yes is asked (or nothing), and is ``unclear`` for
-       an explicit yes or a proof;
-    3. any other message goes to the classifier: ``no`` refuses, ``change`` is a yes with a
-       change, ``yes`` approves when a yes is asked (or nothing) only, ``firm`` (a firm yes, which
-       it is asked about for a request that asks an explicit yes) approves that request
-       (``explicit_phrase``), and the rest is ``unclear``.
 
-    An ``unclear`` verdict has no source: nothing was recognised.
-    """
-    reading = await read_reply_in_full(text, ask, model)
-    return reading.verdict, reading.source
+async def _ask_the_reader(
+    model: ChatModel,
+    text: str,
+    requests: Sequence[ShownRequest],
+    *,
+    speaker: JsonObject | None,
+    before: Sequence[str],
+) -> dict[int, Classification]:
+    """One call of the isolated reader about ``requests``: its word for each, as its lines say
+    (``_lines``). The call holds one user message, a JSON object (data, whatever it says), with
+    no tool, no thinking (a few tokens per line: a model that thinks first would spend them on
+    it) and ``_TOKENS_PER_REQUEST`` tokens a request, ``_MAX_OUTPUT_TOKENS`` at most. A call that
+    fails, or that answers with a tool call, gives no word."""
+    given = {
+        "speaker": speaker,
+        "requests": [
+            {"n": request.number, "says": request.says, "asks": request.ask or "yes"}
+            for request in requests
+        ],
+        "before": [said[:_BEFORE_LENGTH] for said in before[-READ_BEFORE:]],
+        "reply": text,
+    }
+    pieces: list[str] = []
+    try:
+        stream = model.stream(
+            system=classifier_prompt(),
+            messages=[ChatMessage("user", json.dumps(sendable(given), ensure_ascii=False))],
+            max_output_tokens=min(_TOKENS_PER_REQUEST * len(requests), _MAX_OUTPUT_TOKENS),
+            think=False,
+        )
+        async with aclosing(stream) as items:
+            async for item in items:
+                if isinstance(item, ToolCall):
+                    return {}
+                if isinstance(item, ChatChunk):
+                    pieces.append(item.text)
+    except ModelCallError:
+        return {}
+    return _lines("".join(pieces), (request.number for request in requests))
+
+
+def reader_needed(text: str, shown: Sequence[ShownRequest]) -> bool:
+    """Whether reading ``text`` as an answer to ``shown`` may take the reader: always, but for one
+    request shown and a phrase that says all there is to say (not a plain yes to an explicit
+    yes, which the reader may find firm from the messages before it; but for an explicit yes the
+    owner's rule asks, read on the reply alone, where a bare yes can never be firm: the code says
+    it is not enough, with no model)."""
+    if len(shown) != 1:
+        return bool(shown)
+    (request,) = shown
+    phrase = match_phrase(text)
+    return phrase is None or (
+        phrase == "yes" and request.ask == "explicit_yes" and not _read_alone(request)
+    )
+
+
+async def read_replies(
+    text: str,
+    shown: Sequence[ShownRequest],
+    *,
+    speaker: JsonObject | None,
+    before: Sequence[str],
+    model: ChatModel | None,
+) -> tuple[Reading, ...]:
+    """The person's reply ``text`` read as an answer to each request ``shown``, in order: one
+    ``Reading`` each.
+
+    One request shown and a phrase the code knows (``match_phrase``): the phrase answers, with no
+    model (``_phrase_reading``), but for a plain yes to an explicit yes, which the reader is asked
+    about: firm, it gives the explicit yes; anything else, or no reader, and it is not enough.
+    Otherwise the isolated reader reads it (``_ask_the_reader``), given who speaks (``speaker``,
+    ``Speaker.as_json``), the requests and the person's messages ``before`` the reply (the last
+    ``READ_BEFORE``, each cut); an explicit yes the owner's rule asks is read in a call of its
+    own, with no message before (``_read_alone``). A request the reader gave no word is unclear,
+    and so is every one when there is no model (the key has none strong enough: the requests wait
+    for their buttons) or the reply is over ``MAX_CLASSIFIED_LENGTH`` characters."""
+    if not shown:
+        return ()
+    phrase = match_phrase(text) if len(shown) == 1 else None
+    if phrase is not None and not reader_needed(text, shown):
+        return (_phrase_reading(phrase, shown[0].ask),)
+    if model is None or len(text) > MAX_CLASSIFIED_LENGTH:
+        return tuple(_NOT_ENOUGH if phrase is not None else _UNCLEAR for _ in shown)
+    words: dict[int, Classification] = {}
+    together = [request for request in shown if not _read_alone(request)]
+    if together:
+        words |= await _ask_the_reader(model, text, together, speaker=speaker, before=before)
+    for request in shown:
+        if _read_alone(request):
+            words |= await _ask_the_reader(model, text, [request], speaker=speaker, before=())
+    if phrase is not None:
+        # A plain yes to an explicit yes: firm, or not enough.
+        firm = words.get(shown[0].number) == "firm"
+        return (Reading("approve", "explicit_phrase") if firm else _NOT_ENOUGH,)
+    return tuple(
+        _reading_of(words.get(request.number, "unclear"), request.ask) for request in shown
+    )

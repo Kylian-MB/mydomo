@@ -119,7 +119,7 @@ def test_an_action_a_person_may_do_is_allowed_and_the_judge_decides_the_rest():
 
 def test_a_childs_leave_needs_an_adult_and_a_childs_note_does_not():
     child = Actor(uuid4(), "child")
-    assert decide(child, LEAVE) == NeedsApproval("adult")
+    assert decide(child, LEAVE) == NeedsApproval("adult", judge_first=True)
     assert decide(child, NOTE) == Allow()
     assert decide(child, RENAME) == Allow()
 
@@ -130,7 +130,7 @@ def test_a_childs_leave_needs_an_adult_and_a_childs_note_does_not():
         # (The owner is refused by the tool itself: they hand their role over first.)
         ("owner", Allow()),
         ("adult", Allow()),
-        ("child", NeedsApproval("adult")),
+        ("child", NeedsApproval("adult", judge_first=True)),
         ("guest", Allow()),
     ],
 )
@@ -173,10 +173,29 @@ def test_a_limit_that_sends_to_the_owner_needs_the_owners_accord_unless_the_owne
                 right(role="owner", action_type="note.leave", limit=limit),
             )
         )
+        # "judge" is the judge's first; "ask_owner" is the owner's own word, always his.
         assert decide(Actor(uuid4(), "adult"), NOTE, DEFAULT_POLICY, rights) == NeedsApproval(
-            "owner", question
+            "owner", question, judge_first=says == "judge"
         )
         assert decide(Actor(uuid4(), "owner"), NOTE, DEFAULT_POLICY, rights) == Allow()
+
+
+def test_a_judge_limit_on_what_needs_an_adult_anyway_goes_to_the_owner():
+    # A child's leave waits for an adult by the catalog: a limit "judge" on it is not left to the
+    # judge, whose do would spare the adult too. It goes to the owner, as before.
+    limit = Limit('"judge"', "Is it the holidays?", "a limit")
+    rights = RightsTable((right(role="child", action_type="household.leave", limit=limit),))
+    assert decide(Actor(uuid4(), "child"), LEAVE, DEFAULT_POLICY, rights) == NeedsApproval(
+        "owner", "Is it the holidays?"
+    )
+
+
+def test_an_approver_a_right_names_is_never_left_to_the_judge():
+    # The catalog's adult for a child is the judge's first; an adult a right names is the
+    # owner's word.
+    named = RightsTable((right(role="child", action_type="household.leave", approver="adult"),))
+    assert decide(Actor(uuid4(), "child"), LEAVE, DEFAULT_POLICY, named) == NeedsApproval("adult")
+    assert decide(Actor(uuid4(), "child"), LEAVE) == NeedsApproval("adult", judge_first=True)
 
 
 def test_the_owners_rule_travels_with_the_decision():
@@ -190,7 +209,7 @@ def test_the_owners_rule_travels_with_the_decision():
     )
     assert decide(adult, INVITE, DEFAULT_POLICY, opened) == Allow(rule="proof")
     assert decide(Actor(uuid4(), "child"), LEAVE, DEFAULT_POLICY, opened) == NeedsApproval(
-        "adult", None, "proof"
+        "adult", None, "proof", judge_first=True
     )
     # A rule alone does not open the type: the adult may still not change a role (they invite
     # by default since 0.9.1).
@@ -233,7 +252,8 @@ def test_a_right_that_opens_a_type_to_a_child_keeps_the_adult_unless_it_says_sel
     opened = RightsTable(
         (right(person_id=child.person_id, action_type="household.invite", access="allow"),)
     )
-    assert decide(child, INVITE, DEFAULT_POLICY, opened) == NeedsApproval("adult")
+    # (The catalog's adult, named by no right: the judge's first, task 25.)
+    assert decide(child, INVITE, DEFAULT_POLICY, opened) == NeedsApproval("adult", judge_first=True)
     themselves = RightsTable(
         (
             right(
@@ -304,7 +324,7 @@ def test_decision_for_every_role_and_action(role, action_type):
     if action_type not in ALLOWED_ACTIONS[role]:
         expected: Decision = Refuse("not_allowed")
     elif role == "child" and action_type in ADULT_AGREES_FOR_A_CHILD:
-        expected = NeedsApproval("adult")
+        expected = NeedsApproval("adult", judge_first=True)
     else:
         expected = Allow()
     assert decide(Actor(uuid4(), role), action) == expected

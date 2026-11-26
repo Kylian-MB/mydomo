@@ -13,6 +13,7 @@ import logging
 import re
 import uuid
 from collections.abc import AsyncIterator
+from datetime import timedelta
 
 import httpx
 import pytest
@@ -41,13 +42,14 @@ from domo_core.confirmations.routes import ConfirmationCard
 from domo_core.conversation.events import Words
 from domo_core.conversation.service import Conversation
 from domo_core.conversation.visits import ArrivalTurns, news_for
+from domo_core.devices.models import Device
 from domo_core.identity.models import IdentityClue
 from domo_core.llm.key_flow import KEY_NEW_PATH
 from domo_core.llm.types import ToolCall
 from domo_core.notes.models import Note
 from domo_core.texts.view import REFERENCE
 from domo_core.tools.model_key import KEY_ADMIN_FORM_PATH
-from fakes import FakeChatModel
+from fakes import FakeChatModel, is_judge_call
 from sqlalchemy import select, update
 from test_key_tools import key_new_button_url
 from test_spending import add_key
@@ -91,6 +93,25 @@ async def been_here_just_now(server: ChatServer, person: Person) -> None:
 
 
 # --- talking --------------------------------------------------------------------------------------
+
+
+async def test_the_device_clue_tells_how_long_ago_it_was_paired(
+    adult_device: ApiPilot, chat_server: ChatServer
+):
+    async with chat_server.session_factory() as reader:
+        paired = await reader.scalar(
+            select(Device.created_at).where(Device.id == adult_device.device_id)
+        )
+    assert paired is not None
+    chat_server.clock.advance(paired + timedelta(hours=2) - chat_server.clock())
+    await adult_device.say_with_tool("profile_rename", {"name": "Alex B"}, judge="do")
+    [case] = [
+        json.loads(call.messages[0].content)
+        for call in chat_server.calls
+        if is_judge_call(call.system)
+    ]
+    [clue] = case["speaker"]["clues"]
+    assert (clue["kind"], clue["strength"], clue["minutes_ago"]) == ("device", "strong", 120)
 
 
 async def test_a_device_talks_to_domo_and_finds_the_same_conversation(
@@ -152,22 +173,27 @@ async def test_a_reply_goes_on_when_the_device_goes_away(
     assert again.status_code == 204
 
 
-async def test_a_second_message_is_refused_while_a_turn_runs_for_the_page(
-    owner_device: ApiPilot, owner_chat: ChatPilot
-):  # Review Focus 2
+async def test_a_second_message_is_kept_while_a_turn_runs_for_the_page(
+    owner_device: ApiPilot, owner_chat: ChatPilot, chat_server: ChatServer
+):  # Review Focus 2, spec 11.3
     owner_chat.use_model(FakeChatModel(["Slow", " answer."], delay_s=0.5))
     reply_id = await post_message(owner_chat.client, "Think about it")
     page = asyncio.create_task(consume_sse(owner_chat.client, f"/chat/stream/{reply_id}"))
     try:
         await asyncio.sleep(0.1)
-        refused = await owner_device.client.post(f"{API}/messages", json={"text": "And this?"})
-        assert refused.status_code == 409
-        assert refused.json() == {"error": "busy"}
+        # A device that does not wait for the turns: the page's runs.
+        async with plain_client(chat_server) as raw:
+            raw.headers["authorization"] = f"Bearer {owner_device.secret}"
+            kept = await raw.post(f"{API}/messages", json={"text": "And this?"})
+        assert kept.status_code == 202
+        assert kept.json() == {"reply_id": None, "kept": True}
     finally:
         events = await page
+    # The page's reply went on to its end, and the kept message was answered after it.
     assert [event.event for event in events][-1] == "done"
+    await chat_server.wait_for_wakes()
     texts = [m["text"] for m in await owner_device.since()]
-    assert "And this?" not in texts
+    assert texts[-4:] == ["Think about it", "Slow answer.", "And this?", "Slow answer."]
 
 
 async def test_what_cannot_be_said_is_refused(owner_device: ApiPilot):

@@ -37,6 +37,7 @@ from domo_core.outward.service import (
     closed_by_the_owner,
     open_address,
     open_for,
+    owner_s_removal,
     remove_account,
 )
 from domo_core.texts.view import REFERENCE
@@ -448,7 +449,9 @@ async def test_an_account_given_is_never_asked_again(session: AsyncSession):
     assert house.account.id != first.account.id and house.account.ref != first.account.ref
 
 
-async def test_an_account_the_owner_removed_only_the_owner_asks_again(session: AsyncSession):
+async def test_an_account_the_owner_removed_is_asked_again_only_knowingly(session: AsyncSession):
+    # Task 27: who asks no longer decides it; the caller weighed the owner's removal first (the
+    # judge, in the tool) and says so (``asking_again``), whoever asks, the owner too.
     alex, sam, dana, _ = await household(session)
     gatekeeper = FakeGatekeeper()
     arguments = {
@@ -465,9 +468,11 @@ async def test_an_account_the_owner_removed_only_the_owner_asks_again(session: A
         by=str(sam.id),
         **arguments,
     )
-    await remove_account(session, account=made.account, by=str(alex.id), now=later())
+    removed_at = later()
+    await remove_account(session, account=made.account, by=str(alex.id), now=removed_at)
     assert made.account.removed_by_owner and made.account.removed_by == str(alex.id)
-    for by in (DOMO, str(sam.id)):
+    assert await owner_s_removal(session, name="lights", person_id=None) == removed_at
+    for by in (DOMO, str(sam.id), str(alex.id)):
         with pytest.raises(RemovedByOwner):
             await ask_account(
                 session,
@@ -480,11 +485,13 @@ async def test_an_account_the_owner_removed_only_the_owner_asks_again(session: A
         session,
         gatekeeper,  # type: ignore[arg-type]
         giver=sam,
-        by=str(alex.id),
+        by=DOMO,
+        asking_again=True,
         **arguments,
     )
     assert again.account.id != made.account.id
-    # A person's own account the owner removed: theirs to give again, nobody else's (ruling R10).
+    assert await owner_s_removal(session, name="lights", person_id=None) is None
+    # A person's own account the owner removed: the same, knowingly.
     own = {**arguments, "person_id": dana.id, "name": "music"}
     mine = await ask_account(
         session,
@@ -494,20 +501,20 @@ async def test_an_account_the_owner_removed_only_the_owner_asks_again(session: A
         **own,
     )
     await remove_account(session, account=mine.account, by=str(alex.id), now=later())
-    for by in (DOMO, str(sam.id)):
-        with pytest.raises(RemovedByOwner):
-            await ask_account(
-                session,
-                gatekeeper,  # type: ignore[arg-type]
-                giver=dana,
-                by=by,
-                **own,
-            )
+    with pytest.raises(RemovedByOwner):
+        await ask_account(
+            session,
+            gatekeeper,  # type: ignore[arg-type]
+            giver=dana,
+            by=str(dana.id),
+            **own,
+        )
     await ask_account(
         session,
         gatekeeper,  # type: ignore[arg-type]
         giver=dana,
-        by=str(dana.id),
+        by=str(sam.id),
+        asking_again=True,
         **own,
     )
     # Removed by whoever gave it, it is anyone's to ask for again.

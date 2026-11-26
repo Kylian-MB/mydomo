@@ -16,7 +16,9 @@ from types import MappingProxyType
 from domo_core.tools.agreements import AgreementDrop, AgreementKeep
 from domo_core.tools.chain import ChainContinue, DoInOrder
 from domo_core.tools.confirmation_tools import (
+    ActOnMyOwn,
     AskBeforeActing,
+    AskingAgreed,
     ConfirmationAmend,
     ConfirmationExpire,
     ConfirmationRemind,
@@ -38,6 +40,7 @@ from domo_core.tools.household_read import HouseholdList
 from domo_core.tools.household_return import HouseholdBringBack
 from domo_core.tools.key_tools import KeyAdd, KeyLimit, KeyRemove, KeyShare
 from domo_core.tools.keys_house import KeysHouse
+from domo_core.tools.learning_tools import WentWrongAsked, WentWrongNote
 from domo_core.tools.made_tools import (
     MadeToolBack,
     MadeToolBuild,
@@ -117,6 +120,8 @@ _TOOLS: tuple[InternalTool, ...] = (
     ConfirmationRequireExplicit(),
     ConfirmationAmend(),
     AskBeforeActing(),
+    ActOnMyOwn(),
+    AskingAgreed(),
     PolicyShow(),
     PolicyUpdate(),
     RightsPropose(),
@@ -169,6 +174,8 @@ _TOOLS: tuple[InternalTool, ...] = (
     TrustNote(),
     TrustLook(),
     TrustCorrect(),
+    WentWrongNote(),
+    WentWrongAsked(),
     MadeToolBuild(),
     MadeToolChange(),
     MadeToolRemove(),

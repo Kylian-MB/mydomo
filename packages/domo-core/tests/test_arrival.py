@@ -2,9 +2,9 @@
 unanswered (spec 4.10, 5.10).
 
 Opening the chat page after ``ARRIVAL_AFTER`` without it (or for the first time) offers Domo an
-arrival turn: a turn of his, in the background, with no message of the person, on the small model
-of the kind ``arrival``, offered only the tools that change nothing (``ARRIVAL_ACTIONS``), and told
-what is new. He may answer nothing at all: nothing is then shown. His words come through
+arrival turn: a turn of his, in the background, with no message of the person, on the small model of
+the kind ``arrival``, offered the person's tools (each act judged as any act of a turn he started),
+and told what is new. He may answer nothing at all: nothing is then shown. His words come through
 ``/chat/since``, as a wake's do. Someone without a key Domo may use for them gets an upkeep turn
 instead, when the general key serves for that. A message the person sends while it runs is never
 refused: the arrival turn steps aside. A reply that ends in error keeps why, and the person's next
@@ -41,7 +41,7 @@ from domo_core.accounts.models import Person
 from domo_core.chat.models import Conversation, Message, MessageAction
 from domo_core.chat.store import ConversationStore
 from domo_core.confirmations.models import Confirmation
-from domo_core.conversation.prepare import ARRIVAL_ACTIONS, ARRIVAL_MARKER
+from domo_core.conversation.prepare import ARRIVAL_MARKER
 from domo_core.conversation.starts import consider_news
 from domo_core.conversation.visits import (
     ARRIVAL_AFTER,
@@ -358,35 +358,44 @@ async def test_a_reload_within_fifteen_minutes_is_not_an_arrival(
     assert len(arrival_calls(adult_chat)) == 2
 
 
-async def test_an_arrival_turn_offers_only_tools_that_change_nothing(owner_chat, adult_chat):
-    hostile = ToolCall("a1", "note_leave", json.dumps({"recipient": "Alex", "text": "hi"}))
-    owner_chat.use_model(FakeChatModel(tool_script=[hostile, "Welcome back."]))
+async def test_an_arrival_may_act_and_is_judged(owner_chat, adult_chat):
+    # Part 8 of "Domo judges first": at an arrival he has the person's tools and may act; each
+    # act goes through the barrier and the judge as any act of a turn he started.
+    leave = ToolCall("a1", "note_leave", json.dumps({"recipient": "Alex", "text": "hi"}))
+    model = owner_chat.use_model(FakeChatModel(tool_script=[leave, "Welcome back."], judge="do"))
     await open_page(owner_chat)
     [call] = arrival_calls(owner_chat)
     offered = {tool.name for tool in call.tools}
-    # The tools whose action changes nothing, that the person may use; none other.
-    readers = {name: tool for name, tool in TOOLS.items() if tool.action_type in ARRIVAL_ACTIONS}
+    # Every tool the person may use, as in any turn of theirs.
     assert offered == {
         tool.name
-        for tool in tools_for("owner", readers, DEFAULT_POLICY, person_id=owner_chat.person.id)
+        for tool in tools_for("owner", TOOLS, DEFAULT_POLICY, person_id=owner_chat.person.id)
     }
-    assert offered == {
-        "household_list",
-        "note_list_sent",
-        "policy_show",
-        "successors_show",
-        "confirmation_remind",
-        "spending_show",
-        "texts_find",
-        "note_told",
-        "note_show",
-    }
-    # A call of another tool runs nothing.
-    page = await open_page(owner_chat)
-    assert 'data-action-status="invalid"' in page
+    assert "note_leave" in offered
+    # Its call reached the judge, told that nobody spoke and why he acts.
+    [judged] = model.judge_calls()
+    case = json.loads(str(judged.messages[0].content))
+    assert case["speaker"] == {"channel": "unasked", "nobody_spoke": True}
+    assert (case["idea"]["of"], case["idea"]["reason"]) == ("domo", "they just came back")
+    async with owner_chat.server.session_factory() as reader:
+        [note] = (await reader.scalars(select(Note))).all()
+        assert note.text == "hi"
+        assert (await reader.scalars(select(Confirmation))).all() == []
+
+
+async def test_an_arrival_act_its_judge_does_not_weigh_is_not_done(owner_chat, adult_chat):
+    # A judge silent twice on what he does at an arrival: nothing is done, nobody is asked.
+    leave = ToolCall("a1", "note_leave", json.dumps({"recipient": "Alex", "text": "hi"}))
+    model = owner_chat.use_model(
+        FakeChatModel(tool_script=[leave, "Welcome back."], judge="mumble")
+    )
+    await open_page(owner_chat)
+    assert len(model.judge_calls()) == 2
     async with owner_chat.server.session_factory() as reader:
         assert (await reader.execute(select(Note))).all() == []
-    assert bubbles(page) == [("assistant", "Welcome back.")]
+        assert (await reader.scalars(select(Confirmation))).all() == []
+    page = await open_page(owner_chat)
+    assert 'data-action-status="refused"' in page
 
 
 class HeldArrival:

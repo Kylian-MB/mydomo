@@ -104,11 +104,12 @@ WriterAnswer = dict[str, Any] | str | Callable[[], Awaitable[None]]
 
 class DomoAndWriter:
     """Domo makes ``call`` (or each of the ``call`` given, one per round), then says "ok"; a
-    call without tools, the classifier, gets ``verdict``, and the yes-judge's gets ``judge`` (a
-    yes by default, as the other fakes answer). The writer answers with the next of
-    ``writer_answers``: the arguments of a ``submit_rights`` call, or a text (``SILENT``: nothing,
-    ever); a function among them is awaited first (something happens while the writer writes).
-    ``domo_calls`` and ``writer_calls`` are what each received."""
+    call without tools, the reader of the replies, gets ``verdict`` as its line for the first
+    request shown ("1: change"), and the yes-judge's gets ``judge`` (a yes by default, as the
+    other fakes answer). The writer answers with the next of ``writer_answers``: the arguments of
+    a ``submit_rights`` call, or a text (``SILENT``: nothing, ever); a function among them is
+    awaited first (something happens while the writer writes). ``domo_calls`` and
+    ``writer_calls`` are what each received."""
 
     def __init__(
         self,
@@ -152,7 +153,8 @@ class DomoAndWriter:
             if is_judge_call(system):
                 yield ChatChunk(self._judge)
             elif not tools:
-                yield ChatChunk(self._verdict)
+                # The reader of the owner's words: its word, for the one request shown.
+                yield ChatChunk(f"1: {self._verdict}")
             elif tool_choice == "auto" and self._calls:
                 yield self._calls.pop(0)
             else:

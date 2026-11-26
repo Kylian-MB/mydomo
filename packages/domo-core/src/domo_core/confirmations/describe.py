@@ -86,6 +86,7 @@ and the kinds of count of the household, the day of an hour (everything, when th
 The writer never writes those sentences: what the owner reads is what will be applied.
 """
 
+import json
 import re
 import uuid
 from collections.abc import Iterable, Mapping
@@ -117,6 +118,7 @@ from domo_core.llm.spending import (
     kept_amount,
 )
 from domo_core.llm.types import JsonObject
+from domo_core.madetools.models import OFFERED_PREFIX
 from domo_core.policy.actions import DescribedAction, FactValue
 from domo_core.policy.catalog import (
     ACTION_FACTS,
@@ -213,6 +215,14 @@ def describe_type(
             return describe_spending_show(arguments, texts)
         if action_type == "texts.for_someone":
             return describe_for_someone(arguments, texts)
+        if action_type == "tool.launch_when" and arguments.get("cancel") is not None:
+            # Cancelling a trigger (for the house, it waits for the owner: ruling R74).
+            tool = _shown(_text_of(arguments, "name"))
+            return texts("action.describe.tool.launch_when.cancel", tool=tool)
+        if action_type in _SET_FOR_THE_HOUSE and _for_the_house(arguments, facts):
+            # What someone asks to set for the whole house waits for the owner (ruling R17,
+            # Task 27): his card says so, and what it sets.
+            return describe_for_the_house(action_type, arguments, texts)
         if action_type == "texts.language" and facts is not None and facts.get("house_follows"):
             # The owner's own language: the house's, which visitors read, follows it.
             language = _shown(_text_of(arguments, "language"))
@@ -223,6 +233,123 @@ def describe_type(
         return texts(f"action.describe.{action_type}", **params)
     except (KeyError, IndexError, ValueError, InvalidSetting):
         return texts("action.describe")
+
+
+# What may be set for the whole house (``catalog.HOUSE_SET``): a timed launch, a standing
+# agreement kept or withdrawn.
+_SET_FOR_THE_HOUSE: Final = frozenset({"tool.launch_when", "agreement.keep", "agreement.drop"})
+_AGREEMENT_PERIODS: Final = ("day", "week", "month")
+
+
+def _for_the_house(arguments: JsonObject, facts: Mapping[str, FactValue] | None) -> bool:
+    """Whether the call sets something for the whole house: its facts say so (an agreement), or
+    its arguments do (a trigger, ``for: "house"``)."""
+    return (facts is not None and facts.get("for_house") is True) or arguments.get("for") == "house"
+
+
+def describe_for_the_house(action_type: str, arguments: JsonObject, texts: Texts) -> str:
+    """What a call sets for the whole house, in one sentence that says so: a trigger, its tool
+    and when; an agreement kept, its tool, its operation, its amount and how often; one
+    withdrawn. ``ValueError`` (or ``KeyError``) for what does not read: the general sentence."""
+    if action_type == "agreement.drop":
+        return texts("action.describe.agreement.drop.house")
+    if action_type == "agreement.keep":
+        amount, times, per = (
+            arguments.get("amount_cents_at_most"),
+            arguments.get("times"),
+            arguments.get("per"),
+        )
+        if (
+            not isinstance(amount, int)
+            or isinstance(amount, bool)
+            or not isinstance(times, int)
+            or isinstance(times, bool)
+            or per not in _AGREEMENT_PERIODS
+        ):
+            raise ValueError("an agreement has its amount, its times and its period")
+        said = texts(
+            "action.describe.agreement.keep.house",
+            tool=_shown(_text_of(arguments, "tool").removeprefix(OFFERED_PREFIX)),
+            operation=_shown(_text_of(arguments, "operation")),
+            amount=euros(amount, texts),
+            times=str(times),
+            per=texts(f"action.describe.agreement.per.{per}"),
+        )
+        days = _weekdays(arguments.get("weekdays"), texts)
+        return (
+            said
+            if days is None
+            else f"{said} {texts('action.describe.agreement.weekdays', days=days)}"
+        )
+    return _with_what_it_is_given(_launch_for_the_house(arguments, texts), arguments, texts)
+
+
+def _launch_for_the_house(arguments: JsonObject, texts: Texts) -> str:
+    """When a trigger for the house launches its tool: on an arrival or a return, by a rule that
+    repeats (shown as it is written, as data), or at a moment; the general sentence for a moment
+    that does not read here."""
+    tool = _shown(_text_of(arguments, "name"))
+    on = arguments.get("on")
+    if on == "arrival" or on == "return":
+        return texts(f"action.describe.tool.launch_when.house.{on}", tool=tool)
+    repeat = arguments.get("repeat")
+    if isinstance(repeat, str) and repeat.strip():
+        return texts(
+            "action.describe.tool.launch_when.house.repeat",
+            tool=tool,
+            repeat=_shown(repeat, _SHOWN_RULE_CHARS),
+        )
+    when = arguments.get("when")
+    if isinstance(when, str):
+        try:
+            moment = datetime.fromisoformat(when)
+        except ValueError:
+            moment = None
+        if moment is not None and moment.tzinfo is not None:
+            return texts(
+                "action.describe.tool.launch_when.house.time", tool=tool, when=texts.date(moment)
+            )
+    return texts("action.describe.tool.launch_when.house", tool=tool)
+
+
+# How much of what a trigger gives its tool a card shows: so many arguments, each name and value
+# cut, the rest said to be there; and how much of a rule that repeats.
+_SHOWN_ARGUMENTS: Final = 4
+_SHOWN_ARGUMENT_CHARS: Final = 40
+_SHOWN_RULE_CHARS: Final = 80
+
+
+def _with_what_it_is_given(said: str, arguments: JsonObject, texts: Texts) -> str:
+    """``said``, followed by what the trigger gives its tool when it launches, as data: each
+    name and its value as written (a text in quotes), cut, ``_SHOWN_ARGUMENTS`` at most."""
+    given = arguments.get("arguments")
+    if not isinstance(given, dict) or not given:
+        return said
+    items = list(cast(JsonObject, given).items())
+    shown = [
+        f"{_shown(str(name), _SHOWN_ARGUMENT_CHARS)}: "
+        f"{_shown(json.dumps(value, ensure_ascii=False), _SHOWN_ARGUMENT_CHARS)}"
+        for name, value in items[:_SHOWN_ARGUMENTS]
+    ]
+    if len(items) > _SHOWN_ARGUMENTS:
+        shown.append("…")
+    return f"{said} {texts('action.describe.tool.launch_when.given', given='; '.join(shown))}"
+
+
+def _weekdays(found: object, texts: Texts) -> str | None:
+    """The days of the week an agreement holds on (1 Monday to 7 Sunday), in the reader's words;
+    ``None`` when it holds every day."""
+    if not isinstance(found, list) or not found:
+        return None
+    values = cast(list[object], found)
+    days = [
+        day
+        for day in values
+        if isinstance(day, int) and not isinstance(day, bool) and 1 <= day <= 7
+    ]
+    if len(days) != len(values):
+        raise ValueError("weekdays are 1 to 7")
+    return ", ".join(texts(f"rights.example.weekday.{day}") for day in sorted(set(days)))
 
 
 def euros(cents: int, texts: Texts) -> str:

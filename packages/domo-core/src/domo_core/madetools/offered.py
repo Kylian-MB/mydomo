@@ -21,10 +21,13 @@ bounds its own time (``BoundsItsOwnSteps``), handing a long run over to the back
 A launch that stopped for a yes (``madetools.yes``) is run again by the same tool called with the
 reserved argument ``yes_for`` alone (``{"yes_for": "<stop id>"}``: the stop's own arguments are
 used, any other argument is refused). Such a call is described as ``made.<name>`` with the facts of
-the yes (``{"operation", "amount_cents", "yes": true, "approver"}``) and never judged: it waits for
-the stop's approver, asking what the stop asks, why being what the operation says
-(``AsksItsYes.waits_for``, ``conversation.execution.handle_tool_call``), and is stored and shown as
-any request that waits (``policy.catalog.shown``). The yes runs the stored call, which takes the yes
+the yes (``{"operation", "amount_cents", "yes": true, "approver"}``): it waits for the stop's
+approver, asking what the stop asks, why being what the operation says (``AsksItsYes.waits_for``,
+``conversation.execution.handle_tool_call``), and is stored and shown as any request that waits
+(``policy.catalog.shown``). Only the person's own plain yes for a cost (``their_own_cost``: within
+their limit, which the code applied before the stop existed) is weighed by the yes-judge first,
+with what it costs and what they spent before of the kind (``cost_of``): a usual one runs at once,
+and the assistant tells them after (spec part 12). The yes runs the stored call, which takes the yes
 once (``yes.take_yes``) and launches with it. In a person's turn, a yes is for the person of the
 turn, never for a stop of the house's. A stop of the house's is carried in a turn Domo acts in on
 his own (Task 9, spec 5.8): the one he answers himself (``domo_answers``: its cost, a plain yes
@@ -46,7 +49,7 @@ Domo opens one build per tool and judges when a wait is no longer reasonable (sp
 import re
 import uuid
 from collections.abc import Iterable, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Final, Literal, cast
 from zoneinfo import ZoneInfo
 
@@ -69,12 +72,19 @@ from domo_core.madetools.models import (
     OFFERED_PREFIX,
     LaunchStop,
     MadeTool,
+    StandingAgreement,
     ToolBuild,
 )
 from domo_core.madetools.risks import operations_of
 from domo_core.madetools.schema import schema_problem, unsupported
 from domo_core.madetools.service import IN_PROGRESS, ready_tools
-from domo_core.madetools.yes import stop_named, take_yes
+from domo_core.madetools.yes import (
+    agreements_of,
+    spent_like,
+    stop_named,
+    take_yes,
+    used_in_its_period,
+)
 from domo_core.plans.models import Plan
 from domo_core.plans.schedule import as_local
 from domo_core.policy.actions import DescribedAction, FactValue
@@ -82,6 +92,7 @@ from domo_core.policy.asks import Asked, AskedBy
 from domo_core.policy.facts import STOPPED_FOR_A_YES
 from domo_core.policy.rights import Approver
 from domo_core.policy.roles import Actor
+from domo_core.policy.settings import load_policy_settings
 from domo_core.prompts import BeingBuilt, ToolAside
 from domo_core.tools.context import (
     InternalTool,
@@ -113,9 +124,10 @@ YES_FOR: Final = "yes_for"
 # the person agreed. A tool's own description is its maker's words, so this is told here.
 STOPPED_NEXT: Final = (
     "call this tool again at once with yes_for alone (the stop): that call is the ask, and waits "
-    "for the yes. In the same reply tell the person in your words what is to be done and at what "
-    "cost; their yes, however they give it, runs it. On your own for the house, the cost is yours "
-    "to judge: your yes_for runs it at once"
+    "for the yes, unless a cost of theirs is usual for them: then it runs at once (told_after: "
+    "tell them what was spent). Else in the same reply tell the person in your words what is to be "
+    "done and at what cost; their yes, however they give it, runs it. On your own for the house, "
+    "the cost is yours to judge: your yes_for runs it at once"
 )
 # Who asked the yes of a stop, by why it stopped (``policy.asks.Asked.by``).
 _ASKED_BY: Final[dict[str, AskedBy]] = {
@@ -200,8 +212,9 @@ class MadeToolOffer:
         found = await self._yes_of(arguments, ctx)
         if found is None:
             self._checked(arguments)
-            return described(self._name)
-        return described(self._name, yes_facts(found))
+            # For the house in a turn Domo acts in on his own (``execute``).
+            return described(self._name, for_house=ctx.on_his_own)
+        return described(self._name, yes_facts(found), for_house=found.for_person_id is None)
 
     async def waits_for(self, arguments: JsonObject, ctx: ToolContext) -> WaitsForAYes | None:
         """What the call waits for (``AsksItsYes``, ``waits_for_its_yes``)."""
@@ -209,7 +222,7 @@ class MadeToolOffer:
         if found is None:
             return None
         says = self._operations.get(found.operation or "")
-        return waits_for_its_yes(found, ctx, says, missing=_NO_SUCH_YES)
+        return await waits_for_its_yes(found, ctx, says, tool=self._name, missing=_NO_SUCH_YES)
 
     async def execute(self, arguments: JsonObject, ctx: ToolContext) -> ToolOutcome:
         found = await self._yes_of(arguments, ctx)
@@ -287,15 +300,76 @@ def yes_facts(stop: LaunchStop) -> dict[str, FactValue]:
     }
 
 
-def waits_for_its_yes(
-    stop: LaunchStop, ctx: ToolContext, says: str | None, *, missing: str
+def their_own_cost(stop: LaunchStop) -> bool:
+    """Whether the yes of ``stop`` is a person's own plain yes for its cost (``self``, for them):
+    the one the yes-judge may weigh first, within their limit (spec part 12). Never an adult's or
+    the owner's agreement, an owner's rule, nor a proof; never the house's."""
+    return (
+        stop.for_person_id is not None
+        and stop.approver == "self"
+        and stop.why == "costs"
+        and stop.ask == "yes"
+    )
+
+
+async def cost_of(stop: LaunchStop, ctx: ToolContext, tool: str | None) -> JsonObject:
+    """A person's cost, as the yes-judge weighs it: the amount, the tool (``None``: a program run
+    by hand), the operation, their own agreements on the tool that still count (each with how
+    many of its times were used in its period of now, ``used``) and their own
+    last spendings of the same operation (each its ``day`` and ``amount_cents``), never anyone
+    else's. A program run by hand has neither: no habit, no agreement (ruling R63)."""
+    person_id = stop.for_person_id
+    if person_id is None:
+        raise ValueError("a cost of the house's is never weighed by the judge")
+    spent: list[tuple[date, int]] = []
+    agreements: list[tuple[StandingAgreement, int]] = []
+    if stop.tool_id is not None:
+        # A program run by hand has no habit (ruling R63): another program may have named its
+        # operation the same, and a new one could borrow that name; its cost passes only on the
+        # person's own words.
+        async with ctx.session_factory() as session:
+            spent = await spent_like(
+                session, person_id=person_id, tool_id=stop.tool_id, operation=stop.operation or ""
+            )
+            zone = (await load_policy_settings(session)).time_zone
+            now = ctx.clock()
+            agreements = [
+                (agreement, await used_in_its_period(session, agreement, now, zone))
+                for agreement in await agreements_of(
+                    session, person_id=person_id, tool_id=stop.tool_id
+                )
+            ]
+    return {
+        "amount_cents": stop.amount_cents,
+        "tool": tool,
+        "operation": stop.operation,
+        "agreements": [
+            {
+                "operation": agreement.operation,
+                "amount_cents_at_most": agreement.amount_cents_at_most,
+                "times": agreement.times,
+                "per": agreement.per,
+                "weekdays": None if agreement.weekdays is None else list(agreement.weekdays),
+                # How many of its times were used in its period of now.
+                "used": used,
+            }
+            for agreement, used in agreements
+        ],
+        "spent_before": [{"day": day.isoformat(), "amount_cents": amount} for day, amount in spent],
+    }
+
+
+async def waits_for_its_yes(
+    stop: LaunchStop, ctx: ToolContext, says: str | None, *, tool: str | None, missing: str
 ) -> WaitsForAYes | None:
     """What a call that carries the yes of ``stop`` waits for (``AsksItsYes``): the stop's
     approver, asked what it asks, why being what the operation says (``says``). A stop of the
     house's is carried only in a turn Domo acts in on his own: the one he answers himself waits
     for nobody (``None``: it runs at once); any other waits, as his own request
     (``Confirmation.by_domo``), for the adult or the owner it asks: an adult's or the owner's
-    agreement is never Domo's, nor a proof."""
+    agreement is never Domo's, nor a proof. A person's own yes for a cost
+    (``their_own_cost``) is weighed by the judge first (``judge_first``), with what it costs
+    (``cost_of``, of the tool ``tool``)."""
     if stop.for_person_id is None:
         if not ctx.on_his_own:
             # Not his turn: a person's yes never answers a stop of the house's there.
@@ -305,7 +379,11 @@ def waits_for_its_yes(
     # Asked of an adult or the owner: an approval, whatever brought it (never the requester's own
     # yes, ``confirmations.service._the_requesters_own_yes``).
     by = "approver" if stop.approver in ("adult", "owner") else _ASKED_BY[stop.why]
-    return WaitsForAYes(approver=stop.approver, asked=Asked(stop.ask, by, says))
+    asked = Asked(stop.ask, by, says)
+    if their_own_cost(stop):
+        cost = await cost_of(stop, ctx, tool)
+        return WaitsForAYes(approver=stop.approver, asked=asked, judge_first=True, cost=cost)
+    return WaitsForAYes(approver=stop.approver, asked=asked)
 
 
 async def yes_taken(

@@ -24,6 +24,10 @@ providers refuse without them) but ``tool_choice="none"``: the model must
 answer in words. A call it makes anyway, or a call made when no tool was offered, is not handled.
 The calls of an answer that failed are not handled either: it is not an answer.
 
+Before the model is asked again after a round of calls, ``between_rounds`` (when given) says what
+the person wrote meanwhile: it joins the conversation as one message of theirs, after
+``KEPT_MARKER``.
+
 One answer may make ``max_calls_per_answer`` calls (8 by default). The calls beyond that are
 handed over with ``over_limit=True``: the handler records them as refused without running them,
 and the model gets a result for each of them all the same (a provider wants one per call).
@@ -56,7 +60,7 @@ abandoned half way (and the provider stops generating, and charging, for a reply
 
 import json
 import logging
-from collections.abc import AsyncGenerator, Awaitable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Final, Literal, Protocol
 from uuid import UUID
@@ -67,6 +71,7 @@ from domo_core.llm.picker import TurnModels
 from domo_core.llm.types import (
     AssistantToolCalls,
     ChatChunk,
+    ChatMessage,
     ChatUsage,
     ErrorKind,
     HistoryItem,
@@ -95,6 +100,16 @@ MORE_ROOM_FACTOR = 4
 # Why a call could not be acted on when the model made a mistake of form: a name that is no
 # tool's, or arguments that cannot be read (``conversation.execution.invalid_record``).
 _MISFIRES: Final = frozenset({"unknown_tool", "invalid"})
+
+# The line of the code that comes first in the person's turn added between two rounds, before what
+# they wrote while the turn ran (``between_rounds``): their own words, never an instruction of
+# the system.
+KEPT_MARKER: Final = (
+    "[they wrote this while you were answering: stop, change or go on, as you judge. What is done "
+    "stays done]"
+)
+# What separates that line and each of their texts.
+_KEPT_SEPARATOR: Final = "\n\n"
 
 ActionStatus = Literal["done", "waiting", "refused", "invalid", "failed"]
 
@@ -202,6 +217,7 @@ async def run_turn(
     max_tool_rounds: int = 4,
     system_prompt_without_tools: str | None = None,
     max_calls_per_answer: int = MAX_CALLS_PER_ANSWER,
+    between_rounds: Callable[[], Awaitable[Sequence[str]]] | None = None,
 ) -> AsyncGenerator[TurnEvent]:
     """Ask the model of ``models`` to continue ``history`` and stream what it says and does as
     events (the model is asked for again before each round).
@@ -211,6 +227,10 @@ async def run_turn(
     does what ``handle_tool_call`` raises (it is expected to report every outcome as a record).
     ``tools`` need a ``handle_tool_call`` (``ValueError`` otherwise). A caller that may stop early
     wraps the generator in ``contextlib.aclosing``.
+
+    ``between_rounds`` is asked, after each round of calls and before the model is asked again,
+    for what the person wrote meanwhile: their texts, oldest first, are added to the conversation
+    as one message of theirs, after ``KEPT_MARKER`` (nothing when there are none).
     """
     if tools and handle_tool_call is None:
         raise ValueError("Tools need a handle_tool_call")
@@ -321,6 +341,10 @@ async def run_turn(
         messages.append(AssistantToolCalls("".join(text), tuple(calls)))
         messages.extend(results)
         rounds += 1
+        if between_rounds is not None:
+            written = await between_rounds()
+            if written:
+                messages.append(ChatMessage("user", _KEPT_SEPARATOR.join([KEPT_MARKER, *written])))
         if all(_misfired(record) for record in records):
             went_up = models.retry_up()
             logger.info(

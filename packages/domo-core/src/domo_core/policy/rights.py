@@ -222,6 +222,22 @@ class RightsTable:
             None,
         )
 
+    def denied_on_purpose(self, actor: Actor, action_type: str) -> bool:
+        """Whether the owner wrote a ``deny`` for ``actor`` on ``action_type`` (read on the type
+        whose rights it follows, ``rights_type``): their own right says it, or, when they have
+        none, their role's. A right merely not given is no deny. Never true for Domo: a right of
+        his is his own, not a person's."""
+        if actor.subject == "domo":
+            return False
+        action_type = rights_type(action_type)
+        mine = self._own_right(actor, action_type)
+        role = self._role_right(actor.role, action_type)
+        access = _first(
+            None if mine is None else mine.access,
+            None if role is None else role.access,
+        )
+        return access == "deny"
+
     def resolve(self, actor: Actor, action_type: str, policy: PolicyTables) -> Resolved:
         """What applies to ``actor`` for ``action_type``, part by part: their own right, else
         their role's, else the catalog ``policy``; and what to ask, from their own right, their

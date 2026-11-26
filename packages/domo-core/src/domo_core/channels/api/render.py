@@ -141,7 +141,8 @@ async def request_of(
     "answer_with", "proofs"}``. ``answer_with`` is what it asks of them when they may answer it
     (``ask_of``: ``yes``, a yes in words; ``explicit_yes``, a firm yes in words; ``proof``, one of
     ``proofs``, the kinds this channel offers them), or whose yes it waits for (``approver_of``:
-    ``adult``, ``owner``, or ``requester`` for the yes of the one who asked). ``None`` for a
+    ``adult``, ``owner``, ``requester`` for the yes of the one who asked, or ``concerned`` for
+    the yes of the person it concerns). ``None`` for a
     request that no longer waits, or that they may not see. A request whose row cannot be read
     (``ValueError``: a database edited by hand) has no ``answer_with``: logged by its kind, it
     never ends a stream."""
@@ -153,7 +154,14 @@ async def request_of(
             answer_with = ask_of(c) or "yes"
         else:
             approver = approver_of(c)
-            answer_with = "requester" if approver == "self" else approver
+            answer_with = (
+                # The person it concerns answers it alone (never "the one who asked").
+                "concerned"
+                if c.concerned_id is not None
+                else "requester"
+                if approver == "self"
+                else approver
+            )
     except ValueError as error:
         logger.error("A request could not be read (%s)", type(error).__name__)
         return {"id": str(c.id), "answer_with": None, "proofs": []}

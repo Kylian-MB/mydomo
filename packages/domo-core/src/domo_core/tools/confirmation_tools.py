@@ -14,12 +14,19 @@
   as it is (the result says so: ``"already"``);
 * ``ask_before_acting``: ask more than the judge would (a yes, an explicit yes or a proof) for the
   next action Domo calls in the same answer; never less, and never what the judge refused;
+* ``act_on_my_own``: say that the next action Domo calls in the same answer is his own idea,
+  judged with his own rights and what he knows (``conversation.execution.handle_tool_call``);
+* ``asking_agreed``: after the person answered something that could not be undone, keep what
+  they agreed about being asked again the next times (``memory.told.agreed_asking``), for them
+  alone and only in a turn that answers them; the judge weighs it, no yes is imposed by code;
 * ``confirmation_amend``: apply the change the person asked for when they answered a request
   with a yes and a change; only then, in that turn (``ToolContext.change_grant``). An approver's
   change of someone else's request comes with a note of what they said, for the one who asked,
   who is woken (``ToolContext.wake``), as after a button. A change of the person's own request
   that waits for someone else's yes needs no answer of theirs (spec 5.2): nothing runs, it makes
-  a new request for the same approver. A change of rights is changed in words: the rights writer
+  a new request for the same approver. A change of a request of Domo's own, by him on his own or
+  by a person who answered it "yes, but", stays his and follows the verdict (it runs, or waits for
+  a yes again). A change of rights is changed in words: the rights writer
   drafts it again, and the new draft is judged like any other change (applied at once, or a new
   request), or the writer asks the owner a question (spec 5.3).
 
@@ -28,8 +35,9 @@ the two above, on a request that waits for the person's yes): an id that names a
 ``not_found``. In a turn Domo acts in on his own, ``confirmation_expire`` and
 ``confirmation_amend`` act on his own requests that wait in this conversation, and on the
 person's only by a right the owner gives him (spec 12.5, ruling R30:
-``policy.catalog.ON_THEIR_REQUESTS``); the others are not his there by default
-(``policy.catalog.NOT_ON_HIS_OWN``).
+``policy.catalog.ON_THEIR_REQUESTS``); showing a request again (``confirmation_remind``) and
+asking more of it (``confirmation_require_explicit``) are his own on his own too, and the owner
+takes them back by a rule (``policy.catalog.NOT_ON_HIS_OWN`` holds only the person's own).
 None of them approves or refuses a request: that only comes from the person (a button, their
 words read by the code or the isolated classifier). The work is done by
 ``confirmations.service``; these tools check their arguments, describe the call for the barrier
@@ -55,10 +63,18 @@ from domo_core.confirmations.service import (
 )
 from domo_core.confirmations.store import approves, ask_of, how_to_answer, how_to_approve
 from domo_core.llm.types import JsonObject, ToolDefinition
+from domo_core.memory.told import agreed_asking
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.asks import ASKS, Ask
 from domo_core.policy.roles import Actor
-from domo_core.tools.context import InvalidArguments, ToolContext, ToolOutcome
+from domo_core.tools.context import (
+    MAX_IDEA_REASON_LENGTH,
+    InvalidArguments,
+    OwnIdea,
+    ToolContext,
+    ToolOutcome,
+)
+from domo_core.tools.notes import MAX_NOTE_LENGTH, exact_text_in
 
 _REQUEST_ID: Final[JsonObject] = {
     "type": "string",
@@ -325,6 +341,167 @@ class AskBeforeActing:
         )
 
 
+class ActOnMyOwn:
+    """Say that the next action called in this answer is Domo's own idea."""
+
+    _ARGUMENTS: Final = frozenset({"reason"})
+
+    definition = ToolDefinition(
+        name="act_on_my_own",
+        description=(
+            "Say that the next action you call in this answer is your own idea: it is judged with "
+            "your own rights and what you know, done when your judge finds nothing wrong, and "
+            "kept as yours; tell the person afterwards if that is useful. For what nobody asked "
+            "you, or what a person may not do themselves but you judge right to do (a guest says "
+            "a friend comes tonight: you may invite them). Never to get around what a person may "
+            "not do: what was refused to them on purpose stays refused. Call it right before "
+            "that action, with your reason in one sentence."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Why you do it, in one sentence.",
+                    "minLength": 1,
+                    "maxLength": MAX_IDEA_REASON_LENGTH,
+                },
+            },
+            "required": ["reason"],
+            "additionalProperties": False,
+        },
+    )
+    action_type = "confirmation.own_idea"
+
+    def _read(self, arguments: JsonObject) -> str:
+        if frozenset(arguments) != self._ARGUMENTS:
+            raise InvalidArguments("invalid", "give exactly reason")
+        reason = arguments["reason"]
+        if not isinstance(reason, str) or not reason.strip():
+            raise InvalidArguments("invalid", "reason is one sentence")
+        if len(reason) > MAX_IDEA_REASON_LENGTH:
+            raise InvalidArguments("too_long", f"reason is {MAX_IDEA_REASON_LENGTH} characters")
+        return reason.strip()
+
+    async def describe(
+        self, arguments: JsonObject, actor: Actor, ctx: ToolContext
+    ) -> DescribedAction:
+        self._read(arguments)
+        return DescribedAction(
+            connector="core",
+            action_type=self.action_type,
+            target=None,
+            effect="own_requests",
+            destination="household",
+        )
+
+    async def execute(self, arguments: JsonObject, ctx: ToolContext) -> ToolOutcome:
+        # Born of the person's words only when the turn is their request, with nothing from
+        # outside (``ToolContext.they_asked``).
+        born_of = ctx.person.id if ctx.they_asked else None
+        ctx.own_idea = OwnIdea(self._read(arguments), born_of=born_of)
+        return ToolOutcome(
+            "done",
+            {"applies_to": "the next action you call in this answer"},
+            {"key": "action.card.done.confirmation.own_idea", "params": {}},
+        )
+
+
+class AskingAgreed:
+    """Keep what the person agreed about being asked again before an action that cannot be
+    undone, after their answer to one (``memory.told.agreed_asking``)."""
+
+    _ARGUMENTS: Final = frozenset({"action_type", "keep_asking", "their_words"})
+    _MAX_TYPE: Final = 100
+
+    definition = ToolDefinition(
+        name="asking_agreed",
+        description=(
+            "After the person answered something that could not be undone, see with them once "
+            "whether to keep asking them the next times, and keep what they say: keep_asking "
+            "false when they need not be asked again, true when they want to be. action_type is "
+            "the type of that action, as the context gives it (could_not_be_undone). their_words "
+            "is the passage of their message of now that says it, copied character for character. "
+            "Only in a turn that answers them, for what you told them before such an action."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "action_type": {"type": "string", "minLength": 1, "maxLength": _MAX_TYPE},
+                "keep_asking": {"type": "boolean"},
+                "their_words": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": MAX_NOTE_LENGTH,
+                    "description": "Their words of now that say it, copied exactly.",
+                },
+            },
+            "required": ["action_type", "keep_asking", "their_words"],
+            "additionalProperties": False,
+        },
+    )
+    action_type = "confirmation.agree_asking"
+
+    def _read(self, arguments: JsonObject) -> tuple[str, bool, str]:
+        if frozenset(arguments) != self._ARGUMENTS:
+            raise InvalidArguments(
+                "invalid", "give exactly action_type, keep_asking and their_words"
+            )
+        action_type, keep_asking = arguments["action_type"], arguments["keep_asking"]
+        if not isinstance(action_type, str) or not 0 < len(action_type.strip()) <= self._MAX_TYPE:
+            raise InvalidArguments("invalid", "action_type is the type of the action, a text")
+        if not isinstance(keep_asking, bool):
+            raise InvalidArguments("invalid", "keep_asking is true or false")
+        their_words = arguments["their_words"]
+        if not isinstance(their_words, str) or not their_words.strip():
+            raise InvalidArguments("invalid", "their_words is a passage of their message")
+        return action_type.strip(), keep_asking, their_words
+
+    async def describe(
+        self, arguments: JsonObject, actor: Actor, ctx: ToolContext
+    ) -> DescribedAction:
+        self._read(arguments)
+        return DescribedAction(
+            connector="core",
+            action_type=self.action_type,
+            target=None,
+            effect="own_requests",
+            destination="household",
+        )
+
+    async def execute(self, arguments: JsonObject, ctx: ToolContext) -> ToolOutcome:
+        action_type, keep_asking, their_words = self._read(arguments)
+        # Tied to their own words of now (ruling R68): a turn that answers them with nothing from
+        # outside, and a passage of one of their messages of this turn, never across two.
+        if ctx.on_his_own or not ctx.answers_them:
+            raise InvalidArguments("not_possible", "only in a turn that answers the person")
+        if (
+            len(their_words) > MAX_NOTE_LENGTH
+            or exact_text_in(ctx.said_messages, their_words) is None
+        ):
+            raise InvalidArguments(
+                "not_possible", "their_words is not a passage of their message of now: nothing kept"
+            )
+        async with ctx.session_factory() as session:
+            kept = await agreed_asking(
+                session,
+                person_id=ctx.person.id,
+                action_type=action_type,
+                keep_asking=keep_asking,
+                now=ctx.clock(),
+            )
+            if not kept:
+                raise InvalidArguments(
+                    "not_found", "you told them nothing before an action of this type"
+                )
+            await session.commit()
+        return ToolOutcome(
+            "done",
+            {"keep_asking": keep_asking},
+            {"key": "action.card.done", "params": {}},
+        )
+
+
 # What the model is told when a change made a new request (R64: plainly, nothing has happened).
 _ASKED_AGAIN: Final = (
     "nothing has happened yet: the changed action is a new request that waits for a yes"
@@ -395,8 +572,10 @@ class ConfirmationAmend:
             "single note, leave text out). In a turn of your own, change a request you made on "
             "your own whenever you judge it (among the requests of others, one asked by the "
             "assistant: "
-            "you): it is judged again as yours and waits again for its approver's yes; a person "
-            "never changes it, they answer it. The person's, only if you were given that right."
+            "you): it is judged again as yours, and runs or waits for a yes as the verdict says. "
+            "When a person answers one of yours with a change, apply it the same way: it stays "
+            "yours, and their yes covers it unless it needs more. The person's, only if you were "
+            "given that right."
         ),
         parameters={
             "type": "object",

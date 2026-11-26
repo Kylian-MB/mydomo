@@ -40,6 +40,7 @@ from domo_core.accounts.models import Account, Person
 from domo_core.audit.log import verify_audit_chain
 from domo_core.channels.page.abilities import PAGE
 from domo_core.channels.sse import RelaySink
+from domo_core.chat.models import Message
 from domo_core.chat.store import ConversationStore
 from domo_core.conversation import turn as conversation_turn
 from domo_core.conversation.service import STALE_AFTER
@@ -61,7 +62,7 @@ from domo_core.trust.service import Trust
 from domo_core.web.deps import get_clock, get_gatekeeper, get_model_factory, get_settings
 from domo_core.web.templating import static_url
 from fakes import FakeChatModel, fake_factory, is_judge_call
-from sqlalchemy import text, update
+from sqlalchemy import select, text, update
 from web_support import OWNER_PASSWORD, NoWriting, house_reads, in_language, reads_in
 
 STATIC_DIR = Path(domo_core.__file__).parent / "web" / "static"
@@ -552,14 +553,20 @@ async def test_a_request_from_another_site_is_refused(chat_client, session):
     assert await message_rows(session) == []
 
 
-async def test_second_message_while_streaming_is_409(chat_client, use_model, session):
+async def test_second_message_while_a_reply_is_written_is_kept(chat_client, use_model, session):
+    # Spec 11.3: never refused. Its bubble alone, at once; no reply of its own is opened.
     use_model(FakeChatModel(["x"]))
     await post_message(chat_client, "first")
     r = await chat_client.post("/chat/messages", data={"text": "second"})
-    assert r.status_code == 409
-    assert t("chat.error.busy", "en") in plain(r.text)
-    assert r.headers["hx-retarget"] == "#chat-notice"
-    assert len(await message_rows(session)) == 2  # nothing of the second one was recorded
+    assert r.status_code == 202
+    assert 'class="message user"' in r.text and "second" in plain(r.text)
+    assert "sse-connect" not in r.text and "hx-retarget" not in r.headers
+    rows = await message_rows(session)
+    assert [(row.role, row.content, row.status) for row in rows] == [
+        ("user", "first", "complete"),
+        ("assistant", "", "streaming"),
+        ("user", "second", "complete"),
+    ]
 
 
 async def test_stale_streaming_message_does_not_block(chat_client, session, clock):
@@ -570,12 +577,14 @@ async def test_stale_streaming_message_does_not_block(chat_client, session, cloc
     assert (await get_message(session, first_id)).status == "error"
 
 
-async def test_a_reply_that_is_not_two_minutes_old_still_blocks(chat_client, clock):
+async def test_a_reply_that_is_not_two_minutes_old_still_holds_the_message(chat_client, clock):
     await post_message(chat_client, "first")
     clock.advance(timedelta(minutes=1, seconds=50))
-    assert (await chat_client.post("/chat/messages", data={"text": "second"})).status_code == 409
+    # Kept for that reply, which may still be written.
+    assert (await chat_client.post("/chat/messages", data={"text": "second"})).status_code == 202
     clock.advance(timedelta(seconds=30))
-    assert (await chat_client.post("/chat/messages", data={"text": "second"})).status_code == 200
+    # Nobody writes it any more: a new reply answers what was said since.
+    assert (await chat_client.post("/chat/messages", data={"text": "third"})).status_code == 200
 
 
 async def test_two_messages_posted_at_once_open_only_one_reply(chat_client, use_model, session):
@@ -586,8 +595,9 @@ async def test_two_messages_posted_at_once_open_only_one_reply(chat_client, use_
         chat_client.post("/chat/messages", data={"text": "one"}),
         chat_client.post("/chat/messages", data={"text": "two"}),
     )
-    assert sorted([first.status_code, second.status_code]) == [200, 409]
-    assert len(await message_rows(session)) == 4
+    # One opens the reply, the other is kept for it.
+    assert sorted([first.status_code, second.status_code]) == [200, 202]
+    assert len(await message_rows(session)) == 5
 
 
 async def test_a_message_waits_for_whoever_else_is_working_on_the_conversation(
@@ -1093,14 +1103,20 @@ async def test_a_reply_whose_turn_still_runs_is_not_stale(owner_chat, chat_serve
         clock.advance(STALE_AFTER + timedelta(minutes=1))  # older than that, but its turn runs
         async with chat_server.session_factory() as session:
             assert (await get_message(session, reply_id)).status == "streaming"
-        refused = await other_page.post("/chat/messages", data={"text": "second"})
-        assert refused.status_code == 409  # one reply at a time, as when the page stays
+        kept = await other_page.post("/chat/messages", data={"text": "second"})
+        assert kept.status_code == 202  # kept for it: one reply at a time, as when the page stays
         async with chat_server.session_factory() as session:
             assert (await get_message(session, reply_id)).status == "streaming"  # not marked dead
     await chat_server.wait_for_wakes()
     async with chat_server.session_factory() as session:
         message = await get_message(session, reply_id)
     assert (message.content, message.status) == ("ab", "complete")
+    # The message kept is answered once that reply is over; then the conversation is free.
+    async with chat_server.session_factory() as session:
+        last = await session.scalar(
+            select(Message.content).order_by(Message.created_at.desc()).limit(1)
+        )
+    assert last == "ab"
     assert (await owner_chat.client.post("/chat/messages", data={"text": "x"})).status_code == 200
 
 
@@ -1394,8 +1410,15 @@ async def test_the_claim_does_not_outlive_the_turn(chat_client, use_model, sessi
     assert await claims_are_released(app)
 
 
+async def wait_for_the_turns(app) -> None:
+    """Wait until no turn of Domo runs any more (``app.state.wakes``)."""
+    async with asyncio.timeout(WAIT_SECONDS):
+        while app.state.wakes.pending:
+            await asyncio.sleep(0.01)
+
+
 async def test_a_reply_that_is_being_written_is_never_taken_for_dead(
-    chat_client, use_model, session, clock
+    chat_client, use_model, session, clock, app
 ):
     use_model(FakeChatModel(["a", "b"], delay_s=1.0))
     msg_id = await post_message(chat_client, "hi")
@@ -1405,14 +1428,21 @@ async def test_a_reply_that_is_being_written_is_never_taken_for_dead(
         while not first:
             first.extend(parse_sse(await anext(pieces)))
         clock.advance(timedelta(minutes=3))  # older than two minutes, but somebody is writing it
-        refused = await chat_client.post("/chat/messages", data={"text": "second"})
-        assert refused.status_code == 409
+        kept = await chat_client.post("/chat/messages", data={"text": "second"})
+        assert kept.status_code == 202  # kept for it, not taken for a dead reply's
         assert (await get_message(session, msg_id)).status == "streaming"
         async for _ in pieces:
             pass
     message = await get_message(session, msg_id)
     assert (message.content, message.status) == ("ab", "complete")
-    assert (await chat_client.post("/chat/messages", data={"text": "second"})).status_code == 200
+    # The message kept is answered by a reply of its own, once that one is over.
+    await wait_for_the_turns(app)
+    rows = await message_rows(session)
+    assert [(row.role, row.content) for row in rows][-2:] == [
+        ("user", "second"),
+        ("assistant", "ab"),
+    ]
+    assert (await chat_client.post("/chat/messages", data={"text": "third"})).status_code == 200
 
 
 async def test_a_reply_settled_by_someone_else_is_not_reported_as_a_turn(

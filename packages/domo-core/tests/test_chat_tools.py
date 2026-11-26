@@ -98,7 +98,8 @@ async def test_the_model_only_sees_tools_allowed_for_the_role(guest_chat):
     model = guest_chat.use_model(FakeChatModel(["ok"]))
     await guest_chat.say("salut")
     # A guest may rename themselves, leave early (spec 5.9), hear the notes left for them (spec
-    # 4.8), bring a key of their own (add it, give it again, remove it, limit it), ask what they
+    # 4.8), say that the next action is Domo's own idea (it is judged as his, never as theirs),
+    # bring a key of their own (add it, give it again, remove it, limit it), ask what they
     # cost, have Domo take a stronger model for the rest of a request, and change their own
     # texts, writing note and language (spec 4.7). They see and take back their own devices
     # (spec 6.5); entrusting one needs the owner's right.
@@ -107,6 +108,8 @@ async def test_the_model_only_sees_tools_allowed_for_the_role(guest_chat):
         "household_leave",
         "note_told",
         "note_show",
+        "act_on_my_own",
+        "asking_agreed",
         "model_rekey",
         "key_add",
         "key_remove",
@@ -140,6 +143,9 @@ async def test_the_model_only_sees_tools_allowed_for_the_role(guest_chat):
         "trust_note",
         "trust_look",
         "trust_correct",
+        # And his noting of a complaint and his marking that he asked what was wrong.
+        "went_wrong_note",
+        "went_wrong_asked",
         # And the tools of his own that he makes, looks at and times (0.10.0, spec 5.5).
         "tool_build",
         "tool_change",

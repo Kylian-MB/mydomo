@@ -93,12 +93,15 @@ from domo_common.gatekeeper_api import OutRequest, OutResponse
 from domo_common.sandbox_api import ANSWER_CEILING_BYTES, JsonObject, RunRequest, RunResult
 from pydantic import JsonValue
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import is_active
 from domo_core.audit.log import append_audit
 from domo_core.db import SessionFactory
+from domo_core.learning.models import WentWrong
+from domo_core.learning.record import note_went_wrong, reason_code
 from domo_core.madetools.launches import record
 from domo_core.madetools.models import (
     OFFERED_PREFIX,
@@ -119,6 +122,7 @@ from domo_core.policy.decision import decide_now
 from domo_core.policy.open_catalog import load_policy
 from domo_core.policy.roles import Actor, actor_label, as_role, domo_actor
 from domo_core.policy.settings import load_policy_settings
+from domo_core.policy.subjects import keys_of
 from domo_core.prompts import ToolWake
 from domo_core.sandbox_client import Sandbox, SandboxBusy, SandboxNotHere, SandboxUnavailable
 from domo_core.toolsdb.store import ToolsBase
@@ -290,17 +294,20 @@ def action_type_of(name: str) -> str:
     return f"{MADE_PREFIX}{name}"
 
 
-def described(name: str, facts: Mapping[str, FactValue] | None = None) -> DescribedAction:
+def described(
+    name: str, facts: Mapping[str, FactValue] | None = None, *, for_house: bool = False
+) -> DescribedAction:
     """What a launch of the tool ``name`` does, for the barrier: it reads and computes in the
     household, and acts on nothing; its facts (``catalog.MADE_FACTS``) say the yes it carries, when
-    it carries one (``facts``), else that it carries none."""
+    it carries one (``facts``), else that it carries none, and whether it is for the house
+    (``for_house``: the subject of the launch is then the house's, ``policy.subjects``)."""
     return DescribedAction(
         connector="core",
         action_type=action_type_of(name),
         target=None,
         effect="read",
         destination="household",
-        facts=dict(MADE_FACTS_WITHOUT_A_YES if facts is None else facts),
+        facts={**(MADE_FACTS_WITHOUT_A_YES if facts is None else facts), "for_house": for_house},
     )
 
 
@@ -425,20 +432,83 @@ async def _person_now(session: AsyncSession, person: Person, now: datetime) -> P
 
 
 async def _judged(
-    session: AsyncSession, deps: LaunchDeps, who: Actor, name: str, now: datetime
+    session: AsyncSession,
+    deps: LaunchDeps,
+    who: Actor,
+    name: str,
+    now: datetime,
+    *,
+    cause: Cause,
+    tool_id: uuid.UUID,
+    about: uuid.UUID | None,
 ) -> Launched | None:
     """The barrier's word on launching the tool ``name`` for ``who``, audited: ``None`` when it
     may go, else the launch refused (committed). Nobody can say yes outside a turn: what needs it
-    (someone's agreement, or a yes an owner's rule asks before the tool) is refused."""
-    action = described(name)
+    (someone's agreement, or a yes an owner's rule asks before the tool) is refused. A launch a
+    trigger made that is refused is no longer silent: it is noted as a fact, and Domo is woken
+    once with the reason (``_refusal_noted``); a turn reads its own refusal."""
+    # A launch for the house is judged as Domo's (``domo_actor``): it is the house's.
+    action = described(name, for_house=who.subject == "domo")
     policy = await load_policy(session, deps.policy_base)
     decision = await decide_now(session, who, action, policy, now)
     await record_decision(session, who, action, decision, tool_name=f"{OFFERED_PREFIX}{name}")
     if isinstance(decision, Allow) and decision.rule is None:
         return None
-    await session.commit()
     reason = decision.reason if isinstance(decision, Refuse) else "needs_confirmation"
+    first = (
+        await _refusal_noted(session, action, name, reason, now, about)
+        if cause == "trigger"
+        else False
+    )
+    await session.commit()
+    if first:
+        # Imported here: what wakes Domo launches tools in turn.
+        from domo_core.madetools.troubles import Trouble, wake_for_trouble
+
+        await wake_for_trouble(deps, Trouble("launch_refused", name, reason, tool_id=tool_id))
     return Launched("refused", {"reason": reason})
+
+
+async def _refusal_noted(
+    session: AsyncSession,
+    action: DescribedAction,
+    name: str,
+    reason: str,
+    now: datetime,
+    about: uuid.UUID | None,
+) -> bool:
+    """Note the refusal of a trigger's launch of the tool ``name`` as a fact (flushed, committed
+    with the decision). ``True`` when no earlier fact of the tool has this reason: Domo is told
+    then, once; the same refusal again next week wakes nobody. Never raises: a fact never stops a
+    launch, and one that is not kept wakes nobody."""
+    code = reason_code({"reason": reason}) or "refused"
+    try:
+        [subject_key] = keys_of(action, None)
+        async with session.begin_nested():
+            earlier = await session.scalar(
+                select(WentWrong.id)
+                .where(
+                    WentWrong.kind == "launch_refused",
+                    WentWrong.subject_key == subject_key,
+                    WentWrong.reason == code,
+                )
+                .limit(1)
+            )
+        noted = await note_went_wrong(
+            session,
+            kind="launch_refused",
+            action_type=action.action_type,
+            now=now,
+            subject_key=subject_key,
+            by="code",
+            of_domo=True,
+            about=about,
+            reason=code,
+        )
+    except SQLAlchemyError as error:
+        logger.warning("A refused trigger launch was not noted (%s)", type(error).__name__)
+        return False
+    return noted is not None and earlier is None
 
 
 async def _judged_and_counted(
@@ -480,7 +550,16 @@ async def _judged_and_counted(
         if cause != "turn" or (person is None and not judged_as_domo):
             # A turn judged its call already (for the house, as Domo's); any other launch is
             # judged now.
-            refused = await _judged(session, deps, who, name, now)
+            refused = await _judged(
+                session,
+                deps,
+                who,
+                name,
+                now,
+                cause=cause,
+                tool_id=tool.id,
+                about=None if person is None else person.id,
+            )
             if refused is not None:
                 return refused
         values = await all_values(session, tool)

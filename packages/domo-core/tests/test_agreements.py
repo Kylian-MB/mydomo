@@ -7,12 +7,16 @@ import json
 from typing import Any
 
 from chat_support import ChatPilot, ChatServer
+from domo_common.i18n import t
 from domo_core.audit.models import AuditEntry
 from domo_core.channels.turns import app_turn_deps
+from domo_core.confirmations.describe import euros, request_description
+from domo_core.confirmations.models import Confirmation
 from domo_core.conversation.prepare import made_tool_deps
 from domo_core.llm.types import ToolCall
 from domo_core.madetools.launch import HOUSE, launch
 from domo_core.madetools.models import StandingAgreement
+from domo_core.texts.view import CatalogTexts
 from fakes import FakeChatModel
 from sqlalchemy import select
 from test_madetools_handover import add_tool, by_program, waking
@@ -109,25 +113,65 @@ async def test_who_may_not_launch_a_tool_keeps_no_agreement_on_it(
     assert await agreements(session_factory) == []
 
 
-async def test_house_by_an_adult_is_refused_and_by_the_owner_kept(
+async def waiting_for_the_owner(session_factory, tool_name: str) -> Confirmation:
+    async with session_factory() as reader:
+        [asked] = (
+            await reader.scalars(
+                select(Confirmation).where(
+                    Confirmation.tool_name == tool_name, Confirmation.status == "pending"
+                )
+            )
+        ).all()
+    assert (asked.approver_kind, asked.by_domo) == ("owner", True)
+    return asked
+
+
+async def test_an_agreement_for_the_house_follows_the_same_way(
     adult_chat: ChatPilot, owner_chat: ChatPilot, session_factory
 ):
+    # Ruling R17 (Task 27): kept by the owner at once; asked by an adult, who may not set it for
+    # the house, it waits for the owner's yes as the assistant's request, and his yes keeps it.
     await add_tool(session_factory, "order", ORDER)
     house = {**FRIDAYS, "for": "house"}
     reply = await adult_chat.say_with_tool("agreement_keep", house, judge="do")
-    assert reply.actions == [
-        {"tool": "agreement_keep", "status": "invalid", "reason": "not_possible"}
-    ]
+    assert [a["status"] for a in reply.actions] == ["waiting"], reply.actions
     assert await agreements(session_factory) == []
+    asked = await waiting_for_the_owner(session_factory, "agreement_keep")
+    # Fix round 1: what the owner says yes to says it is for the whole house, and what it lets
+    # through: the tool, the operation, the amount and how often, in his language, and on which
+    # days (final review D3).
+    for lang in ("en", "fr"):
+        texts = CatalogTexts(lang)
+        kept_for = t(
+            "action.describe.agreement.keep.house",
+            lang,
+            tool="order",
+            operation="order",
+            amount=euros(4000, texts),
+            times="1",
+            per=t("action.describe.agreement.per.week", lang),
+        )
+        days = t(
+            "action.describe.agreement.weekdays", lang, days=t("rights.example.weekday.5", lang)
+        )
+        assert request_description(asked, texts) == f"{kept_for} {days}"
+    card = await owner_chat.post(f"/confirmations/{asked.id}/approve")
+    assert card.status_code == 200 and 'data-outcome="executed"' in card.text, card.text
+    [kept] = await agreements(session_factory)
+    assert kept.for_person_id is None
     reply = await owner_chat.say_with_tool("agreement_keep", house, judge="do")
     assert reply.actions == [{"tool": "agreement_keep", "status": "done"}]
-    [kept] = await agreements(session_factory)
+    kept = (await agreements(session_factory))[-1]
     assert (kept.for_person_id, kept.given_by) == (None, owner_chat.person.id)
-    # An adult does not withdraw the house's either.
+    # An adult's withdrawal of the house's waits for the owner too.
     reply = await adult_chat.say_with_tool("agreement_drop", {"id": str(kept.id)}, judge="do")
-    assert reply.actions == [
-        {"tool": "agreement_drop", "status": "invalid", "reason": "not_possible"}
-    ]
+    assert [a["status"] for a in reply.actions] == ["waiting"], reply.actions
+    dropping = await waiting_for_the_owner(session_factory, "agreement_drop")
+    for lang in ("en", "fr"):
+        assert request_description(dropping, CatalogTexts(lang)) == t(
+            "action.describe.agreement.drop.house", lang
+        )
+    assert (await agreements(session_factory))[-1].withdrawn_at is None
 
 
 async def test_the_context_lists_them(
@@ -180,11 +224,9 @@ async def test_domo_keeps_one_for_the_house_in_a_turn_of_his_own(
             if entry.details["action_type"] == "agreement.keep"
         ]
     assert [(entry.actor, entry.details["decision"]) for entry in decided] == [("domo", "allow")]
-    # An adult's, in a turn of theirs, is still refused.
+    # An adult's, in a turn of theirs, waits for the owner's yes (ruling R17).
     reply = await adult_chat.say_with_tool(
         "agreement_keep", {**FRIDAYS, "for": "house"}, judge="do"
     )
-    assert reply.actions == [
-        {"tool": "agreement_keep", "status": "invalid", "reason": "not_possible"}
-    ]
+    assert [a["status"] for a in reply.actions] == ["waiting"], reply.actions
     assert len(await agreements(session_factory)) == 1

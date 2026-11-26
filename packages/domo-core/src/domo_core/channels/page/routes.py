@@ -35,8 +35,10 @@ another device, a wake), while a turn writes it on the server, the page shows Do
 place, and the reply there once it is over (spec 5.7.2); so does a page whose stream stopped short
 (``chat.js``).
 
-A new message is refused (409, ``chat.error.busy``) while a reply is being written, unless that
-reply is an arrival turn's (it steps aside: ``conversation.starts``). Someone with no key Domo may
+A message sent while a reply is being written is kept (spec 11.3, ``Conversation.say``): the page
+is answered 202 with its bubble alone, the reply goes on, and what answers it comes as any reply
+Domo starts (the page asks for what is new). An arrival turn steps aside for it instead
+(``conversation.starts``). Someone with no key Domo may
 use for them, whom no upkeep turn answers, is refused with the fixed message ``chat.error.no_key``
 and, when they may open it, the button of the form of a key of their own (``KEY_NEW_PATH``).
 
@@ -61,7 +63,7 @@ from domo_core.accounts.models import Person
 from domo_core.accounts.passkeys import passkey_availability_of
 from domo_core.channels.page.abilities import PAGE
 from domo_core.channels.page.render import PageListener, cards_of
-from domo_core.channels.page.speaker import PAGE_CHANNEL, page_speaker
+from domo_core.channels.page.speaker import PAGE_CHANNEL, page_speaker, signed_in_at_of
 from domo_core.channels.sse import RelaySink, SSEResponse
 from domo_core.channels.turns import get_conversation, get_turn_deps, person_is_there
 from domo_core.chat.models import Message
@@ -70,7 +72,6 @@ from domo_core.config import CoreSettings
 from domo_core.conversation.prepare import NoKey, TurnDeps, TurnRequest, upkeep_key
 from domo_core.conversation.service import (
     MAX_TEXT_LENGTH,
-    Busy,
     Conversation,
     NotSayable,
     fetched_since,
@@ -115,12 +116,16 @@ def _seen(request: Request, person: Person, now: datetime, *, came_back: bool = 
 
 
 def _turn_request(
-    request: Request, person: Person, settings: CoreSettings, now: datetime
+    request: Request,
+    person: Person,
+    settings: CoreSettings,
+    now: datetime,
+    signed_in_at: datetime | None,
 ) -> TurnRequest:
-    """What the page says of a turn: the person of the session, the page's abilities, the address
-    the page was opened at, and where it can give a passkey."""
+    """What the page says of a turn: the person of the session (signed in at ``signed_in_at``),
+    the page's abilities, the address the page was opened at, and where it can give a passkey."""
     return TurnRequest(
-        speaker=page_speaker(person.id, now),
+        speaker=page_speaker(person.id, now, signed_in_at),
         abilities=PAGE,
         origin=str(request.base_url),
         passkey_site=passkey_availability_of(request, settings).site,
@@ -355,16 +360,25 @@ async def post_message(
     clock: Annotated[Callable[[], datetime], Depends(get_clock)],
     gatekeeper: Annotated[GatekeeperClient, Depends(get_gatekeeper)],
     policy: Annotated[PolicyTables, Depends(get_policy)],
+    settings: Annotated[CoreSettings, Depends(get_settings)],
     conversation: Annotated[Conversation, Depends(get_conversation)],
     text: Annotated[str, Form()] = "",
 ) -> Response:
     """Record the message and open the reply that will answer it (``Conversation.say``): the pair
-    of bubbles. A refusal is a message for the notice area: the text (400), no key (409, with the
-    form of a key of one's own if they may open it), a reply being written (409)."""
+    of bubbles; while a reply is being written, the message is kept for it (202, its bubble
+    alone). A refusal is a message for the notice area: the text (400), no key (409, with the
+    form of a key of one's own if they may open it)."""
     # A browser sends the line breaks of a text box as CRLF.
     body = text.replace("\r\n", "\n").replace("\r", "\n")
+    now = clock()
+    # What the page says of a turn, for the one that answers the message if it is kept.
+    turn_request = _turn_request(
+        request, person, settings, now, await signed_in_at_of(session, request)
+    )
     try:
-        user_message, reply = await conversation.say(person, body, page_speaker(person.id, clock()))
+        user_message, reply = await conversation.say(
+            person, body, page_speaker(person.id, now), turn_request
+        )
     except NotSayable:
         return _notice(request, 400, "chat.error.text", max=str(MAX_TEXT_LENGTH))
     except NoKey:
@@ -373,8 +387,9 @@ async def post_message(
         return _notice(
             request, 409, "chat.error.no_key", key_new_url=KEY_NEW_PATH if opens else None
         )
-    except Busy:
-        return _notice(request, 409, "chat.error.busy")
+    if reply is None:
+        # Kept for the reply being written: their bubble at once, and nothing to stream.
+        return render(request, "fragments/message.html", status_code=202, message=user_message)
     return render(request, "fragments/message_pair.html", user_message=user_message, reply=reply)
 
 
@@ -396,7 +411,9 @@ async def stream_reply(
     if _MESSAGE_ID.fullmatch(message_id.lower()) is None:
         raise HTTPException(status_code=404)
     relay = RelaySink()
-    turn_request = _turn_request(request, person, settings, deps.clock())
+    async with deps.session_factory() as reader:
+        signed_in_at = await signed_in_at_of(reader, request)
+    turn_request = _turn_request(request, person, settings, deps.clock(), signed_in_at)
     listener = PageListener(
         relay,
         person=person,

@@ -201,10 +201,13 @@ class ConversationStore:
         summary: Mapping[str, object],
         confirmation_id: uuid.UUID | None = None,
         by_domo: bool = False,
+        subject_key: str | None = None,
+        idea_reason: str | None = None,
     ) -> MessageAction:
         """Record an action of the reply ``message_id``. ``summary`` is its card: what the page
         shows, never a secret, a token or a link. ``by_domo``: it was judged as Domo's own
-        act (``MessageAction.by_domo``)."""
+        act (``MessageAction.by_domo``). ``subject_key``: what it is about
+        (``policy.subjects``); ``idea_reason``: why, when it was his own idea."""
         action = MessageAction(
             message_id=message_id,
             tool_name=tool_name,
@@ -213,6 +216,8 @@ class ConversationStore:
             confirmation_id=confirmation_id,
             summary=dict(summary),
             by_domo=by_domo,
+            subject_key=subject_key,
+            idea_reason=idea_reason,
         )
         self._session.add(action)
         await self._session.flush()

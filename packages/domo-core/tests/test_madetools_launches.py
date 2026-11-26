@@ -22,6 +22,7 @@ from chat_support import ChatPilot, ChatServer
 from domo_common.sandbox_api import Machine, RunRequest, RunResult
 from domo_core.accounts.models import Person
 from domo_core.audit.models import AuditEntry
+from domo_core.learning.models import WentWrong
 from domo_core.llm.spending_models import ModelCall
 from domo_core.madetools import launch as launch_module
 from domo_core.madetools.launch import HOUSE, ForWhom, launch
@@ -34,7 +35,7 @@ from fakes import FakeAsk, FakeSandbox
 from sqlalchemy import select, text
 from test_madetools_build import Maker, opened, run_the_pass, submit, use
 from test_madetools_build import sandbox as sandbox  # noqa: F401 (a fixture of the builds)
-from test_madetools_handover import BEGIN, add_tool, by_program, deps_of
+from test_madetools_handover import BEGIN, add_tool, by_program, deps_of, launched_for
 from test_madetools_in_turn import LUNCH, answers, done, launch_deps
 from test_madetools_in_turn import add_tool as add_turn_tool
 from test_madetools_yes import ORDER, Shop
@@ -484,6 +485,93 @@ async def test_a_trigger_launch_the_machine_cannot_give_counts_is_set_aside_and_
         )
         keys = {frozenset(entry.details) for entry in launched_lines.all()}
     assert keys == {frozenset({"tool", "cause", "seconds", "status", "requests", "reads"})}
+
+
+# --- a launch the rules refuse is no longer silent -----------------------------------------------
+
+
+async def refusals(session_factory) -> list[WentWrong]:
+    async with session_factory() as reader:
+        found = await reader.scalars(select(WentWrong).order_by(WentWrong.at, WentWrong.id))
+        return [row for row in found.all() if row.kind == "launch_refused"]
+
+
+async def test_a_trigger_refused_by_an_owner_s_rule_wakes_him_with_the_reason(
+    session_factory, live_clock, dana, grant
+):
+    tool = await add_tool(session_factory, "tally")
+    await grant("made.tally", person=dana, ask="yes")
+    woken: list[Any] = []
+    deps = deps_of(session_factory, live_clock, FakeSandbox(), woken)
+    launched = await launch(deps, tool.id, arguments={}, for_whom=ForWhom(dana), cause="trigger")
+    assert (launched.status, launched.result) == ("refused", {"reason": "needs_confirmation"})
+    # Noted as a fact: of the assistant's, about the person, by the code, with the reason's code.
+    [row] = await refusals(session_factory)
+    assert (row.action_type, row.subject_key, row.reason) == (
+        "made.tally",
+        "tool:tally",
+        "needs_confirmation",
+    )
+    assert (row.by_domo, row.of_domo, row.about_person_id) == (False, True, dana.id)
+    # One wake, with the reason, and that the trigger still stands.
+    [(_, [wake])] = woken
+    assert wake.tool == "tally"
+    assert isinstance(wake.content, dict)
+    assert (wake.content["trouble"], wake.content["reason"]) == (
+        "launch_refused",
+        "needs_confirmation",
+    )
+    assert "trigger" in str(wake.content["says"]) and "retire" in str(wake.content["says"])
+    assert "error" not in wake.content
+
+
+async def test_the_same_refusal_next_week_wakes_nobody(session_factory, live_clock, dana, grant):
+    tool = await add_tool(session_factory, "tally")
+    await grant("made.tally", person=dana, ask="yes")
+    woken: list[Any] = []
+    deps = deps_of(session_factory, live_clock, FakeSandbox(), woken)
+    await launched_for(deps, tool, dana)
+    live_clock.advance(timedelta(days=7))
+    await launched_for(deps, tool, dana)
+    # Both are noted; only the first told him.
+    assert len(await refusals(session_factory)) == 2
+    assert len(woken) == 1
+
+
+async def test_another_reason_wakes_him_again(session_factory, live_clock, dana, grant):
+    tool = await add_tool(session_factory, "tally")
+    woken: list[Any] = []
+    deps = deps_of(session_factory, live_clock, FakeSandbox(), woken)
+    asks = await grant("made.tally", person=dana, ask="yes")
+    await launched_for(deps, tool, dana)
+    async with session_factory() as writer:
+        row = await writer.get(type(asks), asks.id)
+        assert row is not None
+        row.revoked_at = live_clock()
+        await writer.commit()
+    await grant("made.tally", person=dana, access="deny")
+    live_clock.advance(timedelta(days=1))
+    await launched_for(deps, tool, dana)
+    assert [row.reason for row in await refusals(session_factory)] == [
+        "needs_confirmation",
+        "not_allowed",
+    ]
+    assert [wakes[0].content["reason"] for _, wakes in woken] == [  # type: ignore[index]
+        "needs_confirmation",
+        "not_allowed",
+    ]
+
+
+async def test_a_launch_from_a_turn_is_untouched(session_factory, live_clock, dana, grant):
+    tool = await add_tool(session_factory, "tally")
+    await grant("made.tally", for_domo=True, access="deny")
+    woken: list[Any] = []
+    deps = deps_of(session_factory, live_clock, FakeSandbox(), woken)
+    # The turn reads its own refusal: judged here for the house, and nothing noted or woken.
+    launched = await launch(deps, tool.id, arguments={}, for_whom=HOUSE, cause="turn")
+    assert launched.status == "refused"
+    assert await refusals(session_factory) == []
+    assert woken == []
 
 
 async def test_a_trace_that_cannot_be_written_costs_the_launch_nothing(

@@ -96,6 +96,15 @@ class MessageAction(Base):
         ),
         # "The actions of these replies" (the page, the history sent to the model).
         Index("ix_message_actions_message_id", "message_id"),
+        # The assistant's reason, one line (``confirmations.judge.MAX_JUDGE_REASON_LENGTH``).
+        CheckConstraint("char_length(idea_reason) <= 200", name="idea_reason_length"),
+        # "What was done about this thing, lately" (``policy.subjects``).
+        Index(
+            "ix_message_actions_subject_key_created_at",
+            "subject_key",
+            text("created_at DESC"),
+            postgresql_where=text("subject_key IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=func.gen_random_uuid())
@@ -106,4 +115,8 @@ class MessageAction(Base):
     confirmation_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("confirmations.id"))
     summary: Mapped[dict[str, object]] = mapped_column(JSONB)
     by_domo: Mapped[bool] = mapped_column(server_default=text("false"), default=False)
+    # What the action is about (``policy.subjects.subject_of``); ``None``: not known.
+    subject_key: Mapped[str | None]
+    # Why the assistant did it, when it was his own idea; ``None`` for what a person asked.
+    idea_reason: Mapped[str | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.clock_timestamp())

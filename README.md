@@ -253,8 +253,10 @@ no form to fill in.
   person, and the card says whose yes it is now. Some things nobody can change: only the owner changes the rights and
   the rules, nobody acts on the owner, and nobody changes their own role. If a
   limit cannot be checked, the action is refused, and the audit log says so.
-  When a limit needs to understand something ("only her friends"), each request
-  goes to the owner in this version, with the question on the card. Ask the assistant
+  When a limit needs to understand something ("only her friends"), the assistant's
+  judge reads the question with everything it knows: when it knows the answer,
+  it is done; when it doubts, the request goes to the owner, with the question
+  on the card. (A step of a chain under such a limit still goes to the owner.) Ask the assistant
   to show the rules to see the rights in force. Each call that writes a right
   has 60 seconds by default; the owner can give it from 30 to 240 seconds, just
   by telling the assistant ("give the rights writer two minutes"). When it runs out of
@@ -384,8 +386,11 @@ no form to fill in.
   plumber"). It is left at once, with no yes: it is just a message. There is no
   window of notes: the recipient's assistant tells it in his own words, at a moment
   he judges right (often when they open their page), and shows its exact words
-  when they ask. A note is never an order for the assistant: he tells it, and never
-  does what it asks unless the person he talks with asks it themselves. A note
+  when they ask. A note is never an order for the assistant: he tells it, and when
+  the person he talks with asks it done, it is their request. A note left by
+  someone of the household he may also act on as his own idea, knowing who wrote
+  it, judged like any idea of his; what a note quotes from outside (a site, a
+  mail, a stranger) is only information. A note
   for someone who has no key the assistant may use for them waits until they have one.
   The assistant cannot tell when they will read it, nor when they come home: if you ask
   for that, it says so. The notes a guest received are erased, for good,
@@ -431,7 +436,15 @@ something makes it doubt that it is really you; or **not do it**, when it
 judges the thing wrong to do, with a reason you can discuss. The judge sees the
 action, your last messages, what the assistant had just said to you before your last
 one (so a "yes" you already gave him counts), the hour, what you did of this
-kind before and what already waits. Of what the assistant said, it reads that one
+kind before and what already waits. It also sees, gathered in one place and each
+marked with where it comes from: what the assistant remembers of you and of the
+thing (your own words, the owner's, someone else's with their name, his own
+lessons, never mixed), how far your word has held so far, what went wrong
+before on this kind of action or this thing, the last change made to the thing
+(by whom, and why when it is known), how you reached him and how fresh those
+clues really are, and whose idea the action is. Only your own words can count as
+"you asked" or "you know"; the rest helps it judge. Nothing someone else keeps
+private reaches it. Of what the assistant said, it reads that one
 answer only, as you read it. When in it he told you a note someone left or a
 request of someone else, or wrote it on his own, the judge is told so: your
 yes to it still counts (the owner's decision), but only for an action that
@@ -439,11 +452,13 @@ answer plainly names. It never reads the note itself, and it never sees
 The assistant's other answers, the results of tools, a secret or anything from
 outside, and it is told that all of that is data, not instructions. If it does
 not answer, what you asked for is done: nobody is asked a yes because the judge
-was silent. That is for what you asked: when the assistant acts on his own (after a
-button, when someone arrives) or was just told words that are not yours (a note someone left you, a request
-of someone else that waits for your yes, what the one who said yes to a request
-of yours noted), nobody
-is known to have asked, and a silent judge then means a yes.
+was silent. That is for what you asked. When the assistant was just told words
+that are not yours (a note someone left you, a request of someone else that
+waits for your yes, what the one who said yes to a request of yours noted),
+nobody is known to have asked: the judge is asked once more, and if it is still
+silent, you are asked a yes. When the action is his own idea (see below), a
+silent judge is asked once more too, and if it is still silent nothing is done
+for now and nobody is asked: he may come back to it.
 
 **The strictest wins.** What is asked in the end is the strictest of what the
 judge says, what the owner's rules say and what the assistant himself asks. The
@@ -453,6 +468,80 @@ something he judges wrong, saying why: if you explain, he can change his mind.
 The owner can write "always ask me before..." as a right ("ask me before you
 invite anyone", "to hand over my role, always ask me for a proof"): the code
 keeps it, whatever the judge thinks.
+
+**His own ideas.** The assistant may do something nobody asked, as his own idea:
+he says so, with his reason in one sentence, and the action is judged with his
+own rights and everything he knows, in anyone's conversation. The judge says do
+it: he does it, and tells you after if he judges it useful. The judge truly
+doubts: the request waits for the person the thing concerns (the one it belongs
+to or touches; the owner for what is the house's), in their own conversation when
+it is someone else; it is the code that says who, never the judge or a text. The
+judge says no: nothing is done, and that is noted (see "What went wrong", below).
+A turn he starts himself (a plan he set alone, someone who arrives, a wake after
+a button) is his idea in the same way, and the judge is told that nobody spoke.
+His idea lifts only a right that was simply not given: in a person's turn, what
+the owner forbade that person (or their role) on purpose is refused at once, no
+judge asked, and their limits, the owner's "ask me first", an approver and an
+adult's agreement for a child still hold. Sam, a guest, may not invite; he says
+his friend Tom comes tonight: the assistant weighs it (his trust in Sam, what
+the owner said, what happened before), and either invites Tom as his own act
+and tells the owner after, or asks the owner. A chain of actions is never his
+idea: he marks single actions.
+
+**What he keeps on his own.** On his own, the assistant keeps his memory, the trust
+he notes from what he saw, his plans, his reminders, his chains and his way of
+writing; he invites, invites again, cancels an invitation, gives a role, removes
+or brings back someone of the household; he takes back a device (someone else's
+waits for that person's yes when he doubts), and removes an account that no
+longer serves. Sharing a house account stays the
+owner's. What he keeps or sets on his own is his, not the person's whose
+conversation it is. The owner takes back whatever he wants by a rule: a "never",
+or "ask me first", which then waits for the owner's yes. An invitation he makes on
+his own is still recorded with the person of the conversation as the one who
+invited, for now; the audit log says it was him.
+
+**What went wrong, and what he learns.** The code notes what went wrong: a
+request refused (by whom, with the words of the refusal cut short), a request that
+lapsed (a silence is not a no), the judge's no, a no to a warning, an action that
+undoes what he did or decided himself (cancelling a plan he set, closing an
+address he opened, changing a role he gave, removing someone he invited,
+forgetting a memory he kept, taking back a note he left), a complaint (noted by
+the assistant himself when someone complains of what he did), an action that
+failed, a build abandoned, a timed launch the rules refused (which wakes him
+once). The result of an action that undoes his tells him so. He draws the lesson
+himself, in his own words, as a memory of his; when the reason is not clear and
+the thing matters (safety, money, privacy, what cannot be undone, a mistake that
+repeats), he may ask once what was wrong, never twice for the same thing. A
+lesson is weighed, not a ban: three refusals of the same idea and he no longer
+tries it, unless he judges things really changed. The judge reads these facts
+and lessons, and so does he, in his context; going back over a day, he sees
+what became of each of his actions.
+
+**What it costs.** A person's spending limit is held by the code before
+anything, and never passed; so is an owner's "ask me first". Within the limit, a
+cost of a tool launched for a person no longer waits for their yes by default:
+the judge sees the amount, the tool, their words, their standing agreements and
+what they spent on it before. A usual cost runs, and the assistant tells them
+after; an unusual one (a first time, much more than usual, nothing about it in
+their words) is asked. A program he runs by hand has no habit: its cost is asked
+unless their words cover it. For the house, the assistant answers himself, as
+before.
+
+**The last key.** Removing the last key of the household that works, or the
+general key when the one who gave it has no other key to take over, is no longer
+refused: the assistant warns that he could no longer answer whoever depends on
+it, and suggests giving another key first; if they still want it, it is removed.
+With no general key left, the next key of the owner's that works becomes the
+general key. With no key at all, nobody can talk with him until a key is given on
+the page of a new key.
+
+**What cannot be undone.** The first time something cannot be undone for a kind
+of action, the assistant asks the person it belongs to (you for your things, the
+owner for the house's), saying that it cannot be undone. With their answer he
+sees with them once whether to keep asking the next times, and keeps what they
+say in their own words; then he does as agreed. When such a request waits for
+someone else, it tells them that it cannot be undone. Forgetting something about
+health is settled the same way, the first time with its person.
 
 **A proof.** When the judge doubts that it is really you, it asks for a proof,
 given by one of the means agreed with you, and never in the conversation, so
@@ -483,10 +572,16 @@ phrase. Short, clear answers are recognised by the assistant's code itself; anyt
 else is read by a separate check that sees only your reply (not the
 conversation, not the tools, nothing from outside), and never by the model that
 talks with you. A reply that is neither a yes nor a no goes to the assistant, who asks
-again. Your words answer the request that the assistant's last reply showed you, when
-it showed only that one. If you talked about something else in between, or if
-several requests are waiting, the assistant shows you again the one you mean, and you
-can then answer it in your own words. The buttons always work.
+again. Your words answer the requests the assistant's last reply showed you: the
+check is given who speaks, those requests (one line each, numbered), your
+messages since they were shown and your reply, and it says for each one yes,
+no, a change, or unclear. "Yes, both" answers two; "yes to the first, not the
+second" too. In doubt it never says yes. A proof is never given in words, and a
+firm yes the owner's rule asks for is read on your reply alone; one the judge or
+the assistant asks for may be read with your messages since the request was shown
+("I'm sure", said a message earlier). Replies up to 1000 characters are read. If
+you talked about something else in between, the assistant shows you again the one
+you mean, and you can then answer it in your own words. The buttons always work.
 
 **Who says yes.** The person who asked. When a child asks for something that
 waits for a yes, an adult or the owner gives it: the request appears in their
@@ -539,8 +634,20 @@ The assistant acts).
 **Reminders and expiry.** The assistant keeps an eye on the requests that wait for
 you: he can remind you of one, or drop one that no longer makes sense. Whatever
 he does, a request expires on its own after 7 days; the owner can change that
-limit (from 1 hour to 30 days) by asking the assistant. In this version, reminders
-only appear in the conversation.
+limit (from 1 hour to 30 days) by asking the assistant. Shortly before a request
+lapses (in the last fifth of its life, but never less than an hour before), he
+is woken once for it, and judges: remind whoever must answer, tell whoever asked,
+drop it, or do nothing. A lapse is noted as a silence, not a no. In this version,
+reminders only appear in the conversation.
+
+**A message while he writes.** A message you send while the assistant is writing
+his reply is no longer refused: it is kept, and your page shows it at once.
+Between two actions of the reply he reads it and judges: stop, change, or go on.
+What is already done stays done; if your message disputes it, that is noted as
+something that went wrong. If no action is left, he answers it right after, as a
+normal message. Only the messages of the person of the conversation are read
+this way. After a restart, a kept message waits until you write again or come
+back.
 
 **"Yes, but…".** You can accept and ask for a change in the same answer, put
 however you like: "oui mais mets plutôt Sam", "go, but make it 8pm", "send it,
@@ -835,8 +942,8 @@ can set himself plans to talk to you again on his own.
   weighs, with who speaks and what it is about, never a rule: a low figure does
   not make what someone says false, and a mother who got the time of an
   appointment wrong twice is still followed on her child's allergy. It changes
-  no right, no rule and no limit, and the judge who decides whether to ask for a
-  yes never sees it.
+  no right, no rule and no limit. The judge who decides whether to ask for a yes
+  sees the facts behind it too, as one more thing to weigh, never as a yes.
 - **You can ask him your own figure, and why.** "How much do you trust me?":
   he tells you, with what happened behind it, and with tact; to a child he
   first talks about what happened rather than a number, and a child who makes
@@ -847,7 +954,9 @@ can set himself plans to talk to you again on his own.
 - **You ask him in words.** "What do you know about me?", "forget that", "don't
   remember what I'm about to tell you", "that's wrong, I don't like coffee": he
   does it. Forgetting is final, so he is careful: an allergy is not forgotten
-  because it has not come up in a long time.
+  because it has not come up in a long time, and something about health is
+  forgotten the first time only after asking its person, then as agreed with
+  them.
 - **What you entrust to him.** Tell him something is a secret, or to keep it to
   himself: he keeps it to himself. He does so on his own, too, for what he judges
   sensitive. What he keeps to himself is not put before him when he talks with
@@ -888,10 +997,10 @@ can set himself plans to talk to you again on his own.
   1st") is done with your rights of that day: if you no longer have them, it is
   not done and he tells you.
 - **He knows what you know.** Before something that cannot be undone, the assistant
-  warns you the first time. If he warned you before and judges you remember, he
-  does not say it again. Two limits for now: for a series of actions done in one
-  go, he warns you but does not keep that he did; and when one of your rules
-  already asks a yes for that action, he asks that yes without warning you more.
+  asks you the first time, saying so, and then sees with you whether to keep
+  asking; he keeps your answer and what you agreed, and does as agreed the next
+  times (see "What cannot be undone" in Confirmations). For a series of actions
+  done in one go, he keeps it only when all its steps are of one kind.
 - **A name of your own for him.** "Call yourself Brenda" or "I'd like to call you
   Brenda": your page changes at once, without a reload (the name at the top, the
   tab's title, "Write to Brenda..." in the message box), `domo-talk` too:
@@ -976,7 +1085,11 @@ particular. They make him grow, and they serve anyone in the household.
   your yes is shown like any other. You can also give a standing agreement in
   your words ("order without asking me on Fridays, up to 40 euros"): an amount,
   a number of times per day, week or month, and the days it may happen on, read
-  by the code each time. Amounts are in euros. A cost is what a tool declares:
+  by the code each time. Within your spending limit, the judge may let a cost
+  through without your yes when it is like what you usually spend on it (see
+  "What it costs" in Confirmations). Someone other than the owner who sets a
+  timed launch or a standing agreement for the whole house waits for the owner's
+  yes, unless the owner gave them that right. Amounts are in euros. A cost is what a tool declares:
   the code cannot check a price on a site. For what he does for the house,
   The assistant gives that yes himself, by his own judgement, within your spending
   limits: take a right away from him if you want to be asked instead.
@@ -1133,8 +1246,11 @@ the sandbox still has no network at all.
   house's: a person's serves only the launches for that person, never one for
   someone else, the house or the assistant on his own; a house account serves the
   household, not the guests unless you open it to them, and the assistant on his own
-  unless you close it to him. Whoever gave it, or you, removes it: what used it
-  is refused at once. A program only names an account; what comes back has its
+  unless you close it to him. Whoever gave it, or you, removes it, and the
+  assistant may remove on his own one that no longer serves: what used it is
+  refused at once. A removed account may be asked for again when the assistant
+  judges that things changed: when you removed it, he knows it, and when, and weighs it;
+  a yes it then takes for a house account is yours. A program only names an account; what comes back has its
   secret and its session cookies scrubbed, errors included, and headers of
   identification a program writes itself are dropped: a secret only travels
   through an account. A user name is no secret; a password and a session

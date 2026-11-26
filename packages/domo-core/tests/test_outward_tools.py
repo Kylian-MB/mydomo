@@ -8,6 +8,7 @@ result nor audit line holds a value, a form's token or its path.
 The tools are tried directly, with the sessions of the test database, and through the barrier's
 decision for what only the rights can say. The gatekeeper is a fake (``test_outward_service``)."""
 
+import json
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -16,19 +17,25 @@ from typing import Any
 import pytest
 from domo_core.accounts.models import Person
 from domo_core.audit.models import AuditEntry
+from domo_core.confirmations.judge import Judgement
+from domo_core.confirmations.service import decide_confirmation, requester_context
+from domo_core.conversation import execution as execution_module
+from domo_core.conversation.execution import handle_tool_call
 from domo_core.db import SessionFactory
 from domo_core.household.service import disable
+from domo_core.llm.types import ToolCall
 from domo_core.madetools.models import MadeToolTrigger
 from domo_core.madetools.triggers import _claim_due  # pyright: ignore[reportPrivateUsage]
 from domo_core.notes.models import Note
 from domo_core.outward.models import DOMO, OpenAddress, ServiceAccount
-from domo_core.outward.service import account_for, open_for
+from domo_core.outward.service import PLACE, account_for, ask_account, open_for, remove_account
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.barrier import Allow, Refuse, decide
 from domo_core.policy.catalog import DEFAULT_POLICY, OWNER_ONLY_ACTIONS, is_silent
 from domo_core.policy.models import PolicyRight
 from domo_core.policy.rights import Right, RightsTable, load_rights
 from domo_core.policy.roles import Actor, domo_actor
+from domo_core.policy.subjects import Subject, concerned_of, subject_of
 from domo_core.tools.context import (
     ActsAsDomo,
     AsksItsYes,
@@ -39,8 +46,10 @@ from domo_core.tools.context import (
 )
 from domo_core.tools.registry import TOOLS, tools_for
 from sqlalchemy import delete, select, update
+from test_concerned_person import DOUBT, _judge, _people, _requests, _turn
 from test_made_tools_tools import add_tool, household
 from test_outward_service import FakeGatekeeper
+from test_own_idea import LIVE
 
 NOW = datetime(2030, 1, 7, 9, 0, tzinfo=UTC)
 ORIGIN = "https://domo.example.com/"
@@ -99,6 +108,14 @@ async def run(tool_name: str, ctx: ToolContext, /, **arguments: Any) -> ToolOutc
     tool = TOOLS[tool_name]
     await tool.describe(arguments, ctx.actor, ctx)
     return await tool.execute(arguments, ctx)
+
+
+async def run_weighed(tool_name: str, ctx: ToolContext, /, **arguments: Any) -> ToolOutcome:
+    """Describe then execute ``tool_name`` in ``ctx``, run on what was described, as a judged
+    call is (``ToolContext.described_action``)."""
+    tool = TOOLS[tool_name]
+    action = await tool.describe(arguments, ctx.actor, ctx)
+    return await tool.execute(arguments, replace(ctx, described_action=action))
 
 
 async def refused(tool_name: str, ctx: ToolContext, /, **arguments: Any) -> InvalidArguments:
@@ -407,6 +424,8 @@ async def test_an_account_is_asked_for_good_and_its_form_shown_once_to_whoever_g
         "giver": f"person:{alex.id}",
         "hosts": 1,
         "outward": False,
+        "removed_by_owner": False,
+        "removed_on": None,
     }
     done = await tool.execute(ACCOUNT, ctx)
     assert done.model_result == {"status": "done", "name": "lights", "form": "shown"}
@@ -567,7 +586,11 @@ async def test_a_form_nobody_can_see_now_waits(session_factory: SessionFactory):
     assert gatekeeper.asked == []
 
 
-async def test_what_the_owner_removed_stays_removed(session_factory: SessionFactory):
+async def test_what_the_owner_removed_is_told_when_it_is_asked_again(
+    session_factory: SessionFactory,
+):
+    # Task 27: an account the owner removed is no longer refused by who asks: the call is
+    # described with that removal (``removed_by_owner``, ``removed_on``), for the judge to weigh.
     alex, sam, _, _ = await household(session_factory)
     await run("account_ask", context(alex, session_factory), **ACCOUNT)
     removing = {"name": "lights", "for": "house"}
@@ -575,20 +598,26 @@ async def test_what_the_owner_removed_stays_removed(session_factory: SessionFact
     assert (await refused("account_remove", context(sam, session_factory), **removing)).code == (
         "not_possible"
     )
-    alone = context(alex, session_factory, on_his_own=True)
-    assert (await refused("account_remove", alone, **removing)).code == "not_possible"
     done = await run("account_remove", later(context(alex, session_factory), 1), **removing)
     assert done.card == {"key": "action.card.done.account.remove", "params": {"name": "lights"}}
     (entry,) = await audit(session_factory, "outward.account_removed")
     assert entry.details == {"name": "lights", "for_house": True, "of": None, "by_owner": True}
-    # Neither Domo on his own nor anyone else asks for it again; the owner does.
+    removed_on = (NOW + timedelta(minutes=1)).date().isoformat()
     for ctx, more in (
         (context(alex, session_factory, on_his_own=True), {"giver": "Sam", "note": WORDS}),
         (context(sam, session_factory), {}),
+        (context(alex, session_factory), {}),
     ):
-        refusal = await refused("account_ask", later(ctx, 2), **ACCOUNT, **more)
-        assert str(refusal.detail).startswith("removed_by_owner")
-    await run("account_ask", later(context(alex, session_factory), 3), **ACCOUNT)
+        action = await TOOLS["account_ask"].describe({**ACCOUNT, **more}, ctx.actor, later(ctx, 2))
+        assert (action.facts["removed_by_owner"], action.facts["removed_on"]) == (
+            True,
+            removed_on,
+        )
+    # Asked again once it was let through: a new account of that name.
+    sams = later(context(sam, session_factory), 3)
+    await run_weighed("account_ask", sams, **ACCOUNT)
+    action = await TOOLS["account_ask"].describe(ACCOUNT, sams.actor, sams)
+    assert (action.facts["removed_by_owner"], action.facts["removed_on"]) == (False, None)
 
 
 async def test_the_owner_removes_someone_s_own_account(session_factory: SessionFactory):
@@ -604,21 +633,21 @@ async def test_the_owner_removes_someone_s_own_account(session_factory: SessionF
     assert entry.details["of"] == str(dana.id) and entry.details["for_house"] is False
 
 
-async def test_an_own_account_the_owner_removed_is_given_again_by_its_person_alone(
+async def test_an_own_account_the_owner_removed_is_described_so_for_its_person_too(
     session_factory: SessionFactory,
 ):
-    # Ruling R10: a personal account the owner removed is asked again in its person's turn or
-    # the owner's, never by Domo on his own nor in anyone else's turn.
-    alex, sam, dana, _ = await household(session_factory)
+    # Task 27 (ruling R10 replaced): a personal account the owner removed is judged like any
+    # other asked again, on his own too, the removal told.
+    alex, _, dana, _ = await household(session_factory)
     mine = {**ACCOUNT, "for": "me"}
     await run("account_ask", context(dana, session_factory), **mine)
     of_dana = {"name": "lights", "for": "person", "of": "Dana"}
     await run("account_remove", later(context(alex, session_factory), 1), **of_dana)
     alone = later(context(alex, session_factory, on_his_own=True), 2)
-    refusal = await refused("account_ask", alone, **mine, giver="Dana", note=WORDS)
-    assert str(refusal.detail).startswith("removed_by_owner")
-    await run("account_ask", later(context(dana, session_factory), 3), **mine)
-    del sam
+    arguments = {**mine, "giver": "Dana", "note": WORDS}
+    action = await TOOLS["account_ask"].describe(arguments, alone.actor, alone)
+    assert action.facts["removed_by_owner"] is True
+    await run_weighed("account_ask", later(context(dana, session_factory), 3), **mine)
 
 
 async def test_a_child_removes_an_account_of_their_own_and_no_other(
@@ -784,3 +813,400 @@ async def test_no_result_nor_audit_line_holds_a_form_s_token_or_its_path(
     for words in map(str, said):
         assert "token-" not in words and "/vault/r/" not in words
     del sam
+
+
+# --- Task 27: an account the owner removed is asked again by judgement ---------------------------
+
+
+def _call(tool_name: str, arguments: dict[str, Any]) -> ToolCall:
+    return ToolCall("c1", tool_name, json.dumps(arguments))
+
+
+async def _house(session_factory: SessionFactory) -> dict[str, Person]:
+    """Alex, the owner; Dana, an adult; Paul, a child: each with a conversation."""
+    return await _people(
+        session_factory, ("Alex", "owner"), ("Dana", "adult"), ("Paul", "child"), grants=False
+    )
+
+
+async def _in_turn(
+    session_factory: SessionFactory, person: Person, gatekeeper: FakeGatekeeper, **changes: Any
+) -> tuple[ToolContext, uuid.UUID]:
+    ctx, reply_id, _ = await _turn(session_factory, person, gatekeeper=gatekeeper, **changes)
+    return ctx, reply_id
+
+
+async def _removed_by_alex(
+    session_factory: SessionFactory, alex: Person, gatekeeper: FakeGatekeeper
+) -> None:
+    """The house account ``lights``, given by Alex, then removed by him."""
+    ctx, _ = await _in_turn(session_factory, alex, gatekeeper)
+    await run("account_ask", ctx, **ACCOUNT)
+    await run("account_remove", ctx, name="lights", **{"for": "house"})
+
+
+async def _live_accounts(session_factory: SessionFactory) -> list[ServiceAccount]:
+    async with session_factory() as reader:
+        found = await reader.scalars(
+            select(ServiceAccount).where(ServiceAccount.removed_at.is_(None))
+        )
+        return list(found.all())
+
+
+async def _yes_of(ctx: ToolContext, request_id: uuid.UUID, decider: Person) -> str:
+    outcome, ran = await decide_confirmation(
+        session_factory=ctx.session_factory,
+        confirmation_id=request_id,
+        decider=decider,
+        approve=True,
+        via="button",
+        reply_message_id=None,
+        ctx_factory=requester_context(ctx),
+        registry=ctx.registry,
+        policy=DEFAULT_POLICY,
+        now=LIVE,
+    )
+    assert outcome == "executed", ran
+    return outcome
+
+
+async def test_a_removed_house_account_asked_by_dana_is_judged_with_removed_by_owner(
+    session_factory: SessionFactory, monkeypatch: pytest.MonkeyPatch
+):
+    people = await _house(session_factory)
+    gatekeeper = FakeGatekeeper()
+    await _removed_by_alex(session_factory, people["Alex"], gatekeeper)
+    judged = _judge(monkeypatch, Judgement("do"))
+    ctx, reply_id = await _in_turn(session_factory, people["Dana"], gatekeeper)
+    record = await handle_tool_call(_call("account_ask", ACCOUNT), ctx=ctx, reply_id=reply_id)
+    assert record.status == "done", record.model_result
+    # Judged, the owner's removal told to the judge.
+    [case] = judged.cases
+    facts = case.action["facts"]  # type: ignore[index]
+    assert facts["removed_by_owner"] is True
+    assert facts["removed_on"] == LIVE.astimezone(UTC).date().isoformat()
+
+
+async def test_let_through_it_opens_the_form_again(
+    session_factory: SessionFactory, monkeypatch: pytest.MonkeyPatch
+):
+    people = await _house(session_factory)
+    gatekeeper = FakeGatekeeper()
+    await _removed_by_alex(session_factory, people["Alex"], gatekeeper)
+    _judge(monkeypatch, Judgement("do"))
+    ctx, reply_id = await _in_turn(session_factory, people["Dana"], gatekeeper, origin=ORIGIN)
+    record = await handle_tool_call(_call("account_ask", ACCOUNT), ctx=ctx, reply_id=reply_id)
+    assert record.status == "done", record.model_result
+    assert record.model_result["form"] == "shown" and record.card_once is not None
+    [account] = await _live_accounts(session_factory)
+    assert (account.person_id, account.given_by) == (None, people["Dana"].id)
+    # Its form is the new account's, typed by Dana in the vault's form.
+    assert gatekeeper.asked[-1].ref == account.ref
+
+
+async def test_doubted_it_waits_for_the_owner(
+    session_factory: SessionFactory, monkeypatch: pytest.MonkeyPatch
+):
+    people = await _house(session_factory)
+    alex, dana = people["Alex"], people["Dana"]
+    gatekeeper = FakeGatekeeper()
+    await _removed_by_alex(session_factory, alex, gatekeeper)
+    _judge(monkeypatch, DOUBT)
+    ctx, reply_id = await _in_turn(session_factory, dana, gatekeeper)
+    record = await handle_tool_call(_call("account_ask", ACCOUNT), ctx=ctx, reply_id=reply_id)
+    assert record.status == "waiting", record.model_result
+    [request] = [r for r in await _requests(session_factory) if r.tool_name == "account_ask"]
+    # Dana's own request, waiting for the owner's yes: the house's thing, he answers for it.
+    assert (request.concerned_id, request.by_domo, request.requester_id) == (
+        alex.id,
+        False,
+        dana.id,
+    )
+    assert record.model_result["who"] == "Alex"
+    assert await _live_accounts(session_factory) == []
+    assert await _yes_of(ctx, request.id, alex) == "executed"
+    [account] = await _live_accounts(session_factory)
+    assert account.given_by == dana.id
+
+
+async def test_on_his_own_it_is_judged_too(
+    session_factory: SessionFactory, monkeypatch: pytest.MonkeyPatch
+):
+    people = await _house(session_factory)
+    alex = people["Alex"]
+    gatekeeper = FakeGatekeeper()
+    await _removed_by_alex(session_factory, alex, gatekeeper)
+    judged = _judge(monkeypatch, Judgement("do"))
+    alone, reply_id = await _in_turn(
+        session_factory, alex, gatekeeper, on_his_own=True, reply_message_id=None
+    )
+    asked = _call("account_ask", {**ACCOUNT, "giver": "Dana", "note": WORDS})
+    record = await handle_tool_call(asked, ctx=alone, reply_id=reply_id)
+    assert record.status == "done", record.model_result
+    [case] = judged.cases
+    assert case.action["facts"]["removed_by_owner"] is True  # type: ignore[index]
+    [account] = await _live_accounts(session_factory)
+    assert account.given_by == people["Dana"].id
+
+
+async def test_an_owner_s_deny_on_account_ask_refuses_before_the_judge(
+    session_factory: SessionFactory, monkeypatch: pytest.MonkeyPatch
+):
+    people = await _house(session_factory)
+    alex, dana = people["Alex"], people["Dana"]
+    gatekeeper = FakeGatekeeper()
+    await _removed_by_alex(session_factory, alex, gatekeeper)
+    async with session_factory() as writer:
+        writer.add(
+            PolicyRight(
+                person_id=dana.id,
+                action_type="account.ask",
+                access="deny",
+                summary="Dana asks for no account.",
+                owner_words="Dana ne demande aucun compte",
+                created_by=alex.id,
+            )
+        )
+        await writer.commit()
+    judged = _judge(monkeypatch, Judgement("do"))
+    ctx, reply_id = await _in_turn(session_factory, dana, gatekeeper)
+    record = await handle_tool_call(_call("account_ask", ACCOUNT), ctx=ctx, reply_id=reply_id)
+    assert record.status == "refused"
+    assert judged.cases == [] and await _live_accounts(session_factory) == []
+
+
+async def test_an_adult_s_agreement_from_a_right_never_replaces_the_owner_s_yes(
+    session_factory: SessionFactory, monkeypatch: pytest.MonkeyPatch
+):
+    # Fix round 1 (ruling R71): the owner the tool names stays the least approver of a removed
+    # house account asked again, even when a right asks an adult's agreement for Dana.
+    people = await _people(
+        session_factory, ("Alex", "owner"), ("Dana", "adult"), ("Tom", "adult"), grants=False
+    )
+    alex, dana, tom = people["Alex"], people["Dana"], people["Tom"]
+    gatekeeper = FakeGatekeeper()
+    await _removed_by_alex(session_factory, alex, gatekeeper)
+    async with session_factory() as writer:
+        writer.add(
+            PolicyRight(
+                person_id=dana.id,
+                action_type="account.ask",
+                access="allow",
+                approver="adult",
+                summary="Dana asks for an account with an adult's agreement.",
+                owner_words="Dana demande un compte avec l'accord d'un adulte",
+                created_by=alex.id,
+            )
+        )
+        await writer.commit()
+    _judge(monkeypatch, DOUBT)
+    ctx, reply_id = await _in_turn(session_factory, dana, gatekeeper)
+    record = await handle_tool_call(_call("account_ask", ACCOUNT), ctx=ctx, reply_id=reply_id)
+    assert record.status == "waiting", record.model_result
+    [request] = [r for r in await _requests(session_factory) if r.tool_name == "account_ask"]
+    assert request.approver_kind == "owner"
+    # Another adult's yes does not open it again.
+    outcome, _ = await decide_confirmation(
+        session_factory=session_factory,
+        confirmation_id=request.id,
+        decider=tom,
+        approve=True,
+        via="button",
+        reply_message_id=None,
+        ctx_factory=requester_context(ctx),
+        registry=ctx.registry,
+        policy=DEFAULT_POLICY,
+        now=LIVE,
+    )
+    assert outcome != "executed"
+    assert await _live_accounts(session_factory) == []
+    assert await _yes_of(ctx, request.id, alex) == "executed"
+    assert len(await _live_accounts(session_factory)) == 1
+
+
+class _RemovedWhileJudged:
+    """A judge that answers ``do``, while the owner gives the house account ``lights`` and removes
+    it in the meantime: what it weighed is no longer what runs."""
+
+    def __init__(self, session_factory: SessionFactory, owner: Person) -> None:
+        self.cases: list[Any] = []
+        self._session_factory = session_factory
+        self._owner = owner
+
+    async def __call__(self, model: object, case: Any, **_: object) -> Judgement:
+        self.cases.append(case)
+        if len(self.cases) == 1:
+            async with self._session_factory() as writer:
+                made = await ask_account(
+                    writer,
+                    FakeGatekeeper(),  # type: ignore[arg-type]
+                    name="lights",
+                    person_id=None,
+                    giver=self._owner,
+                    hosts=[("192.168.1.20", 8123)],
+                    place=PLACE.validate_python(TOKEN),
+                    by=str(self._owner.id),
+                    form=None,
+                )
+                await remove_account(writer, account=made.account, by=str(self._owner.id), now=LIVE)
+                await writer.commit()
+        return Judgement("do")
+
+
+async def test_a_removal_by_the_owner_while_it_was_judged_is_never_run_unweighed(
+    session_factory: SessionFactory, monkeypatch: pytest.MonkeyPatch
+):
+    # Fix round 1: judged while the account was not removed, then removed by the owner before it
+    # runs: it is asked again with that removal, never opened on what nobody weighed.
+    people = await _house(session_factory)
+    gatekeeper = FakeGatekeeper()
+    judged = _RemovedWhileJudged(session_factory, people["Alex"])
+    monkeypatch.setattr(execution_module, "judge", judged)
+    ctx, reply_id = await _in_turn(session_factory, people["Dana"], gatekeeper)
+    record = await handle_tool_call(_call("account_ask", ACCOUNT), ctx=ctx, reply_id=reply_id)
+    assert judged.cases[0].action["facts"]["removed_by_owner"] is False
+    assert record.status != "done", record.model_result
+    assert await _live_accounts(session_factory) == []
+
+
+async def test_a_stored_request_runs_only_on_the_removal_it_was_judged_with(
+    session_factory: SessionFactory,
+):
+    # The tool's own check: what was described (the removal and its day) must still hold.
+    people = await _house(session_factory)
+    alex, dana = people["Alex"], people["Dana"]
+    gatekeeper = FakeGatekeeper()
+    await _removed_by_alex(session_factory, alex, gatekeeper)
+    ctx, _ = await _in_turn(session_factory, dana, gatekeeper)
+    tool = TOOLS["account_ask"]
+    weighed = await tool.describe(ACCOUNT, ctx.actor, ctx)
+    unweighed = replace(
+        weighed, facts={**weighed.facts, "removed_by_owner": False, "removed_on": None}
+    )
+    with pytest.raises(InvalidArguments) as refused:
+        await tool.execute(ACCOUNT, replace(ctx, described_action=unweighed))
+    assert str(refused.value.detail).startswith("removed_by_owner")
+    other_day = replace(weighed, facts={**weighed.facts, "removed_on": "2000-01-01"})
+    with pytest.raises(InvalidArguments):
+        await tool.execute(ACCOUNT, replace(ctx, described_action=other_day))
+    assert await _live_accounts(session_factory) == []
+    await tool.execute(ACCOUNT, replace(ctx, described_action=weighed))
+    assert len(await _live_accounts(session_factory)) == 1
+
+
+# --- the owner's decision D8: he removes on his own an account that no longer serves ---------
+
+
+async def test_on_his_own_he_removes_an_account_judged_do_and_it_is_shown_as_his(
+    session_factory: SessionFactory, monkeypatch: pytest.MonkeyPatch
+):
+    people = await _house(session_factory)
+    alex = people["Alex"]
+    gatekeeper = FakeGatekeeper()
+    owners, _ = await _in_turn(session_factory, alex, gatekeeper)
+    await run("account_ask", owners, **ACCOUNT)
+    judged = _judge(monkeypatch, Judgement("do"))
+    alone, reply_id = await _in_turn(
+        session_factory, alex, gatekeeper, on_his_own=True, reply_message_id=None
+    )
+    removing = _call("account_remove", {"name": "lights", "for": "house"})
+    record = await handle_tool_call(removing, ctx=alone, reply_id=reply_id)
+    assert record.status == "done", record.model_result
+    # Shown like his other own acts: a card under his reply, judged as his.
+    assert record.card == {"key": "action.card.done.account.remove", "params": {"name": "lights"}}
+    assert record.action_id is not None
+    [case] = judged.cases
+    assert case.action["type"] == "account.remove"
+    assert await _live_accounts(session_factory) == []
+    (entry,) = await audit(session_factory, "outward.account_removed")
+    assert entry.actor == "domo" and entry.details["by_owner"] is False
+
+
+async def test_on_his_own_a_doubted_removal_waits_for_whom_the_account_belongs_to(
+    session_factory: SessionFactory, monkeypatch: pytest.MonkeyPatch
+):
+    people = await _house(session_factory)
+    alex, dana = people["Alex"], people["Dana"]
+    gatekeeper = FakeGatekeeper()
+    owners, _ = await _in_turn(session_factory, alex, gatekeeper)
+    await run("account_ask", owners, **ACCOUNT)
+    danas, _ = await _in_turn(session_factory, dana, gatekeeper)
+    await run("account_ask", danas, **{**ACCOUNT, "name": "music", "for": "me"})
+    _judge(monkeypatch, DOUBT)
+    for arguments in (
+        {"name": "lights", "for": "house"},
+        {"name": "music", "for": "person", "of": "Dana"},
+    ):
+        alone, reply_id = await _in_turn(
+            session_factory, alex, gatekeeper, on_his_own=True, reply_message_id=None
+        )
+        record = await handle_tool_call(
+            _call("account_remove", arguments), ctx=alone, reply_id=reply_id
+        )
+        assert record.status == "waiting", record.model_result
+    asked = [r for r in await _requests(session_factory) if r.tool_name == "account_remove"]
+    # The house's waits for the owner, Dana's own for Dana.
+    assert {r.arguments["name"]: r.concerned_id for r in asked} == {
+        "lights": alex.id,
+        "music": dana.id,
+    }
+    assert len(await _live_accounts(session_factory)) == 2
+
+
+async def test_on_his_own_sharing_a_house_account_is_still_refused(
+    session_factory: SessionFactory, monkeypatch: pytest.MonkeyPatch
+):
+    people = await _house(session_factory)
+    alex = people["Alex"]
+    gatekeeper = FakeGatekeeper()
+    owners, _ = await _in_turn(session_factory, alex, gatekeeper)
+    await run("account_ask", owners, **ACCOUNT)
+    judged = _judge(monkeypatch, Judgement("do"))
+    alone, reply_id = await _in_turn(
+        session_factory, alex, gatekeeper, on_his_own=True, reply_message_id=None
+    )
+    sharing = _call("account_share", {"name": "lights", "guests": True})
+    record = await handle_tool_call(sharing, ctx=alone, reply_id=reply_id)
+    assert record.status == "refused" and judged.cases == []
+
+
+# --- the facts the subject rules read come from the real tools ----------------------------------
+
+
+async def test_the_facts_the_subject_rules_read_are_the_outward_tools_own(
+    session_factory: SessionFactory,
+):
+    # ``policy.subjects.SUBJECT_RULES`` reads ``name``, ``for_house``, ``giver``, ``of``, ``host``
+    # and ``port``: each is what the tools of going out really describe.
+    people = await _house(session_factory)
+    alex, dana = people["Alex"], people["Dana"]
+    gatekeeper = FakeGatekeeper()
+    owners, _ = await _in_turn(session_factory, alex, gatekeeper)
+    danas, _ = await _in_turn(session_factory, dana, gatekeeper)
+    house_ask = await TOOLS["account_ask"].describe(ACCOUNT, owners.actor, owners)
+    own = {**ACCOUNT, "name": "music", "for": "me"}
+    own_ask = await TOOLS["account_ask"].describe(own, danas.actor, danas)
+    await run("account_ask", owners, **ACCOUNT)
+    await run("account_ask", danas, **own)
+    house_remove = await TOOLS["account_remove"].describe(
+        {"name": "lights", "for": "house"}, owners.actor, owners
+    )
+    own_remove = await TOOLS["account_remove"].describe(
+        {"name": "music", "for": "person", "of": "Dana"}, owners.actor, owners
+    )
+    opened = await TOOLS["address_open"].describe(ADDRESS, owners.actor, owners)
+    closed = await TOOLS["address_close"].describe(ADDRESS, owners.actor, owners)
+    expected = (
+        (house_ask, Subject("account:house:lights", "house"), alex.id),
+        (house_remove, Subject("account:house:lights", "house"), alex.id),
+        (own_ask, Subject(f"account:person:{dana.id}:music", dana.id), dana.id),
+        (own_remove, Subject(f"account:person:{dana.id}:music", dana.id), dana.id),
+        (opened, Subject("address:192.168.1.20:8123", "house"), alex.id),
+        (closed, Subject("address:192.168.1.20:8123", "house"), alex.id),
+    )
+    async with session_factory() as reader:
+        for action, subject, answers in expected:
+            # Whoever's turn it is in, the thing is the same, and so is who answers for it.
+            found = subject_of(action, None, uuid.uuid4())
+            assert found == subject, action.action_type
+            assert await concerned_of(reader, found, action, LIVE) == answers

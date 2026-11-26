@@ -402,6 +402,33 @@ async def test_a_house_trigger_is_judged_with_domo_rights(owner_chat: ChatPilot)
     assert (await trigger_row(server, trigger_id)).state == "done"
 
 
+async def test_a_trigger_the_rules_refuse_wakes_him_once_and_stands(owner_chat: ChatPilot, grant):
+    server = owner_chat.server
+    model = owner_chat.use_model(FakeChatModel(["I will ask."]))
+    tool = await add_tool(server.session_factory, "tally")
+    await grant("made.tally", person=owner_chat.person, ask="yes")
+    trigger_id = await add_trigger(
+        server,
+        tool,
+        kind="time",
+        due_at=server.clock() + LATER,
+        repeat="FREQ=DAILY",
+        for_person_id=owner_chat.person.id,
+    )
+    server.clock.advance(LATER)
+    await run_the_pass(server)
+    server.clock.advance(timedelta(days=1))
+    await run_the_pass(server)
+    assert ran(server.sandbox) == []
+    # Told once, with the reason, the same refusal the next day being noted and not told again.
+    [call] = tool_calls(model.calls)
+    [told] = data_lines(call.system, "tally")
+    assert (told["trouble"], told["reason"]) == ("launch_refused", "needs_confirmation")
+    # The trigger stands: it goes on at its next time.
+    trigger = await trigger_row(server, trigger_id)
+    assert trigger.state == "waiting" and trigger.due_at is not None
+
+
 async def test_a_house_wake_wakes_the_owner(owner_chat: ChatPilot, adult_chat: ChatPilot):
     server = owner_chat.server
     server.sandbox = by_program(tally=waking({"count": 3}))

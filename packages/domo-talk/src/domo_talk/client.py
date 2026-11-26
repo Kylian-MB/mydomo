@@ -27,7 +27,6 @@ _LINE_END = re.compile(r"\r\n|\r|\n")
 _LISTEN_QUIET_LIMIT = 90.0
 
 _SENTENCES = {
-    "busy": "The assistant is still writing a reply. Try again in a moment.",
     "no_key": "The assistant cannot answer yet: he has no key to think with.",
     "too_long": "That is too long to send.",
     "not_sayable": "The assistant cannot take that message.",
@@ -274,9 +273,14 @@ class Client:
         return Saved(url=url, secret=secret, ca=ca)
 
     def say(self, text: str) -> Iterator[Event]:
-        """Say ``text`` to Domo, then give the events of his reply as they come."""
+        """Say ``text`` to Domo, then give the events of his reply as they come. While he writes a
+        reply, the message is kept for it: no event here, what answers it comes as what he says on
+        his own (``listen``)."""
         response = self._call("POST", "/messages", json={"text": text})
-        reply_id = _object(response).get("reply_id")
+        answer = _object(response)
+        if answer.get("kept") is True:
+            return
+        reply_id = answer.get("reply_id")
         if not isinstance(reply_id, str):
             raise Refused("bad_answer")
         self.last_reply = reply_id
@@ -326,7 +330,7 @@ class Client:
                 json={"means": means, "answer": answer},
             )
         except Refused as refused:
-            if refused.error == "busy":  # here it is the passwords that wait, not a reply
+            if refused.error == "busy":  # too many passwords wait to be checked
                 raise Refused("busy", _PROOF_BUSY) from None
             raise
         found = _object(response)

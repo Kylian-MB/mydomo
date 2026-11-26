@@ -21,7 +21,8 @@ a chain that stopped (``tools.chain.ChainContinue``).
    Still open: the chain pauses there (``_pause``: the request is ``waiting_arrival``, waiting
    for that invitation, ``chain.paused`` is audited), and the upkeep resumes it once the
    invitation is accepted (``confirmations.arrivals``). Ended, or none: the chain stops there
-   (``NOT_ARRIVED``). A chain that runs at once never waits: nobody said yes to it
+   (``NOT_ARRIVED``). A chain that runs at once never waits for an arrival (one that waits keeps
+   a request: ``conversation.execution.run_with_a_request``): it would stop there
    (``needs_confirmation``);
 1. the step is described again by its tool, with the facts of now (Ruling R6), within
    ``_DESCRIBE_SECONDS``, for the person as the chain judges them
@@ -40,13 +41,18 @@ a chain that stopped (``tools.chain.ChainContinue``).
    chain that runs at once, as any call of the person's (``decide_now``), the steps it did so far
    counting in the history a limit reads. Rights or facts that cannot be read stop the chain
    before the step runs (``CHECK_FAILED``). A ``Refuse`` stops the chain, with its reason. A
-   ``NeedsApproval`` stops a chain that runs at once, and a chain the judge let through under a
-   request (``decided_via`` ``judge``): nobody said yes to it (``needs_confirmation``, spec 4.7,
-   F28). In a request somebody said yes to, the yes of the chain covers the step
+   ``NeedsApproval`` no yes covers makes the rest of the chain (that step and those after it)
+   wait for the barrier's approver for that step (``waiting``, JDG-9): nothing is dropped. In a
+   request somebody said yes to, the yes of the chain covers the step
    (``confirmations.store.covers``), unless the barrier now asks for a more demanding approver
    than the one who said yes (a right changed meanwhile): the request then waits for that yes
-   (Ruling R27), as ``confirmations.service`` reroutes a request, with its steps done so far kept
-   (``waiting``); the yes of the right person runs the rest;
+   (Ruling R27), as ``confirmations.service`` reroutes a request, with its steps done so far kept.
+   A chain the judge let through under a request (``decided_via`` ``judge``: nobody said yes to
+   it) waits the same way, asking what the owner's rule on the step asks, else a plain yes of the
+   approver. A chain that runs at once has no request: the run says where it waits
+   (``ChainRun.asked``, ``RestAsked``), and its caller stores the request for its rest
+   (``tools.chain``). The yes of the right person runs the rest, each step again under the
+   barrier; their no ends it;
 3. it runs, as a call the barrier allowed (``conversation.execution.execute_allowed``, which
    limits its time), in the context of the one who asked, told the action it was described as now
    (``ToolContext.described_action``) and that it is a step of a chain (``ToolContext.in_a_chain``:
@@ -127,7 +133,13 @@ from domo_core.confirmations.steps import (
     mark_step,
     steps_of,
 )
-from domo_core.confirmations.store import action_type_of, covers, requester_of
+from domo_core.confirmations.store import (
+    action_type_of,
+    asked_of,
+    covers,
+    requester_of,
+    warned_one,
+)
 from domo_core.conversation.execution import (
     LIMIT_ERROR_DETAIL,
     WHO_SAYS_YES,
@@ -138,6 +150,7 @@ from domo_core.household.models import Invitation
 from domo_core.household.service import is_open, resolve_invitation
 from domo_core.llm.types import JsonObject
 from domo_core.policy.actions import DescribedAction
+from domo_core.policy.asks import Asked, most_demanding_asked
 from domo_core.policy.barrier import (
     Allow,
     Decision,
@@ -145,13 +158,20 @@ from domo_core.policy.barrier import (
     Refuse,
     record_decision,
 )
-from domo_core.policy.catalog import is_made
+from domo_core.policy.catalog import is_made, warned_since
 from domo_core.policy.decision import ChainBasis, decide_in_chain, decide_now, judged_actor
+from domo_core.policy.rights import Approver
 from domo_core.policy.roles import Actor
 from domo_core.prompts import ChainReport, JustDecided
 from domo_core.text import name_key
 from domo_core.texts.view import REFERENCE
-from domo_core.tools.context import InternalTool, InvalidArguments, ToolContext, ToolOutcome
+from domo_core.tools.context import (
+    InternalTool,
+    InvalidArguments,
+    ToolContext,
+    ToolOutcome,
+    brings_outside_text,
+)
 
 if TYPE_CHECKING:
     from domo_core.confirmations.service import AmendOutcome, DecideOutcome
@@ -258,13 +278,34 @@ class StepDone:
 
 
 @dataclass(frozen=True)
+class RestAsked:
+    """Where a chain that runs at once met someone's agreement (it has no request to wait with):
+    the step (``position``, from 0) as its tool described it now (``action``), the person as the
+    barrier judged them (``judged``), the barrier's decision (``need``: whose agreement, what the
+    owner's rule on it asks, the question a limit asked), and the steps this run did before it
+    (``done``: each one's position, action and card, in order). Its caller stores the request for
+    the rest (``tools.chain``). ``need`` is an ``Allow`` only for a step that became one a judge
+    must weigh first (``newly_warned``: the last key): ``plain_yes``, the rest then waits for the
+    person's own plain yes (an approver's, when the barrier asks one), never runs at once."""
+
+    position: int
+    judged: Actor
+    action: DescribedAction
+    need: Allow | NeedsApproval
+    done: tuple[tuple[int, DescribedAction, JsonObject], ...]
+    plain_yes: bool = False
+
+
+@dataclass(frozen=True)
 class ChainRun:
     """What came of a run of a chain: ``done`` when every step it did ended ``done``; ``failed``
     when a step stopped it (``failed``, with the positions of the steps it did not run in
     ``left``); ``waiting`` when its request waits for someone else's yes again (``need``: whose;
     ``left``: the steps still to run, from the one that asked for it);
     ``paused`` when its request waits for someone's arrival (``waiting_for``: the name of their
-    invitation; ``left``: the steps still to run, from the one that waits).
+    invitation; ``left``: the steps still to run, from the one that waits). A chain that runs at
+    once and waits for someone's agreement has no request yet: ``asked`` says where (its caller
+    stores the request for the rest).
     ``done`` are the steps this run did, in order; ``earlier`` how many an earlier run of the same
     request did (a chain continued after it stopped). ``buttons`` are what the steps done left for
     the one who asked, each behind its own button on the chain's card, in the order of the steps:
@@ -278,6 +319,36 @@ class ChainRun:
     earlier: int = 0
     buttons: tuple[StepButton, ...] = ()
     waiting_for: str | None = None
+    asked: RestAsked | None = None
+    # A chain that waits for the person's own yes again (``need`` is ``None``): a step became one
+    # a judge must weigh first (``newly_warned``).
+    their_yes: bool = False
+
+
+def newly_warned(action: DescribedAction, step: PlannedStep) -> bool:
+    """Whether ``action``, the step described now, carries a fact a judge must weigh first
+    (``catalog.WARNED_FACTS``: the last key) that was not true when the chain was asked for and
+    judged (``step.action``; a step checked in its turn had none): the yes or the verdict given
+    then did not know it, so the step never runs on it."""
+    return warned_since(
+        action.action_type, action.facts, None if step.action is None else step.action.facts
+    )
+
+
+def stopped_without_a_request(run: ChainRun) -> ChainRun:
+    """The run of a chain that ran at once whose rest could not be stored as a request
+    (``run.asked``: a database error, or too long): told as a chain that stopped at that step,
+    nobody having said yes to it (``needs_confirmation``), with the steps it did, which ran and
+    are told and counted (their types on its card). Nothing is written. ``ValueError`` for a run
+    that does not wait so."""
+    asked = run.asked
+    if asked is None:
+        raise ValueError("only a chain that ran at once and waits for someone's yes stops so")
+    reason = "needs_confirmation"
+    failed = StepDone(
+        asked.position, asked.action.action_type, "failed", reason, _refused_result(reason, None)
+    )
+    return replace(run, status="failed", failed=failed, left=run.left[1:], need=None, asked=None)
 
 
 def waits_again(record: ActionRecord) -> bool:
@@ -446,6 +517,9 @@ class _Runner:
     done: list[StepDone] = field(default_factory=lambda: [])
     # What the steps done left for the one who asked, earlier runs included, in order.
     buttons: list[StepButton] = field(default_factory=lambda: [])
+    # The steps this run did, each its position, action and card, in order (a chain that runs at
+    # once keeps them on the request for its rest: ``RestAsked``).
+    done_here: list[tuple[int, DescribedAction, JsonObject]] = field(default_factory=lambda: [])
 
     def _ran(
         self,
@@ -455,9 +529,12 @@ class _Runner:
         left: tuple[int, ...] = (),
         need: NeedsApproval | None = None,
         waiting_for: str | None = None,
+        asked: RestAsked | None = None,
+        their_yes: bool = False,
     ) -> ChainRun:
         """What came of the run, with what the steps done so far carried."""
         return ChainRun(
+            their_yes=their_yes,
             status=status,
             done=tuple(self.done),
             failed=failed,
@@ -466,6 +543,7 @@ class _Runner:
             earlier=self.earlier,
             buttons=tuple(self.buttons),
             waiting_for=waiting_for,
+            asked=asked,
         )
 
     def _left_from(self, position: int) -> tuple[int, ...]:
@@ -521,14 +599,26 @@ class _Runner:
             case Refuse(reason=reason, limit=limit):
                 return await self._stop(position, step, reason, audited=audited, limit=limit)
             case NeedsApproval():
-                if self.request_id is None or self.decider is None or not self.said_yes:
-                    # Nobody said yes to a chain that runs at once, nor to one the judge let
-                    # through (F28): it stops, it is never sent to someone for their yes.
-                    return await self._stop(position, step, "needs_confirmation", audited=audited)
-                if not covers(self.given, decision.approver, self.decider, self.ctx.person.id):
+                if self.request_id is None:
+                    # Nobody said yes to a chain that runs at once: its rest waits for the
+                    # approver's yes, in a request its caller stores (JDG-9).
+                    asked = RestAsked(position, judged, action, decision, tuple(self.done_here))
+                    return self._ran(
+                        "waiting", left=self._left_from(position), need=decision, asked=asked
+                    )
+                if (
+                    self.decider is None
+                    or not self.said_yes
+                    or not covers(self.given, decision.approver, self.decider, self.ctx.person.id)
+                ):
+                    # No yes covers the step (nobody said one to a chain the judge let through):
+                    # its rest waits for the approver's yes (Ruling R27, JDG-9).
                     return await self._reroute(position, step, decision, judged, action)
             case Allow():
                 pass
+        if newly_warned(action, step):
+            # It became the last key since the chain was asked for and judged: never at once.
+            return await self._warned_again(position, step, decision, judged, action)
         record = await execute_allowed(
             tool,
             step.tool_name,
@@ -547,6 +637,7 @@ class _Runner:
         if self.request_id is None:
             self.unrecorded.append(action.action_type)
         self.done.append(StepDone(position, step.action_type, "done", None, record.model_result))
+        self.done_here.append((position, action, dict(record.card)))
         button = button_of(position, record.card)
         if button is not None:
             self.buttons.append(button)
@@ -811,6 +902,83 @@ class _Runner:
                 await session.commit()
         return self._ran("paused", left=self._left_from(position), waiting_for=name)
 
+    async def _warned_again(
+        self,
+        position: int,
+        step: PlannedStep,
+        decision: Allow | NeedsApproval,
+        judged: Actor,
+        action: DescribedAction,
+    ) -> ChainRun:
+        """The step became one a judge must weigh first (``newly_warned``): it is sent back for a
+        plain yes, never run on what was known before. A chain that runs at once: its rest waits
+        in a request its caller stores (``RestAsked.plain_yes``). A request: it waits again, for
+        the approver the barrier asks for the step, else the person's own yes, a plain yes the
+        judge's (``Asked("yes", "judge")``), its step stored as it is described now (its facts say
+        why); audited as a reroute, committed."""
+        need = decision if isinstance(decision, NeedsApproval) else None
+        if self.request_id is None:
+            asked = RestAsked(
+                position, judged, action, decision, tuple(self.done_here), plain_yes=True
+            )
+            return self._ran(
+                "waiting",
+                left=self._left_from(position),
+                need=need,
+                asked=asked,
+                their_yes=need is None,
+            )
+        with anyio.fail_after(_STORE_SECONDS):
+            async with self.ctx.session_factory() as session:
+                found = await session.execute(
+                    select(Confirmation)
+                    .where(Confirmation.id == self.request_id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+                c = found.scalar_one_or_none()
+                if c is None or c.status != "executing":
+                    raise LookupError("the request of the chain is not being carried out")
+                before = c.approver_kind
+                c.status = "pending"
+                # His own yes is nobody's: a chain of his waits for the owner.
+                c.approver_kind = (
+                    ("owner" if c.by_domo else "self") if need is None else need.approver
+                )
+                c.ask_reason = None if need is None else need.question
+                c.ask, c.asked_by, c.ask_why, c.warned = "yes", "judge", None, False
+                c.decided_by = None
+                c.decided_at = None
+                c.decided_via = None
+                c.decided_message_id = None
+                row = await session.execute(
+                    select(ConfirmationStep).where(
+                        ConfirmationStep.confirmation_id == c.id,
+                        ConfirmationStep.position == position,
+                    )
+                )
+                stored = row.scalar_one_or_none()
+                if stored is not None:
+                    # The yes to come is given to the step as it is described now.
+                    stored.action = dict(action.as_json())
+                await session.flush()
+                await record_decision(session, judged, action, decision, tool_name=step.tool_name)
+                await append_audit(
+                    session,
+                    actor=f"person:{self.ctx.person.id}",
+                    action="confirmation.rerouted",
+                    details={
+                        "confirmation_id": str(c.id),
+                        "action_type": action_type_of(c),
+                        "approver_kind": c.approver_kind,
+                        "before": before,
+                    },
+                )
+                await session.commit()
+        return self._ran(
+            "waiting", left=self._left_from(position), need=need, their_yes=need is None
+        )
+
     async def _reroute(
         self,
         position: int,
@@ -822,7 +990,9 @@ class _Runner:
         """The yes given to the chain does not cover the step (a more demanding approver is asked
         for now): its request waits for that yes again (Ruling R27), asking what it asked, with
         what Domo could not tell when a limit sends it to the owner, and its age; nothing of the
-        yes is kept on it. Audited as ``confirmations.service`` reroutes a request (the barrier's
+        yes is kept on it. A chain the judge let through (nobody said yes, it asked nothing) asks
+        what the owner's rule on the step asks (``need.rule``, asked by ``rule``), else a plain yes
+        of the approver. Audited as ``confirmations.service`` reroutes a request (the barrier's
         decision on the step, then ``confirmation.rerouted``), committed."""
         assert self.request_id is not None and self.decider is not None
         with anyio.fail_after(_STORE_SECONDS):
@@ -840,6 +1010,11 @@ class _Runner:
                 c.status = "pending"
                 c.approver_kind = need.approver
                 c.ask_reason = need.question
+                if not self.said_yes:
+                    rule = None if need.rule is None else Asked(need.rule, "rule")
+                    asked = most_demanding_asked(asked_of(c), rule) or Asked("yes", "approver")
+                    c.ask, c.asked_by, c.ask_why = asked.ask, asked.by, asked.why
+                    c.warned = asked.warned
                 c.decided_by = None
                 c.decided_at = None
                 c.decided_via = None
@@ -987,9 +1162,9 @@ def chain_outcome(run: ChainRun, *, total: int, at_once: bool) -> ToolOutcome:
                 },
             )
         case "waiting":
-            if run.need is None:
+            if run.need is None and not run.their_yes:
                 raise ValueError("a chain that waits says for whom")
-            approver = run.need.approver
+            approver: Approver = "self" if run.need is None else run.need.approver
             return ToolOutcome(
                 "done",
                 {
@@ -1128,6 +1303,17 @@ async def request_told(
     )
 
 
+def _gives_outside_text(action_type: str | None) -> bool:
+    """Whether the result of a call stored under ``action_type`` is text of a program (a tool he
+    made, a program run by hand): a chain holds no such step, so it is never in it."""
+    return action_type is not None and brings_outside_text(action_type)
+
+
+# The outcomes of a request its answer settled: it ran, failed or was refused. Any other (asked
+# again, waiting for someone else or a proof, too late) decided nothing.
+_SETTLED: Final = frozenset({"executed", "failed", "refused"})
+
+
 async def just_decided(
     session: AsyncSession,
     c: Confirmation,
@@ -1174,4 +1360,17 @@ async def just_decided(
         woken=woken,
         chain=await chain_report(session, c, someone_else=told_to_someone_else),
         approver_note=c.approver_note if by_someone_else else None,
+        from_outside=record is not None and _gives_outside_text(record.action_type),
+        # The one it belongs to answered a warning in their words, and it was settled by them now:
+        # settle the next times with them (never for a chain: which of its types the warning was
+        # about is not known).
+        could_not_be_undone=(
+            action_type_of(c)
+            if not woken
+            and outcome in _SETTLED
+            and c.decided_by == decider.id
+            and decider.id == warned_one(c)
+            and action_type_of(c) != "chain.run"
+            else None
+        ),
     )
