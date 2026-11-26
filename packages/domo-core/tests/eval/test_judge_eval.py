@@ -30,6 +30,7 @@ It costs real money: one short call per case and run, so about three calls per c
 cases make 63 calls of one short answer each (at most 500 tokens out, a few thousand in).
 """
 
+import hashlib
 import json
 import os
 from collections import Counter
@@ -283,6 +284,31 @@ def _full_case() -> JudgeCase:
     )
 
 
+# The SHA-256 of the assistant's former name, in lower case: the cases must never hold it, and the
+# repository must not either, so only its hash is kept.
+_FORMER_NAME_SHA256 = "dda820158d142a0b73380cd3efa9ff7d9fa11336e9ba4b3693098964537d61a3"
+_FORMER_NAME_LENGTH = 6
+
+
+def _holds_the_former_name(text: str) -> bool:
+    """Whether ``text`` holds the former name anywhere, in any case, glued to other characters
+    or not (as a search for it would find it): every stretch of its length is compared by hash."""
+    folded = text.casefold()
+    return any(
+        hashlib.sha256(folded[start : start + _FORMER_NAME_LENGTH].encode()).hexdigest()
+        == _FORMER_NAME_SHA256
+        for start in range(len(folded) - _FORMER_NAME_LENGTH + 1)
+    )
+
+
+def test_the_former_name_is_found_even_glued_to_other_letters():
+    # Built from pieces, so that the repository never holds it whole.
+    name = "".join(chr(code) for code in (74, 65, 82, 86, 73, 83))
+    for text in (name, f"hey{name}bot", f"{name.lower()}'s", f"x{name.title()}2"):
+        assert _holds_the_former_name(text), text
+    assert not _holds_the_former_name("the assistant judges first")
+
+
 def _texts_of(value: object) -> list[str]:
     """Every string of ``value``, at any depth."""
     if isinstance(value, str):
@@ -345,9 +371,9 @@ def test_the_cases_are_whole_cases_as_the_code_writes_them(cases: list[dict[str,
             twin = next(other for other in cases if other["id"] == case["twin"])
             assert twin["verdicts_ok"] == case["verdicts_ok"], name
             assert twin["verdicts_never"] == case["verdicts_never"], name
-        # Never the former name, and nothing a model or a vendor could hang itself on.
-        everything = " ".join(_texts_of(case)).casefold()
-        assert "jarvis" not in everything, name
+        # Never the assistant's former name, and nothing a model or a vendor could hang itself
+        # on. The name is not written here either: it is looked for by its hash.
+        assert not _holds_the_former_name(" ".join(_texts_of(case))), name
 
 
 def test_the_judge_cases_the_evaluation_needs_are_there(cases: list[dict[str, Any]]):

@@ -176,6 +176,62 @@ async def test_chain_continue_reruns_a_step_refused_by_the_barrier_under_the_sam
     ]
 
 
+async def test_a_continued_chain_whose_record_of_a_step_runs_out_of_time_is_not_known(
+    adult_chat,
+    grant,
+    revoke_right,
+    confirmation_status,
+    count_invitations,
+    stored_notes,
+    monkeypatch,
+):
+    # Taken up again under the same yes, the chain runs its steps, but writing that the last one
+    # ran runs out of time (a machine that stalls longer than that): it may have run, and the
+    # model is told so, never a bare failure.
+    right = await grant("household.invite", person=adult_chat.person, access="allow")
+    reply = await adult_chat.say_with_tool(
+        TOOL,
+        chain(
+            ("household_invite", {"display_name": "Jo", "role": "guest"}),
+            ("note_leave", {"recipient": "Owner", "text": "x"}),
+        ),
+    )
+    cid = reply.pending_confirmation_id
+    await revoke_right(right)
+    no = await grant("household.invite", person=adult_chat.person, access="deny")
+    assert (await adult_chat.confirm_last(reply)).status == "failed"
+    await revoke_right(no)
+    real_mark_step = chain_run.mark_step
+
+    async def stalls_when_done(session, request_id, position, **kwargs):
+        if kwargs.get("status") == "done" and position == 1:
+            await anyio.sleep(30)
+        return await real_mark_step(session, request_id, position, **kwargs)
+
+    monkeypatch.setattr(chain_run, "_STORE_SECONDS", 0.5)
+    monkeypatch.setattr(chain_run, "mark_step", stalls_when_done)
+    again = await adult_chat.say_with_tool(CONTINUE, {"request_id": str(cid)}, judge="do")
+    assert again.actions == [{"tool": CONTINUE, "status": "failed", "reason": "timeout"}]
+    result = again.model_results[-1]
+    assert (result["status"], result["reason"], result["outcome"]) == (
+        "failed",
+        "timeout",
+        "unknown",
+    )
+    assert "may have happened" in result["detail"]
+    assert await confirmation_status(cid) == "failed"
+    assert await count_invitations() == 1
+    assert [note.text for note in await stored_notes()] == ["x"]
+
+    # Whether the note's step ran is not known: the chain is never taken up again, so the note
+    # is never left twice.
+    monkeypatch.setattr(chain_run, "mark_step", real_mark_step)
+    once_more = await adult_chat.say_with_tool(CONTINUE, {"request_id": str(cid)}, judge="do")
+    assert once_more.actions[-1]["status"] != "done", once_more.model_results
+    assert [note.text for note in await stored_notes()] == ["x"]
+    assert await count_invitations() == 1
+
+
 @pytest.mark.parametrize("failing", [1, 2], ids=["first step", "last step"])
 async def test_a_step_that_failed_before_running_is_rerun_under_the_same_yes(
     failing,

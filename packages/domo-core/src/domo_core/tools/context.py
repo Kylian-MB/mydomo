@@ -94,6 +94,12 @@ class OwnIdea:
     lacks_the_right: bool = False
 
 
+class NothingDoneInTime(TimeoutError):
+    """A step of a tool that changes nothing (describing, planning) took too long: nothing was
+    done, and it may be tried again. Any other ``TimeoutError`` out of a tool leaves it unknown
+    whether the call happened (``conversation.execution.execute_allowed``)."""
+
+
 class InvalidArguments(Exception):
     """The arguments of a call cannot be acted on. ``code`` says why, in the words the model is
     given back; ``detail`` (optional) says more, for the model to correct its call.

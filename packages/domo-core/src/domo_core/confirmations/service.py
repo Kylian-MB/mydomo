@@ -287,6 +287,7 @@ from domo_core.tools.context import (
     InternalTool,
     InvalidArguments,
     NamesPeople,
+    NothingDoneInTime,
     OwnIdea,
     PlansSteps,
     ToolContext,
@@ -2138,7 +2139,9 @@ async def amend_confirmation(
         with anyio.move_on_after(_DESCRIBE_SECONDS):
             action = await tool.describe(arguments, actor, run_ctx)
         if action is None:
-            raise TimeoutError("describing the changed call took too long: nothing was changed")
+            raise NothingDoneInTime(
+                "describing the changed call took too long: nothing was changed"
+            )
         if action.action_type != action_type_of(c):
             raise InvalidArguments("invalid", "a change keeps the same kind of action")
 
@@ -2417,7 +2420,9 @@ async def _amend_his_own(
         with anyio.move_on_after(_DESCRIBE_SECONDS):
             action = await tool.describe(arguments, actor, run_ctx)
         if action is None:
-            raise TimeoutError("describing the changed call took too long: nothing was changed")
+            raise NothingDoneInTime(
+                "describing the changed call took too long: nothing was changed"
+            )
         if action.action_type != action_type_of(c):
             raise InvalidArguments("invalid", "a change keeps the same kind of action")
         decision = await decide_now(session, actor, action, run_ctx.policy, now)
@@ -3180,7 +3185,9 @@ async def _amend_rights(
         with anyio.move_on_after(_DESCRIBE_SECONDS):
             action = await tool.describe(arguments, actor, run_ctx)
         if action is None:
-            raise TimeoutError("describing the changed call took too long: nothing was changed")
+            raise NothingDoneInTime(
+                "describing the changed call took too long: nothing was changed"
+            )
         if action.action_type != action_type_of(c):
             raise InvalidArguments("invalid", "a change keeps the same kind of action")
         decision = await decide_now(session, actor, action, ctx.policy, now)
@@ -3436,7 +3443,7 @@ async def _amend_chain(
             speaker=decider.id,
         )
     if plan is None:
-        raise TimeoutError("planning the changed chain took too long: nothing was changed")
+        raise NothingDoneInTime("planning the changed chain took too long: nothing was changed")
 
     decision = plan.decision
     if isinstance(decision, Refuse):

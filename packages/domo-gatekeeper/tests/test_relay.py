@@ -780,18 +780,23 @@ async def test_an_encoding_that_cannot_be_decoded_is_refused_and_closed(vault, r
 
 
 PAYLOAD = b"your key is real-key, really"
+# Built when the module is imported, so with a fixed time in the gzip header (it writes the
+# current second otherwise): parallel workers that import it a second apart must collect the
+# same tests. The ids are plain names, never the bytes.
+_GZIPPED = gzip.compress(PAYLOAD, mtime=0)
 
 
 @pytest.mark.parametrize(
     ("coding", "body"),
     [
         ("identity", PAYLOAD),
-        ("gzip", gzip.compress(PAYLOAD)),
+        ("gzip", _GZIPPED),
         ("deflate", zlib.compress(PAYLOAD)),
         # Codings are listed in the order they were applied: gzip first, then deflate.
-        ("gzip, deflate", zlib.compress(gzip.compress(PAYLOAD))),
-        ("GZip,Deflate", zlib.compress(gzip.compress(PAYLOAD))),
+        ("gzip, deflate", zlib.compress(_GZIPPED)),
+        ("GZip,Deflate", zlib.compress(_GZIPPED)),
     ],
+    ids=["identity", "gzip", "deflate", "gzip-then-deflate", "mixed-case"],
 )
 async def test_identity_and_stacked_supported_encodings_are_accepted(vault, route_p1, coding, body):
     stream = TrackingStream([body[:7], body[7:]])

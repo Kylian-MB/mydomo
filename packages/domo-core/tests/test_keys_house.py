@@ -22,6 +22,7 @@ from domo_common.i18n import t
 from domo_core.accounts.models import Person
 from domo_core.channels.page.abilities import PAGE
 from domo_core.confirmations.describe import describe_type
+from domo_core.conversation import execution as execution_module
 from domo_core.conversation.prepare import UPKEEP_OUTPUT_TOKENS
 from domo_core.household.models import Invitation
 from domo_core.llm.catalog import shipped_catalog
@@ -37,7 +38,7 @@ from domo_core.texts.view import REFERENCE
 from domo_core.tools.context import InvalidArguments
 from domo_core.tools.registry import TOOLS
 from fakes import FakeChatModel, is_judge_call
-from sqlalchemy import select
+from sqlalchemy import select, text
 from test_key_tools import context_lines, error_of, key_new_button_url
 from test_spending import add_key
 
@@ -154,6 +155,58 @@ async def test_without_upkeep_the_page_shows_the_fixed_message(
     assert len(server.calls) == calls
     page = await paul_chat.get(KEY_NEW_PATH)
     assert page.status_code == 200 and 'name="kind"' in page.text
+
+
+async def test_names_read_too_slowly_do_nothing_and_say_it_may_be_tried_again(
+    owner_chat, paul_member, monkeypatch, caplog
+):
+    # The read that gives the people a call names their whole name, before anything is decided,
+    # is cut by its deadline: a machine that stalls longer than that (a shared build machine
+    # does) must leave nothing done, the model told why, and the next call working.
+    real_whole_names = execution_module.whole_names
+
+    async def frozen(session, *args, **kwargs):
+        await session.execute(text("SELECT pg_sleep(30)"))
+        return await real_whole_names(session, *args, **kwargs)
+
+    monkeypatch.setattr(execution_module, "_CHECK_SECONDS", 1.0)
+    monkeypatch.setattr(execution_module, "whole_names", frozen)
+    reply = await owner_chat.say_with_tool(
+        "keys_house", {"person": "Paul", "on_general_key": "deny"}, judge="do"
+    )
+    assert reply.actions == [{"tool": "keys_house", "status": "failed"}]
+    [result] = reply.model_results
+    assert (result["status"], result["reason"]) == ("failed", "took_too_long")
+    assert result["detail"] == (
+        "nothing was done: finding who the call speaks of took too long; you may try again"
+    )
+    assert "Reading the names of a call of keys_house took too long" in caplog.text
+    assert await lines_of(owner_chat) == []
+
+    # The query cut in the middle left no session or connection of the turn's behind.
+    monkeypatch.setattr(execution_module, "whole_names", real_whole_names)
+    await deny_on_the_general_key(owner_chat, "Paul")
+    [line] = await lines_of(owner_chat)
+    assert (line.person_id, line.allowed) == (paul_member.person.id, False)
+
+
+async def test_names_that_cannot_be_read_do_nothing_and_say_it_may_be_tried_again(
+    owner_chat, paul_member, monkeypatch
+):
+    async def broken(*_: object, **__: object) -> None:
+        raise OSError("the database is gone")
+
+    monkeypatch.setattr(execution_module, "whole_names", broken)
+    reply = await owner_chat.say_with_tool(
+        "keys_house", {"person": "Paul", "on_general_key": "deny"}, judge="do"
+    )
+    assert reply.actions == [{"tool": "keys_house", "status": "failed"}]
+    [result] = reply.model_results
+    assert (result["status"], result["reason"]) == ("failed", "not_read")
+    assert result["detail"] == (
+        "nothing was done: who the call speaks of could not be read; you may try again"
+    )
+    assert await lines_of(owner_chat) == []
 
 
 async def test_house_rules_are_the_owners_and_can_be_given(

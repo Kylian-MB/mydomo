@@ -198,6 +198,7 @@ from domo_core.conversation.execution import (
     WHO_SAYS_YES,
     consult_the_judge,
     rights_say,
+    timed_out_outcome,
 )
 from domo_core.household.service import resolve_invitation, resolve_person, whole_names
 from domo_core.llm.types import JsonObject, ToolDefinition
@@ -226,6 +227,7 @@ from domo_core.tools.context import (
     InvalidArguments,
     NamesPeople,
     NeverAStep,
+    NothingDoneInTime,
     ToolContext,
     ToolOutcome,
     judged_actor_of,
@@ -1332,9 +1334,15 @@ async def run_under_the_same_yes(
             run_ctx, taken.steps, basis=taken.basis, request_id=request_id, decider=decider
         )
         outcome = chain_outcome(run, total=len(taken.steps), at_once=False)
+    except TimeoutError:
+        # The record of a step ran out of time (a machine that stalls): the step may have run,
+        # and nobody knows; the request is settled all the same, as below.
+        logger.error("Continuing a chain took too long: whether its steps ran is unknown")
+        outcome = timed_out_outcome()
     except Exception as error:
-        # The request is settled all the same: a step whose record is not known stays as it
-        # was, and the chain can no longer be continued.
+        # The request is settled all the same: a step whose record is not known stays
+        # ``planned`` (the runner made it so before it ran: ``_Runner._about_to_run``), and a
+        # chain with a ``planned`` step can no longer be continued (``can_be_continued``).
         logger.error("Continuing a chain failed (%s)", type(error).__name__)
         outcome = ToolOutcome("failed", {}, {"key": "action.card.failed", "params": {}})
     record = ActionRecord(
@@ -1442,7 +1450,7 @@ async def _the_rest_planned(
     basis = ChainBasis.from_json(c.chain_basis)
     plan = await _planned(calls, ctx, done=done_actions, kept=kept, basis=basis)
     if plan is None:
-        raise TimeoutError("planning the rest of the chain took too long: nothing was done")
+        raise NothingDoneInTime("planning the rest of the chain took too long: nothing was done")
     decision = plan.decision
     if isinstance(decision, Refuse):
         refused = f"refused ({decision.reason})"

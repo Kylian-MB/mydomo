@@ -54,7 +54,7 @@ from domo_core.prompts import (
     build_system_prompt,
     today_of,
 )
-from domo_core.tools.context import ToolOutcome
+from domo_core.tools.context import NothingDoneInTime, ToolOutcome
 from domo_core.tools.registry import TOOLS, InvalidArguments
 from domo_core.trust.service import Trust
 from domo_core.web.deps import get_policy, get_tool_registry
@@ -1048,6 +1048,47 @@ async def test_a_tool_that_takes_too_long_is_recorded_with_an_unknown_outcome(
     expected = [("failed", t("action.card.failed.timeout", "en"))]
     assert cards_in(reply.cards_html) == expected
     assert cards_in((await owner_chat.get("/chat")).text) == expected
+
+
+async def test_a_step_of_a_tool_out_of_time_says_whether_anything_may_have_been_done(
+    owner_chat, use_tool
+):
+    # A step the tool bounds itself runs out of time (a machine that stalls longer than that):
+    # never a bare failure. One that changes nothing (describing, planning) says nothing was
+    # done; any other leaves it unknown whether the call happened.
+    async def out_of_time_before(arguments, ctx):
+        raise NothingDoneInTime("planning took too long: nothing was done")
+
+    async def out_of_time(arguments, ctx):
+        raise TimeoutError
+
+    for execute, expected in (
+        (
+            out_of_time_before,
+            {
+                "status": "failed",
+                "reason": "took_too_long",
+                "detail": (
+                    "nothing was done: getting the action ready took too long; you may try again"
+                ),
+            },
+        ),
+        (out_of_time, None),
+    ):
+        use_tool(SpyTool(execute=execute))
+        owner_chat.use_model(one_call_then(call("spy"), "ok"))
+        reply = await owner_chat.say("fais-le")
+        result = json.loads(reply.model_result_text)
+        if expected is not None:
+            assert result == expected
+            assert reply.actions == [{"tool": "spy", "status": "failed"}]
+        else:
+            assert (result["status"], result["reason"], result["outcome"]) == (
+                "failed",
+                "timeout",
+                "unknown",
+            )
+            assert reply.actions == [{"tool": "spy", "status": "failed", "reason": "timeout"}]
 
 
 async def test_the_history_keeps_the_doubt_about_an_action_that_took_too_long(

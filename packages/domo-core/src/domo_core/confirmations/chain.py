@@ -77,10 +77,11 @@ done, failed, stopped or still to run (``stored_steps``), and the actions of the
 the rule of the chain reads in a later run (a chain continued, or one that waited again for
 someone else's yes). A run does the steps that are ``planned`` or ``stopped``, never one that is
 ``done`` or ``failed`` (a failed step known not to have acted is made ``stopped`` again before a
-chain is continued). Every record of a step has its own time limit (``_STORE_SECONDS``); a
-record that fails ends the run with that error (the caller logs it): the step it was about stays
-as it was, and a chain with a step whose record is not known is never continued
-(``ChainContinue``), so that no step runs twice.
+chain is continued). A step a stop left (``stopped``) is made ``planned`` again, committed, just
+before it runs (``_about_to_run``), as every step of a first run is. Every record of a step has
+its own time limit (``_STORE_SECONDS``); a record that fails ends the run with that error (the
+caller logs it): the step it was about stays ``planned``, and a chain with a step whose record is
+not known is never continued (``ChainContinue``), so that no step runs twice.
 
 ``chain_outcome`` is what the tool of the chain tells the model and the people of a run: the
 steps, and for a chain that stopped where it stopped, why, how many are left, and what Domo may
@@ -619,6 +620,7 @@ class _Runner:
         if newly_warned(action, step):
             # It became the last key since the chain was asked for and judged: never at once.
             return await self._warned_again(position, step, decision, judged, action)
+        await self._about_to_run(position)
         record = await execute_allowed(
             tool,
             step.tool_name,
@@ -771,6 +773,28 @@ class _Runner:
                 return None
         logger.error("Reading the rights for a step of a chain took too long")
         return None
+
+    async def _about_to_run(self, position: int) -> None:
+        """Before a step of a request that a stop left (``stopped``: a chain taken up again, or
+        resumed after an arrival) runs, its row is made ``planned`` again and committed, as the
+        steps of a first run are: should the record of what came of it be lost, the row stays
+        ``planned``, its record unknown, and the chain is never continued (``can_be_continued``),
+        so that no step runs twice. Within ``_STORE_SECONDS``; a failure is raised before the
+        step runs."""
+        if self.request_id is None or self.states[position] != "stopped":
+            return
+        with anyio.fail_after(_STORE_SECONDS):
+            async with self.ctx.session_factory() as session:
+                await mark_step(
+                    session,
+                    self.request_id,
+                    position,
+                    status="planned",
+                    result=None,
+                    now=self.ctx.clock(),
+                )
+                await session.commit()
+        self.states[position] = "planned"
 
     async def _record_done(
         self,

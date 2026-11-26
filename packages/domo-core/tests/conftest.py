@@ -82,6 +82,7 @@ Windows note: asyncpg works with the default (Proactor) event loop, so no loop p
 """
 
 import asyncio
+import importlib
 import os
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator
@@ -203,6 +204,38 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in list(os.environ):
         if name.upper().startswith("DOMO_"):
             monkeypatch.delenv(name)
+
+
+# How long the core's reads and records of a moment may take in the tests (``STALL_SECONDS``),
+# instead of their ten or fifteen seconds: a shared build machine stalls longer than that at
+# times, which fails a call or loses a record, rightly, in a test that is not about time.
+STALL_SECONDS = 120.0
+# Each bound, as ``(module, name)``: the reads the barrier makes around a call and the records of
+# an action (``conversation.execution``), a chain's checks and records of its steps
+# (``confirmations.chain``), the request for the rest of a chain that ran at once
+# (``tools.chain``), what came of a request (``confirmations.service``), the end of a turn
+# (``conversation.turn``), taking back a wake's reply (``conversation.starts``), the steps of the
+# rights writer (``tools.rights_tools``) and what a model call cost (``llm.metered``).
+STALL_BOUNDS: tuple[tuple[str, str], ...] = (
+    ("domo_core.conversation.execution", "_CHECK_SECONDS"),
+    ("domo_core.conversation.execution", "_STORE_SECONDS"),
+    ("domo_core.confirmations.chain", "_CHECK_SECONDS"),
+    ("domo_core.confirmations.chain", "_STORE_SECONDS"),
+    ("domo_core.tools.chain", "_STORE_SECONDS"),
+    ("domo_core.confirmations.service", "_SETTLE_SECONDS"),
+    ("domo_core.conversation.turn", "_SETTLE_SECONDS"),
+    ("domo_core.conversation.starts", "_TAKE_BACK_SECONDS"),
+    ("domo_core.tools.rights_tools", "_STEP_SECONDS"),
+    ("domo_core.llm.metered", "_SETTLE_SECONDS"),
+)
+
+
+@pytest.fixture(autouse=True)
+def bounds_for_a_stalling_machine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every bound of ``STALL_BOUNDS`` is given ``STALL_SECONDS``. A test about one of those
+    deadlines sets its own value, which wins: it is set after this one."""
+    for module, name in STALL_BOUNDS:
+        monkeypatch.setattr(importlib.import_module(module), name, STALL_SECONDS)
 
 
 # Set to "skip" where no Linux container engine is meant to be there (the Windows machine of the

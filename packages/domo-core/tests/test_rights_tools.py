@@ -1027,6 +1027,26 @@ async def test_a_writer_out_of_time_is_told_even_when_its_audit_entry_cannot_be_
     assert failure.exc_info is None
 
 
+async def test_a_step_of_its_own_cut_by_its_deadline_is_told_as_not_known(
+    owner_chat, session_factory, monkeypatch
+):
+    # A tool that bounds its own steps raises when one runs out of time (a machine that stalls
+    # longer than that): the model is told it took too long and that it is not known whether it
+    # happened, never a bare failure.
+    monkeypatch.setattr(rights_tools, "_STEP_SECONDS", 1.0)
+    monkeypatch.setattr(rights_tools, "load_rights", hangs)
+    reply, model = await propose(owner_chat, WORDS, SILENT)
+    assert reply.actions == [{"tool": "rights_propose", "status": "failed", "reason": "timeout"}]
+    [result] = model.results
+    assert (result["status"], result["reason"], result["outcome"]) == (
+        "failed",
+        "timeout",
+        "unknown",
+    )
+    assert "may have happened" in result["detail"]
+    assert await drafts(session_factory) == []
+
+
 async def test_a_writer_that_asks_or_answers_is_not_counted_as_slow(
     owner_chat, adult_member, session_factory, clock
 ):

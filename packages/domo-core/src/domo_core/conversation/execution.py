@@ -13,8 +13,9 @@ other way:
    arguments that are not a JSON object, make the action ``invalid``;
 2. the people the call names by a name (a tool that ``NamesPeople``) are named by their whole
    name from then on (``_with_whole_names``, spec 6.7: "Sam" is "Samuel" when he is the one it
-   means), so that what follows is about the person found; then the tool describes the call
-   (``describe``); arguments it rejects make it ``invalid``, with the tool's reason;
+   means), so that what follows is about the person found (names that cannot be read within
+   ``_CHECK_SECONDS`` make it ``failed``, with why, and nothing runs); then the tool describes the
+   call (``describe``); arguments it rejects make it ``invalid``, with the tool's reason;
 3. the policy barrier decides (``policy.decision.decide_now``: the owner's rights, and the
    facts a limit reads, as they are now, read in a short transaction of its own, then
    ``policy.barrier.decide``; if they cannot be read within ``_CHECK_SECONDS``, or reading them
@@ -215,6 +216,7 @@ from domo_core.tools.context import (
     InternalTool,
     InvalidArguments,
     NamesPeople,
+    NothingDoneInTime,
     OwnIdea,
     PlansSteps,
     ToolContext,
@@ -303,18 +305,44 @@ _UNDECIDED_DETAIL: Final[Mapping[Undecided, str]] = {
 }
 
 
-def undecided_record(tool_name: str, action_type: str | None, why: Undecided) -> ActionRecord:
-    """An action that never ran because nothing could be decided (``why``): ``failed``, and the
-    model is told plainly that nothing was done and that it may try again."""
-    result: JsonObject = {"status": "failed", "reason": why, "detail": _UNDECIDED_DETAIL[why]}
+# What could not be done in time, or at all, before anything ran: what is allowed (``rights``),
+# who the call speaks of (``names``, ``_with_whole_names``), or what the tool does first,
+# describing or planning (``before``, ``NothingDoneInTime``).
+Unread = Literal["rights", "names", "before"]
+_UNREAD_DETAILS: Final[Mapping[Unread, Mapping[Undecided, str]]] = {
+    "rights": _UNDECIDED_DETAIL,
+    "names": {
+        "took_too_long": (
+            "nothing was done: finding who the call speaks of took too long; you may try again"
+        ),
+        "not_read": (
+            "nothing was done: who the call speaks of could not be read; you may try again"
+        ),
+    },
+    "before": {
+        "took_too_long": (
+            "nothing was done: getting the action ready took too long; you may try again"
+        ),
+        "not_read": "nothing was done: the action could not be got ready; you may try again",
+    },
+}
+
+
+def undecided_record(
+    tool_name: str, action_type: str | None, why: Undecided, *, what: Unread = "rights"
+) -> ActionRecord:
+    """An action that never ran because ``what`` could not be done in time or at all (``why``):
+    ``failed``, and the model is told plainly what it was, that nothing was done and that it may
+    try again."""
+    detail = _UNREAD_DETAILS[what][why]
+    result: JsonObject = {"status": "failed", "reason": why, "detail": detail}
     card: JsonObject = {"key": "action.card.failed", "params": {}}
     return ActionRecord(tool_name, action_type, "failed", None, result, card)
 
 
-def _timed_out(tool_name: str, action_type: str) -> ActionRecord:
-    """An action whose tool did not answer in time: nobody knows whether it happened."""
+def timed_out_outcome() -> ToolOutcome:
+    """What a tool tells of a call it did not finish in time: nobody knows whether it happened."""
     result: JsonObject = {
-        "status": "failed",
         "reason": "timeout",
         "outcome": "unknown",
         "detail": (
@@ -323,7 +351,14 @@ def _timed_out(tool_name: str, action_type: str) -> ActionRecord:
         ),
     }
     card: JsonObject = {"key": "action.card.failed.timeout", "params": {}, "reason": "timeout"}
-    return ActionRecord(tool_name, action_type, "failed", None, result, card)
+    return ToolOutcome("failed", result, card)
+
+
+def _timed_out(tool_name: str, action_type: str) -> ActionRecord:
+    """An action whose tool did not answer in time: nobody knows whether it happened."""
+    told = timed_out_outcome()
+    result: JsonObject = {"status": "failed", **told.model_result}
+    return ActionRecord(tool_name, action_type, "failed", None, result, told.card)
 
 
 async def execute_allowed(
@@ -343,6 +378,20 @@ async def execute_allowed(
             outcome = await tool.execute(arguments, ctx)
         except InvalidArguments as error:
             return invalid_record(tool_name, action_type, error.code, error.detail, error.setting)
+        except NothingDoneInTime:
+            # Describing or planning took too long, which changes nothing.
+            logger.error("The tool %s took too long before doing anything", tool_name)
+            return undecided_record(tool_name, action_type, "took_too_long", what="before")
+        except TimeoutError:
+            # One of its own steps ran out of time (``BoundsItsOwnSteps``, a chain's record of a
+            # step, a machine that stalls): whether it happened is not known, as when the whole
+            # call takes too long.
+            logger.error(
+                "A step of the tool %s took too long: whether %s happened is unknown",
+                tool_name,
+                action_type,
+            )
+            return _timed_out(tool_name, action_type)
         except Exception as error:
             # Only the kind of error: its message may hold what the arguments held.
             logger.error("The tool %s failed (%s)", tool_name, type(error).__name__)
@@ -1427,11 +1476,14 @@ async def _their_rights_on(ctx: ToolContext, action_type: str) -> tuple[bool, bo
 
 async def _with_whole_names(
     tool: InternalTool, tool_name: str, arguments: JsonObject, ctx: ToolContext
-) -> JsonObject | None:
+) -> JsonObject | Undecided:
     """``arguments``, with the people a tool that names them (``NamesPeople``) names by their
     whole name (``household.service.whole_names``): what is described, judged, asked, stored and
-    run is about the person found, as the people who read it read it (spec 6.7). ``None`` when
-    the names cannot be read, or take more than ``_CHECK_SECONDS`` (nothing then runs)."""
+    run is about the person found, as the people who read it read it (spec 6.7). Why there are
+    none when the names cannot be read (``not_read``), or take more than ``_CHECK_SECONDS``
+    (``took_too_long``, a machine that stalls that long): nothing then runs, and it may be tried
+    again. The read has a session of its own: a query cut in the middle leaves nothing of the
+    turn's behind."""
     if not isinstance(tool, NamesPeople):
         return arguments
     with anyio.move_on_after(_CHECK_SECONDS):
@@ -1448,9 +1500,9 @@ async def _with_whole_names(
             logger.error(
                 "The names of a call of %s could not be read (%s)", tool_name, type(error).__name__
             )
-            return None
+            return "not_read"
     logger.error("Reading the names of a call of %s took too long", tool_name)
-    return None
+    return "took_too_long"
 
 
 async def _described_and_decided(
@@ -1929,8 +1981,9 @@ async def handle_tool_call(
         )
         return await _recorded(ctx, reply_id, record)
     understood = await _with_whole_names(tool, tool_name, arguments, ctx)
-    if understood is None:
-        record = failed_record(tool_name, tool.action_type)
+    if isinstance(understood, str):
+        # Nothing was decided, so nothing ran: it may be tried again.
+        record = undecided_record(tool_name, tool.action_type, understood, what="names")
         return await _recorded(ctx, reply_id, record)
     # From here on, the people the call names are named by their whole name (spec 6.7).
     arguments = understood
