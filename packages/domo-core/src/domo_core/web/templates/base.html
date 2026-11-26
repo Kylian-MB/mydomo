@@ -7,9 +7,9 @@
   <meta name="theme-color" content="#1f5fbf">
   <meta name="robots" content="noindex, nofollow">
   <meta name="htmx-config" content='{"allowEval": false, "allowScriptTags": false, "includeIndicatorStyles": false, "historyCacheSize": 0}'>
-  {#- The name the person reading calls the assistant by, on their own pages only (spec 6.7): a word
-      that takes the place of "Domo", escaped like any text someone gave. -#}
-  {% set domo = (person.calls_domo or "Domo") if person is defined else "Domo" %}
+  {#- The name the reader sees for the assistant (spec 6.7): their own, else the house's, else
+      "Domo", given with the request (``domo``) and escaped like any text someone gave. -#}
+  {% set domo = domo if domo is defined else "Domo" %}
   <title>{% block title %}{% endblock %} - {{ domo }}</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="{{ static_url('icon.svg') }}" type="image/svg+xml">

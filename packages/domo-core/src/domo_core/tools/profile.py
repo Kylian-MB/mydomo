@@ -18,8 +18,11 @@ from sqlalchemy import update
 from domo_core.accounts.models import Person
 from domo_core.household.service import NameInUse, name_in_use, rename_person
 from domo_core.llm.types import JsonObject, ToolDefinition
+from domo_core.naming import MAX_DOMO_NAME_LENGTH as MAX_DOMO_NAME_LENGTH
+from domo_core.naming import name_shown
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.roles import Actor
+from domo_core.policy.settings import load_policy_settings
 from domo_core.text import (
     MAX_DISPLAY_NAME_LENGTH,
     InvalidDisplayName,
@@ -110,8 +113,6 @@ class ProfileRename:
         )
 
 
-# The longest name a person gives Domo (the ``persons`` table says the same).
-MAX_DOMO_NAME_LENGTH: Final = 40
 # What a call leaves under the reply: a card nobody reads (``policy.catalog.SILENT_ACTIONS``).
 _CARD: Final[JsonObject] = {"key": "action.card.done", "params": {}}
 
@@ -144,8 +145,9 @@ def domo_name_from(arguments: JsonObject) -> str | None:
 class DomoName:
     """The name the person who speaks calls Domo by (never anyone else's): theirs alone, shown
     to them where the code writes "Domo" itself (their page's header and title, the program they
-    talk to him with) and told to him in their turns. Never judged, never shown: it changes
-    nothing in the household (``policy.catalog.SILENT_ACTIONS``)."""
+    talk to him with) and told to him in their turns. Without one they see the house's name for
+    him, else "Domo" (``naming.name_shown``). Never judged, never shown: it changes nothing in
+    the household (``policy.catalog.SILENT_ACTIONS``)."""
 
     definition = ToolDefinition(
         name="domo_name",
@@ -158,8 +160,9 @@ class DomoName:
             "that same answer, then simply answer to that name. Agreeing in words without "
             "calling it changes nothing. Do not explain how it works, do not mention tools, and "
             "do not say it holds for them alone unless they ask about the others; if they want "
-            "the name for the whole household, say simply that each person chooses their own "
-            "name for you and that you took it for them. Null: they call you the assistant again. "
+            "the name for the whole household: that is house_name when it is offered to you in "
+            "this turn; otherwise, say simply that this name is not theirs to choose for everyone "
+            "and that you took theirs for them. Null: they call you the assistant again. "
             "You "
             "stay the same, whatever the name."
         ),
@@ -197,6 +200,7 @@ class DomoName:
                 update(Person).where(Person.id == ctx.person.id).values(calls_domo=name)
             )
             await session.commit()
+            house_name = (await load_policy_settings(session)).house_domo_name
         return ToolOutcome(
-            status="done", model_result={"they_call_you": name or "Domo"}, card=_CARD
+            status="done", model_result={"they_call_you": name_shown(name, house_name)}, card=_CARD
         )

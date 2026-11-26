@@ -67,6 +67,7 @@ from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import SESSION_COOKIE, person_of_session
 from domo_core.channels.api import API_PATH
 from domo_core.db import SessionFactory
+from domo_core.naming import DEFAULT_NAME, name_shown
 from domo_core.policy.settings import load_policy_settings
 from domo_core.setup_flow.middleware import setup_is_done
 from domo_core.texts.languages import browser_language, version_read
@@ -90,14 +91,15 @@ class _Read(NamedTuple):
     (``reader``: ``None`` for a visitor, and during the installation), with the writing note
     Domo keeps for them (``writing_note``); and the reader's language when it has no version
     yet, nor a close one (``new_language``), which the house may begin; and the name the reader
-    calls Domo by (``calls_domo``: ``None`` for Domo, and for a visitor), which their pages
-    say where the code names him (``web.templating``, ``DOMO_STATE_KEY``)."""
+    sees for him (``domo``: their own name for him, else the house's, else "Domo"; a visitor
+    reads the house's, and every page of the installation says "Domo"), which the pages say where
+    the code names him (``web.templating``, ``DOMO_STATE_KEY``)."""
 
     texts: Texts
     reader: Reader | None = None
     new_language: str | None = None
     writing_note: str | None = None
-    calls_domo: str | None = None
+    domo: str = DEFAULT_NAME
 
 
 def _is_under(path: str, prefix: str) -> bool:
@@ -167,14 +169,15 @@ async def _read_or_fail(scope: Scope, *, keeps_language: bool) -> _Read:
         texts = await recueil_for(
             session, person=person, language=language, settings=settings, version=version
         )
+    domo = name_shown(person.calls_domo if person is not None else None, settings.house_domo_name)
     if person is None:
-        return _Read(texts, None, new_language)
+        return _Read(texts, None, new_language, None, domo)
     return _Read(
         texts,
         Reader(person.id, language),
         new_language,
         person.writing_note,
-        person.calls_domo,
+        domo,
     )
 
 
@@ -250,7 +253,7 @@ class TextsMiddleware:
         read = await _read(scope, keeps_language=True)
         texts, reader = read.texts, read.reader
         scope.setdefault("state", {})[STATE_KEY] = texts
-        scope["state"][DOMO_STATE_KEY] = read.calls_domo
+        scope["state"][DOMO_STATE_KEY] = read.domo
         if reader is None or not isinstance(texts, RecueilTexts):
             await self.app(scope, receive, send)
             return

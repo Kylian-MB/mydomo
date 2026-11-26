@@ -70,11 +70,12 @@ from domo_core.conversation.channel import ListenerGone
 from domo_core.conversation.events import Acted, Decided, Ended, Event, Failed, Words
 from domo_core.db import SessionFactory
 from domo_core.llm.types import JsonObject
+from domo_core.naming import name_shown
 from domo_core.policy.settings import PolicySettings, load_policy_settings
 from domo_core.texts.cards import KeptHead, head_of, heads_of
 from domo_core.texts.view import Texts
 from domo_core.tools.model_key import KEY_FORM_PATH
-from domo_core.web.templating import domo_of, render_fragment
+from domo_core.web.templating import render_fragment
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,7 @@ class PageListener:
         relay: RelaySink,
         *,
         person: Person,
+        domo: str,
         texts: Texts,
         templates: Jinja2Templates,
         session_factory: SessionFactory,
@@ -102,7 +104,7 @@ class PageListener:
         self._relay = relay
         self._person = person
         # The name for Domo the page was given (``_follow_the_name``).
-        self._calls_domo = person.calls_domo
+        self._domo = domo
         self._texts = texts
         self._templates = templates
         self._session_factory = session_factory
@@ -153,15 +155,17 @@ class PageListener:
         leaves the page as it is (a reload shows the name)."""
         try:
             async with self._session_factory() as session:
-                now = await session.scalar(
+                calls_domo = await session.scalar(
                     select(Person.calls_domo).where(Person.id == self._person.id)
                 )
+                house_name = (await load_policy_settings(session)).house_domo_name
         except Exception as error:
             logger.error("The name for the assistant could not be read (%s)", type(error).__name__)
             return
-        if now == self._calls_domo:
+        now = name_shown(calls_domo, house_name)
+        if now == self._domo:
             return
-        self._calls_domo = now
+        self._domo = now
         try:
             await self._relay.emit("frame", frame_of(now, self._texts))
         except ClientGone as gone:
@@ -228,11 +232,10 @@ class PageListener:
         return f"{text}{button}"
 
 
-def frame_of(calls_domo: str | None, texts: Texts) -> str:
-    """The texts of a chat page that name Domo, for the name ``calls_domo`` (``None``:
-    Domo), as the ``frame`` event gives them: a JSON object of plain texts (``brand``,
-    ``title``, ``placeholder``), never HTML: the page puts them in as text."""
-    domo = domo_of(calls_domo)
+def frame_of(domo: str, texts: Texts) -> str:
+    """The texts of a chat page that name Domo, for the name ``domo`` the reader sees, as the
+    ``frame`` event gives them: a JSON object of plain texts (``brand``, ``title``,
+    ``placeholder``), never HTML: the page puts them in as text."""
     return json.dumps(
         {
             "brand": domo,
@@ -277,7 +280,9 @@ async def cards_of(
     settings = await load_policy_settings(session) if requests else PolicySettings({})
     replaced = await predecessors_of(session, requests)
     changers = await changers_of(session, requests.values(), replaced)
-    drafts = await draft_lines_of(session, requests.values(), texts)
+    drafts = await draft_lines_of(
+        session, requests.values(), texts, name_shown(person.calls_domo, settings.house_domo_name)
+    )
     successors = await successor_lines_of(session, requests.values(), texts, now)
     steps = await step_lines_of(session, requests.values(), texts, now)
     waiting = await waiting_names_of(session, requests.values())

@@ -377,6 +377,8 @@ def test_the_rules_are_changed_by_the_owner_alone():
         frozenset(
             {
                 "policy.update",
+                # The name the whole house calls Domo by.
+                "house.name_domo",
                 "rights.propose",
                 "rights.apply",
                 "household.transfer_ownership",

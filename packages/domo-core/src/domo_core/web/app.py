@@ -105,6 +105,7 @@ from domo_core.madetools.triggers import triggers_pass
 from domo_core.madetools.upkeep import toolmaking_pass
 from domo_core.memory.embedder import LocalEmbedder
 from domo_core.memory.review import review_pass
+from domo_core.naming import DEFAULT_NAME, name_shown
 from domo_core.notes.upkeep import notes_pass
 from domo_core.plans.upkeep import plans_pass
 from domo_core.policy.settings import load_policy_settings
@@ -255,6 +256,7 @@ async def _manifest(request: Request) -> Response:
     """The manifest of the web app: its description is the house's version of it once Domo is
     installed (the fixed catalog's during the installation), in the house's language."""
     app = request.app
+    name = DEFAULT_NAME
     if not await setup_is_done(app):
         texts = request_texts(request)
         description, language = texts("manifest.description"), texts.language
@@ -263,10 +265,17 @@ async def _manifest(request: Request) -> Response:
         async with session_factory() as session:
             settings = await load_policy_settings(session)
             language = settings.house_language
+            name = name_shown(None, settings.house_domo_name)
             house = await recueil_for(session, person=None, language=language, settings=settings)
         description = house("manifest.description")
     return JSONResponse(
-        {**MANIFEST, "lang": language, "description": description},
+        {
+            **MANIFEST,
+            "name": name,
+            "short_name": name,
+            "lang": language,
+            "description": description,
+        },
         media_type="application/manifest+json",
     )
 

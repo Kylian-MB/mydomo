@@ -119,6 +119,7 @@ from domo_core.llm.spending import (
 )
 from domo_core.llm.types import JsonObject
 from domo_core.madetools.models import OFFERED_PREFIX
+from domo_core.naming import DEFAULT_NAME
 from domo_core.policy.actions import DescribedAction, FactValue
 from domo_core.policy.catalog import (
     ACTION_FACTS,
@@ -872,12 +873,15 @@ def example_situation(
     names: Mapping[str, str],
     texts: Texts,
     kinds: Mapping[str, OpenKind] = NO_KINDS,
+    domo: str | None = None,
 ) -> str:
     """The situation of ``example`` in one sentence of ``texts`` (``describe_example``, with the
     open ``kinds``): who asks is told by their name (``names``, by id), or by their role for an
-    example about a role nobody has yet ("A guest"), or as Domo when he acts on his own."""
+    example about a role nobody has yet ("A guest"), or as Domo when he acts on his own (by the
+    name the reader sees for him, ``domo``, when it is given)."""
     if example.for_domo:
-        who = texts("rights.example.as_domo")
+        # Nobody gave him a name (``DEFAULT_NAME``): the text of the language says it.
+        who = domo if domo and domo != DEFAULT_NAME else texts("rights.example.as_domo")
     elif example.role is not None:
         who = texts(f"rights.example.as_role.{example.role}")
     else:
@@ -999,7 +1003,7 @@ class DraftLines:
 
 
 def describe_rights_draft(
-    content: object, texts: Texts, kinds: Mapping[str, OpenKind] = NO_KINDS
+    content: object, texts: Texts, kinds: Mapping[str, OpenKind] = NO_KINDS, domo: str | None = None
 ) -> DraftLines | None:
     """The stored ``content`` of a draft (``rights_drafts.draft_as_json``) in ``texts``, with the
     open ``kinds`` its examples may be about, or ``None`` when it does not read back."""
@@ -1012,7 +1016,7 @@ def describe_rights_draft(
         summaries=tuple(change.summary for change in stored.draft.changes),
         examples=tuple(
             ExampleLine(
-                situation=example_situation(example, names, texts, kinds),
+                situation=example_situation(example, names, texts, kinds, domo),
                 outcome=texts(f"rights.example.outcome.{example.expected}"),
                 moment=example_moment(example, stored.draft, texts),
             )
@@ -1042,7 +1046,7 @@ def draft_of(c: Confirmation) -> uuid.UUID | None:
 
 
 async def _drafts_by_id(
-    session: AsyncSession, draft_ids: Iterable[uuid.UUID], texts: Texts
+    session: AsyncSession, draft_ids: Iterable[uuid.UUID], texts: Texts, domo: str | None = None
 ) -> dict[uuid.UUID, DraftLines]:
     """These drafts, by draft id, in ``texts`` (those that do not read back are left out), with
     the kinds of the open catalog as they are now (``open_kinds``)."""
@@ -1055,18 +1059,22 @@ async def _drafts_by_id(
     kinds = await open_kinds(session)
     lines: dict[uuid.UUID, DraftLines] = {}
     for draft_id, content in result.all():
-        shown = describe_rights_draft(content, texts, kinds)
+        shown = describe_rights_draft(content, texts, kinds, domo)
         if shown is not None:
             lines[draft_id] = shown
     return lines
 
 
 async def draft_lines_of(
-    session: AsyncSession, requests: Iterable[Confirmation], texts: Texts
+    session: AsyncSession,
+    requests: Iterable[Confirmation],
+    texts: Texts,
+    domo: str | None = None,
 ) -> dict[uuid.UUID, DraftLines]:
-    """The drafts of the changes of rights among ``requests``, by request id, in ``texts``."""
+    """The drafts of the changes of rights among ``requests``, by request id, in ``texts``
+    (``domo``: the name the reader sees for him, in the examples about him)."""
     wanted = {c.id: draft for c in requests if (draft := draft_of(c)) is not None}
-    drafts = await _drafts_by_id(session, wanted.values(), texts)
+    drafts = await _drafts_by_id(session, wanted.values(), texts, domo)
     return {
         request_id: drafts[draft_id]
         for request_id, draft_id in wanted.items()

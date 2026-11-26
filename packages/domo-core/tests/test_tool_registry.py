@@ -73,7 +73,7 @@ REQUEST_TOOLS = [
     "asking_agreed",
 ]
 # The tools with which the owner reads and changes their rules (task 8, decision D8).
-POLICY_TOOLS = ["policy_show", "policy_update"]
+POLICY_TOOLS = ["policy_show", "policy_update", "house_name"]
 # The tools with which the owner changes the rights in words (spec 5.6).
 RIGHTS_TOOLS = ["rights_propose", "rights_apply"]
 # The tools with which the owner changes who is in the household (task 9, decisions D1 and D3).
@@ -226,6 +226,7 @@ def test_every_tool_is_an_action_of_the_catalog():
         "confirmation.agree_asking",
         "policy.show",
         "policy.update",
+        "house.name_domo",
         "rights.propose",
         "rights.apply",
         "household.invite",

@@ -52,10 +52,10 @@ from domo_core.chat.models import Conversation, Message
 from domo_core.confirmations.models import Confirmation
 from domo_core.confirmations.who_agrees import agrees_for_children, may_agree_for_a_child
 from domo_core.llm.types import JsonObject
+from domo_core.naming import name_shown
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.asks import Ask, Asked, AskedBy, as_ask, as_asked_by
 from domo_core.policy.decision import ChainBasis
-from domo_core.policy.facts import DOMO_NAME
 from domo_core.policy.rights import Approver
 from domo_core.policy.roles import DOMO_SUBJECT_ID, Actor
 from domo_core.policy.settings import PolicySettings, load_policy_settings
@@ -586,7 +586,7 @@ async def awaiting_approval(
     Only an adult or the owner has any (they are the ones who may answer such a request), and
     only the owner has the owner's; the approver's own requests are never among them (nobody
     approves their own), but a request Domo made on his own is never the approver's own, even
-    in their conversation: its name is Domo's (``DOMO_NAME``). A child or a guest gets an
+    in their conversation: its name is Domo's, as the approver reads it. A child or a guest gets an
     empty list."""
     if not is_active(approver, now) or not agrees_for_children(approver.role):
         return [], 0
@@ -612,7 +612,8 @@ async def awaiting_approval(
         .join(Person, Person.id == Confirmation.requester_id)
         .where(*waiting)
     )
-    return [(c, DOMO_NAME if c.by_domo else name) for c, name in found.all()], total.scalar_one()
+    domo = name_shown(approver.calls_domo, settings.house_domo_name)
+    return [(c, domo if c.by_domo else name) for c, name in found.all()], total.scalar_one()
 
 
 async def mark_shown(

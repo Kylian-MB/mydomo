@@ -220,6 +220,8 @@ _KNOWN: Final[tuple[str, ...]] = (
     "confirmation.agree_asking",
     "policy.show",
     "policy.update",
+    # The name the whole house calls Domo by: the owner's alone, in a turn of their own.
+    "house.name_domo",
     # The owner changes the rights in words (spec 5.6): a draft is written freely, and applying
     # it is judged like any action.
     "rights.propose",
@@ -715,6 +717,7 @@ _FACTS: dict[str, dict[str, FactType]] = {
 OWNER_ONLY_ACTIONS: frozenset[str] = frozenset(
     {
         "policy.update",
+        "house.name_domo",
         "rights.propose",
         "rights.apply",
         "household.transfer_ownership",
@@ -783,7 +786,7 @@ SILENT_ACTIONS: Final[frozenset[str]] = (
     | TOOL_ACTIONS
     | PROGRAM_TYPES
     | SILENT_OUTWARD_ACTIONS
-    | {PROGRAM_OUT, ASKING_AGREED}
+    | {PROGRAM_OUT, ASKING_AGREED, "house.name_domo"}
 )
 
 
@@ -1101,6 +1104,7 @@ PERMISSION_TYPES: Final[frozenset[str]] = frozenset(
         "rights.propose",
         "rights.apply",
         "policy.update",
+        "house.name_domo",
         "models.set_level",
     }
 )

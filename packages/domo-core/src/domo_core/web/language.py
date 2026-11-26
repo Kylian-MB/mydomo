@@ -10,8 +10,8 @@ from domo_core.texts.view import Texts
 
 # Where the texts of a request are kept (``request.state.texts``).
 STATE_KEY: Final = "texts"
-# Where the middleware keeps the name the reader calls Domo by (``None``: Domo), for the texts
-# of their pages that name him (``web.templating``).
+# Where the middleware keeps the name the reader sees for Domo (their own, else the house's, else
+# "Domo": ``naming.name_shown``), for the texts of their pages that name him (``web.templating``).
 DOMO_STATE_KEY: Final = "calls_domo"
 
 

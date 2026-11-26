@@ -64,6 +64,7 @@ from domo_core.audit.models import AuditEntry
 from domo_core.confirmations.describe import example_moment, example_situation
 from domo_core.household.service import former_persons, left_on
 from domo_core.llm.types import JsonObject, ToolDefinition
+from domo_core.naming import name_shown
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.facts import decision_facts, made_up_facts
 from domo_core.policy.models import PolicyRight, RightsDraft
@@ -343,7 +344,13 @@ class RightsPropose:
         examples: list[JsonObject] = []
         for example in draft.examples:
             told: JsonObject = {
-                "situation": example_situation(example, names, REFERENCE, ctx.policy.kinds)
+                "situation": example_situation(
+                    example,
+                    names,
+                    REFERENCE,
+                    ctx.policy.kinds,
+                    name_shown(ctx.person.calls_domo, settings.house_domo_name),
+                )
             }
             moment = example_moment(example, draft, REFERENCE)
             if moment is not None:

@@ -33,7 +33,12 @@ Whether an action is confirmed, and how, is no setting: the yes-judge decides it
   the gatekeeper read it. Without it, ``en``. The owner's own language moves it
   (``tools.text_tools``);
 * ``tools.base_mb``: how big the tools' own database may grow (``toolsdb``), a whole number of MB
-  from 16 to 1048576. Without it, 1024 (1 GB): beyond, a program's write is refused.
+  from 16 to 1048576. Without it, 1024 (1 GB): beyond, a program's write is refused;
+* ``house.domo_name``: the name the whole house calls the assistant, one plain line of 1 to 40
+  characters (``naming.is_domo_name``); without it, "Domo". The owner alone changes it, in a turn
+  of their own, and never ``policy_update`` (``NAME_SETTINGS``);
+* ``house.domo_name_before``: the house's name before the last change, kept for the notice of the
+  change (same rules as ``house.domo_name``).
 
 The rules of the keys are written by ``keys_house`` (``tools.keys_house``: a right of its own,
 the owner's by default, which can be given), never by ``policy_update`` (``KEYS_SETTINGS``).
@@ -57,6 +62,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domo_core.naming import is_domo_name
 from domo_core.policy.models import PolicySetting
 
 logger = logging.getLogger(__name__)
@@ -73,6 +79,10 @@ HOUSE_LANGUAGE: Final = "house.language"
 TOOLS_BASE_KEY: Final = "tools.base_mb"
 # The rules of the house on the keys: ``keys_house``'s to write.
 KEYS_SETTINGS: Final = frozenset({INVITEE_DEFAULT_KEY, INVITEE_GENERAL_KEY, UPKEEP_KEY})
+# The house's name for the assistant, and the one it had before: the owner's alone to change.
+HOUSE_DOMO_NAME: Final = "house.domo_name"
+HOUSE_DOMO_NAME_BEFORE: Final = "house.domo_name_before"
+NAME_SETTINGS: Final = frozenset({HOUSE_DOMO_NAME, HOUSE_DOMO_NAME_BEFORE})
 
 # What an invitee uses when their invitation does not say: their inviter's keys, or their own.
 InviteeDefault = Literal["inviter", "own"]
@@ -111,6 +121,7 @@ def _kind_of(
     "upkeep",
     "house_language",
     "tools_base",
+    "domo_name",
 ]:
     """What the key holds; ``InvalidSetting`` if it is not a setting (the styles of before
     included: Domo judges the yes)."""
@@ -130,6 +141,8 @@ def _kind_of(
         return "upkeep"
     if key == HOUSE_LANGUAGE:
         return "house_language"
+    if key in NAME_SETTINGS:
+        return "domo_name"
     raise InvalidSetting("unknown setting")
 
 
@@ -177,6 +190,10 @@ def _check(key: str, value: object) -> None:
         # A tag in its usual case, never a name: it reaches the writer and the gatekeeper.
         if not isinstance(value, str) or language_tag(value) != value:
             raise InvalidSetting("the house's language is a language tag, such as fr or pt-BR")
+        return
+    if kind == "domo_name":
+        if not is_domo_name(value):
+            raise InvalidSetting("the assistant's name is one plain line of 1 to 40 characters")
         return
 
 
@@ -282,6 +299,18 @@ class PolicySettings:
         return _DEFAULT_HOUSE_LANGUAGE if chosen is None else str(chosen)
 
     @property
+    def house_domo_name(self) -> str | None:
+        """The name the house calls the assistant, ``None`` when nobody said ("Domo", then)."""
+        chosen = self._chosen(HOUSE_DOMO_NAME)
+        return None if chosen is None else str(chosen)
+
+    @property
+    def house_domo_name_before(self) -> str | None:
+        """The house's name before the last change, ``None`` when there was none."""
+        chosen = self._chosen(HOUSE_DOMO_NAME_BEFORE)
+        return None if chosen is None else str(chosen)
+
+    @property
     def tools_base_bytes(self) -> int:
         """How big the tools' database may grow, in bytes (1 GB when nobody said): beyond, a
         program's write is refused (``toolsdb.store``)."""
@@ -310,6 +339,7 @@ class PolicySettings:
             UPKEEP_KEY,
             HOUSE_LANGUAGE,
             TOOLS_BASE_KEY,
+            HOUSE_DOMO_NAME,
         ):
             chosen = self._chosen(key)
             if chosen is not None:

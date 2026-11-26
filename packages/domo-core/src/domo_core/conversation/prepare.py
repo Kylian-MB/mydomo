@@ -89,7 +89,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, time
 from functools import partial
 from itertools import takewhile
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Literal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import distinct, func, or_, select
@@ -121,7 +121,7 @@ from domo_core.conversation.visits import ArrivalTurns, unanswered_in, untold_de
 from domo_core.db import SessionFactory, read_or_nothing
 from domo_core.gatekeeper_client import GatekeeperClient
 from domo_core.household import nicknames
-from domo_core.household.service import ownership_note
+from domo_core.household.service import name_in_use, ownership_note
 from domo_core.household.succession import list_successors
 from domo_core.identity.clues import kept_clues
 from domo_core.learning.shown import went_wrong_shown
@@ -158,7 +158,7 @@ from domo_core.plans.service import builds_waited_on, waiting_of
 from domo_core.policy.catalog import PolicyTables, on_his_own_tables, shown
 from domo_core.policy.open_catalog import load_policy
 from domo_core.policy.rights import load_rights
-from domo_core.policy.roles import as_role
+from domo_core.policy.roles import Role, as_role
 from domo_core.policy.settings import PolicySettings, load_policy_settings
 from domo_core.prompts import (
     AboutToExpire,
@@ -1061,6 +1061,9 @@ async def prepare_turn(
         rights = await load_rights(session)
         role = as_role(person.role)
         owner = role == "owner"
+        same_name = await _same_name(
+            session, person, role, policy_settings, now=now, on_his_own=on_his_own
+        )
         # The owner, and nobody else, is told the writer's time and how often it ran out of it
         # lately, whether the role was handed to them lately, and their list of successors.
         writer_time = (
@@ -1260,6 +1263,9 @@ async def prepare_turn(
             can_act=bool(tools),
             # The name they call him by, theirs alone (spec 6.7).
             calls_domo=person.calls_domo,
+            house_calls=policy_settings.house_domo_name,
+            house_called_before=policy_settings.house_domo_name_before,
+            same_name=same_name,
             writer_time=writer_time,
             ownership=ownership,
             successors=successors,
@@ -1317,6 +1323,34 @@ async def prepare_turn(
         news_seen=news_seen,
     )
     return Turn(deps, prepared)
+
+
+async def _same_name(
+    session: AsyncSession,
+    person: Person,
+    role: Role,
+    settings: PolicySettings,
+    *,
+    now: datetime,
+    on_his_own: bool,
+) -> Literal["house", "theirs", "both"] | None:
+    """Whose name for Domo someone of the house has too, as this turn is told. Never in a turn he
+    acts in on his own (``on_his_own``): the offer is made to a person, in a turn of theirs. The
+    house's name, in the owner's turn alone (they alone change it); the name this person gave him,
+    in their own turn."""
+    if on_his_own:
+        return None
+    house = (
+        role == "owner"
+        and settings.house_domo_name is not None
+        and await name_in_use(session, settings.house_domo_name, now=now)
+    )
+    theirs = person.calls_domo is not None and await name_in_use(
+        session, person.calls_domo, now=now
+    )
+    if house and theirs:
+        return "both"
+    return "house" if house else "theirs" if theirs else None
 
 
 async def _upkeep_turn(

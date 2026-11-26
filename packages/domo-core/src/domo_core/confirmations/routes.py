@@ -128,6 +128,7 @@ from domo_core.conversation.service import Conversation
 from domo_core.gatekeeper_client import GatekeeperClient
 from domo_core.llm.factory import ModelFactory
 from domo_core.llm.listing import ModelLister
+from domo_core.naming import name_shown
 from domo_core.policy.asks import Ask
 from domo_core.policy.catalog import PolicyTables
 from domo_core.policy.roles import Actor, as_role
@@ -672,7 +673,12 @@ async def card_now(
             return not_yours_card(confirmation_id, texts)
         settings = await load_policy_settings(session)
         replaced = await predecessors_of(session, [confirmation_id])
-        drafts = await draft_lines_of(session, [found[confirmation_id]], texts)
+        drafts = await draft_lines_of(
+            session,
+            [found[confirmation_id]],
+            texts,
+            name_shown(viewer.calls_domo, settings.house_domo_name),
+        )
         successors = await successor_lines_of(session, [found[confirmation_id]], texts, now)
         steps = await step_lines_of(session, [found[confirmation_id]], texts, now)
         waiting = await waiting_names_of(session, [found[confirmation_id]])
@@ -730,7 +736,9 @@ async def card_after_decision(
         c = (await confirmations_by_id(session, [confirmation_id]))[confirmation_id]
         settings = await load_policy_settings(session)
         replaced = await predecessors_of(session, [confirmation_id])
-        drafts = await draft_lines_of(session, [c], texts)
+        drafts = await draft_lines_of(
+            session, [c], texts, name_shown(viewer.calls_domo, settings.house_domo_name)
+        )
         successors = await successor_lines_of(session, [c], texts, now)
         steps = await step_lines_of(session, [c], texts, now)
         waiting = await waiting_names_of(session, [c])
@@ -1185,7 +1193,12 @@ async def approvals(
     waiting, total = await awaiting_approval(
         session, person, settings, now, limit=MAX_APPROVALS_SHOWN
     )
-    drafts = await draft_lines_of(session, (c for c, _ in waiting), texts)
+    drafts = await draft_lines_of(
+        session,
+        (c for c, _ in waiting),
+        texts,
+        name_shown(person.calls_domo, settings.house_domo_name),
+    )
     successors = await successor_lines_of(session, (c for c, _ in waiting), texts, now)
     steps = await step_lines_of(session, (c for c, _ in waiting), texts, now)
     names = await waiting_names_of(session, (c for c, _ in waiting))

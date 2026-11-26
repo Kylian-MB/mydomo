@@ -39,6 +39,8 @@ from starlette.responses import Response
 from domo_core.accounts.models import Person
 from domo_core.audit.log import details_as_text, readable_ts, verify_audit_chain
 from domo_core.audit.models import AuditEntry
+from domo_core.naming import DEFAULT_NAME, name_shown
+from domo_core.policy.settings import load_policy_settings
 from domo_core.texts.formatting import babel_locale
 from domo_core.texts.view import Texts
 from domo_core.web.deps import get_session, require_owner
@@ -155,6 +157,7 @@ class _Reader:
 
     texts: Texts
     names: Mapping[UUID, str]
+    domo: str | None = None
 
     def person(self, value: object) -> str:
         """The name of the person ``value`` names (``person:<id>``, or the id alone)."""
@@ -168,7 +171,7 @@ class _Reader:
 
     def who(self, actor: str) -> str:
         if actor == "system":
-            return self.texts("audit.who.system")
+            return self.domo or self.texts("audit.who.system")
         if actor == "household":
             # A tool of the house its trigger launched: nobody's rights were judged.
             return self.texts("audit.who.household")
@@ -278,7 +281,10 @@ async def audit_page(
         .limit(AUDIT_PAGE_SIZE)
     )
     names = await session.execute(select(Person.id, Person.display_name))
-    reader = _Reader(request_texts(request), {id_: name for id_, name in names.all()})
+    named = name_shown(person.calls_domo, (await load_policy_settings(session)).house_domo_name)
+    # Nobody gave him a name: the text of the house's language says it.
+    domo = None if named == DEFAULT_NAME else named
+    reader = _Reader(request_texts(request), {id_: name for id_, name in names.all()}, domo)
     rows = [
         AuditRow(id=entry_id, line=reader.line(ts, actor, action, raw))
         for entry_id, ts, actor, action, raw in latest.all()

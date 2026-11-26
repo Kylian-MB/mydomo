@@ -403,10 +403,11 @@ def _transports(values: Sequence[str]) -> list[AuthenticatorTransport]:
 
 
 async def registration_options(
-    session: AsyncSession, account: Account, rp_id: str, now: datetime
+    session: AsyncSession, account: Account, rp_id: str, now: datetime, rp_name: str = RP_NAME
 ) -> JsonObject:
     """The options for ``navigator.credentials.create()`` that add a passkey to ``account`` on
-    ``rp_id``, in their JSON form; the challenge is stored. ``PasskeyRejected("too_many")`` when
+    ``rp_id`` (shown as ``rp_name``, the house's name for the assistant, else ``RP_NAME``), in
+    their JSON form; the challenge is stored. ``PasskeyRejected("too_many")`` when
     the account has ``MAX_PASSKEYS_PER_ACCOUNT`` already."""
     await _forget_ended_challenges(session, now, replaced_for=account.id)
     existing = await passkeys_of(session, account.id)
@@ -415,7 +416,7 @@ async def registration_options(
     challenge = await _new_challenge(session, "register", account.id, now)
     options = generate_registration_options(
         rp_id=rp_id,
-        rp_name=RP_NAME,
+        rp_name=rp_name,
         user_name=account.username,
         user_id=account.id.bytes,
         user_display_name=account.username,

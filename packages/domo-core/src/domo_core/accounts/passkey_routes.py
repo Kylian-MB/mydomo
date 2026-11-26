@@ -104,6 +104,8 @@ from domo_core.accounts.throttle import LoginThrottle, password_check_key
 from domo_core.audit.log import append_audit
 from domo_core.config import CoreSettings
 from domo_core.llm.types import JsonObject
+from domo_core.naming import name_shown
+from domo_core.policy.settings import load_policy_settings
 from domo_core.proofs.service import agree, remove
 from domo_core.web.deps import current_person, get_clock, get_session, get_settings
 from domo_core.web.language import request_texts
@@ -238,7 +240,13 @@ async def passkey_registration_options(
         return _json_error(request, 400, "account.password.error.current")
     throttle.clear(throttle_key)
     try:
-        options = await registration_options(session, account, site.rp_id, clock())
+        options = await registration_options(
+            session,
+            account,
+            site.rp_id,
+            clock(),
+            rp_name=name_shown(None, (await load_policy_settings(session)).house_domo_name),
+        )
     except PasskeyRejected:
         await session.rollback()
         return _json_error(

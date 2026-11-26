@@ -35,6 +35,7 @@ from domo_core.policy.roles import Actor
 from domo_core.policy.settings import (
     KEYS_SETTINGS,
     LIFETIME_KEY,
+    NAME_SETTINGS,
     TIME_ZONE_KEY,
     TOOLS_BASE_KEY,
     WRITER_SECONDS_KEY,
@@ -62,6 +63,9 @@ def _setting_from(arguments: JsonObject) -> tuple[str, SettingValue | None]:
     if key in KEYS_SETTINGS:
         # A right of its own, which the owner may give: one way to change them.
         raise InvalidArguments("invalid", "the rules of the keys are changed with keys_house")
+    if key in NAME_SETTINGS:
+        # The owner's alone, in a turn of their own: never through a policy update.
+        raise InvalidArguments("invalid", "the house's name is not a rule to update")
     if value is not None and not isinstance(value, str | int):
         raise InvalidArguments("invalid", "the value is a text, a whole number or null")
     try:

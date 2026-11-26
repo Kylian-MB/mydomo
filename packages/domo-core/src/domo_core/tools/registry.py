@@ -27,6 +27,7 @@ from domo_core.tools.confirmation_tools import (
 from domo_core.tools.context import InternalTool, InvalidArguments, tools_for
 from domo_core.tools.delivery_tools import DeliveryLook
 from domo_core.tools.devices import DeviceEntrust, DeviceList, DeviceRemove
+from domo_core.tools.house_name import HouseName
 from domo_core.tools.household_admin import (
     HouseholdCancelInvitation,
     HouseholdChangeRole,
@@ -124,6 +125,7 @@ _TOOLS: tuple[InternalTool, ...] = (
     AskingAgreed(),
     PolicyShow(),
     PolicyUpdate(),
+    HouseName(),
     RightsPropose(),
     RightsApply(),
     HouseholdInvite(),

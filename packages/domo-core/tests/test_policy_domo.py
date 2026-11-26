@@ -196,6 +196,7 @@ PERMISSIONS = {
     "rights.propose",
     "rights.apply",
     "policy.update",
+    "house.name_domo",
     "models.set_level",
 }
 # Going out (spec 13.5, 13.10): sharing an account is never his; a port of the machine that hosts

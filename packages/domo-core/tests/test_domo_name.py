@@ -85,6 +85,15 @@ async def test_an_empty_name_makes_him_domo_again(adult_chat: ChatPilot):
     assert brand_and_title((await adult_chat.get("/chat")).text) == ("Domo", "Domo")
 
 
+async def test_an_empty_name_gives_the_house_name_back(adult_chat: ChatPilot, set_setting):
+    await set_setting("house.domo_name", "Friday")
+    reply = await adult_chat.say_with_tool("domo_name", {"name": "Brenda"})
+    assert reply.model_results == [{"status": "done", "they_call_you": "Brenda"}]
+    reply = await adult_chat.say_with_tool("domo_name", {"name": None})
+    assert reply.model_results == [{"status": "done", "they_call_you": "Friday"}]
+    assert await calls_domo(adult_chat) is None
+
+
 async def test_the_name_is_escaped_and_never_read_as_markup(adult_chat: ChatPilot):
     await adult_chat.say_with_tool("domo_name", {"name": "<b>Bo</b> & co"})
     page = (await adult_chat.get("/chat")).text
@@ -223,6 +232,9 @@ def test_the_tool_says_to_call_it_whenever_they_name_him():
     assert "call it in that same answer, then simply answer to that name" in described
     assert "Agreeing in words without calling it changes nothing" in described
     assert "do not mention tools" in described
-    assert "each person chooses their own name for you and that you took it for them" in (described)
+    assert (
+        "this name is not theirs to choose for everyone and that you took theirs for them"
+        in described
+    )
     renamed = " ".join(TOOLS["profile_rename"].definition.description.split())
     assert "Never the name they call you by: that is domo_name." in renamed

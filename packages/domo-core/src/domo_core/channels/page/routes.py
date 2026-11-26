@@ -80,8 +80,10 @@ from domo_core.conversation.visits import touch_visit
 from domo_core.gatekeeper_client import GatekeeperClient
 from domo_core.llm.key_flow import KEY_NEW_PATH
 from domo_core.llm.router import usable_keys
+from domo_core.naming import name_shown
 from domo_core.policy.catalog import PolicyTables
 from domo_core.policy.key_forms import may_add_a_key, may_add_a_new_key
+from domo_core.policy.settings import load_policy_settings
 from domo_core.texts.card_heads import ask_missing_heads
 from domo_core.web.deps import (
     SessionFactory,
@@ -95,7 +97,7 @@ from domo_core.web.deps import (
     get_streaming_replies,
 )
 from domo_core.web.language import request_texts
-from domo_core.web.templating import domo_of, render, render_fragment
+from domo_core.web.templating import render, render_fragment
 
 router = APIRouter()
 
@@ -319,6 +321,7 @@ async def _since(
     if conversation_id is None or (not new and running is None):
         return HTMLResponse("")
     texts = request_texts(request)
+    shown = name_shown(person.calls_domo, (await load_policy_settings(session)).house_domo_name)
     # The cards are read as the page reads them, from the conversation: a reply's cards depend
     # on the person's message it answers, which may be older than the bubbles asked for.
     recent = _over(await ConversationStore(session).recent_messages(conversation_id))
@@ -334,7 +337,7 @@ async def _since(
             message=message,
             live=False,
             action_cards=action_cards,
-            domo=domo_of(person.calls_domo),
+            domo=shown,
         )
         for message in new
     ]
@@ -346,7 +349,7 @@ async def _since(
                 texts,
                 message=running,
                 writing=True,
-                domo=domo_of(person.calls_domo),
+                domo=shown,
             )
         )
     return HTMLResponse("".join(bubbles))
@@ -413,10 +416,12 @@ async def stream_reply(
     relay = RelaySink()
     async with deps.session_factory() as reader:
         signed_in_at = await signed_in_at_of(reader, request)
+        shown = name_shown(person.calls_domo, (await load_policy_settings(reader)).house_domo_name)
     turn_request = _turn_request(request, person, settings, deps.clock(), signed_in_at)
     listener = PageListener(
         relay,
         person=person,
+        domo=shown,
         texts=request_texts(request),
         templates=request.app.state.templates,
         session_factory=deps.session_factory,

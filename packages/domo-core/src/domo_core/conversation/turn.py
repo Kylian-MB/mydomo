@@ -408,7 +408,8 @@ class Prompt:
     only known once the person's words are read (one may be ``answered_with_change``).
 
     ``calls_domo`` is the name the person calls Domo by, ``None`` when they gave him none
-    (spec 6.7).
+    (spec 6.7); ``house_calls`` and ``house_called_before`` are the names the house calls him by
+    now and before, ``same_name`` says whose name a person of the house has too.
 
     ``writer_time`` (the time the rights writer has, and how often it ran out of it), ``ownership``
     (the note for a new owner) and ``successors`` (the list of successors, each place as
@@ -446,6 +447,9 @@ class Prompt:
     role: Role
     can_act: bool
     calls_domo: str | None = None
+    house_calls: str | None = None
+    house_called_before: str | None = None
+    same_name: Literal["house", "theirs", "both"] | None = None
     writer_time: WriterTime | None = None
     ownership: OwnershipNote | None = None
     successors: tuple[JsonObject, ...] | None = None
@@ -498,6 +502,9 @@ class Prompt:
             role=self.role,
             can_act=self.can_act if can_act is None else can_act,
             calls_domo=self.calls_domo,
+            house_calls=self.house_calls,
+            house_called_before=self.house_called_before,
+            same_name=self.same_name,
             pending=pending,
             writer_time=self.writer_time,
             ownership=self.ownership,

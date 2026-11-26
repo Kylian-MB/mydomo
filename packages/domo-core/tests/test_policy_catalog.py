@@ -169,6 +169,8 @@ OWNER_ACTIONS = {
     "household.transfer_ownership",
     "policy.show",
     "policy.update",
+    # The name the whole house calls Domo by: the owner's alone, in a turn of their own.
+    "house.name_domo",
     "rights.propose",
     "rights.apply",
     "successors.show",
@@ -196,7 +198,7 @@ NOBODYS_ACTIONS = {"texts.for_someone"}
 
 def test_catalog_matches_the_plan_table():
     assert KNOWN_ACTIONS == MEMBER_ACTIONS | ADULT_ACTIONS | OWNER_ACTIONS | NOBODYS_ACTIONS
-    assert len(KNOWN_ACTIONS) == 100
+    assert len(KNOWN_ACTIONS) == 101
 
 
 def test_handing_the_owners_role_over_is_the_owners_alone_and_judged():
@@ -568,7 +570,7 @@ def test_what_changes_nothing_passes_without_the_judge():
 def test_domo_memory_and_plans_are_never_shown_whatever_came_of_them():  # spec 6.2, 6.9
     from domo_core.policy.catalog import SILENT_ACTIONS, is_silent
 
-    assert SILENT_ACTIONS == (
+    assert (
         MEMORY_ACTIONS
         | PLAN_ACTIONS
         | NAME_ACTIONS
@@ -580,7 +582,8 @@ def test_domo_memory_and_plans_are_never_shown_whatever_came_of_them():  # spec 
         | SILENT_OUTWARD_ACTIONS
         | PROGRAM_OUT
         | ASKING_ACTIONS
-    )
+        | {"house.name_domo"}
+    ) == SILENT_ACTIONS
     assert all(is_silent(action_type) for action_type in SILENT_ACTIONS)
     for action_type in KNOWN_ACTIONS - SILENT_ACTIONS:
         assert not is_silent(action_type), action_type

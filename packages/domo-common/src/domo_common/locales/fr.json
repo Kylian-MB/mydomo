@@ -712,6 +712,7 @@
   "rights.example.confirmation.agree_asking": "{who} dit à l'assistant s'il doit encore demander avant ce qui ne se défait pas.",
   "rights.example.policy.show": "{who} regarde les règles.",
   "rights.example.policy.update": "{who} change une règle de confirmation des actions.",
+  "rights.example.house.name_domo": "{who} donne un autre nom à l'assistant pour toute la maison.",
   "rights.example.rights.propose": "{who} fait rédiger des droits.",
   "rights.example.rights.apply": "{who} applique un brouillon de droits.",
   "rights.example.successors.show": "{who} regarde la liste des successeurs.",

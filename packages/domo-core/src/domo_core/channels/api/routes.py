@@ -116,8 +116,10 @@ from domo_core.conversation.speaker import Speaker
 from domo_core.conversation.visits import touch_visit
 from domo_core.devices.models import Device
 from domo_core.devices.service import device_of, finish_pairing
+from domo_core.naming import name_shown
 from domo_core.policy.open_catalog import load_policy
 from domo_core.policy.roles import Actor, as_role
+from domo_core.policy.settings import load_policy_settings
 from domo_core.proofs.service import ProofHeldBack, prove
 from domo_core.texts.view import Texts, person_texts
 from domo_core.tools.context import ToolContext
@@ -214,6 +216,7 @@ async def pair(
             return refusal(404, "unknown_code")
         device, secret = made
         person = await session.get(Person, device.person_id)
+        house_name = (await load_policy_settings(session)).house_domo_name
         await session.commit()
     throttle.clear(key)
     return JSONResponse(
@@ -221,9 +224,17 @@ async def pair(
             "device_id": str(device.id),
             "secret": secret,
             "person": None if person is None else person.display_name,
-            "domo_name": None if person is None else person.calls_domo,
+            "domo_name": _name_to_send(None if person is None else person.calls_domo, house_name),
         }
     )
+
+
+def _name_to_send(calls_domo: str | None, house_name: str | None) -> str | None:
+    """The name to send the program: the person's, else the house's, ``None`` when neither gave
+    one (the program then writes nothing before his words)."""
+    if calls_domo is None and house_name is None:
+        return None
+    return name_shown(calls_domo, house_name)
 
 
 @router.post("/messages")
@@ -308,7 +319,11 @@ async def since(
     over = list(takewhile(lambda message: message.status != "streaming", found.messages))
     texts = await _texts_of(session_factory, person)
     kept = await stored_messages(session_factory, over, viewer=person, texts=texts, now=now)
-    return JSONResponse({"messages": kept, "domo_name": person.calls_domo})
+    async with session_factory() as session:
+        house_name = (await load_policy_settings(session)).house_domo_name
+    return JSONResponse(
+        {"messages": kept, "domo_name": _name_to_send(person.calls_domo, house_name)}
+    )
 
 
 @router.post("/confirmations/{confirmation_id}/prove")

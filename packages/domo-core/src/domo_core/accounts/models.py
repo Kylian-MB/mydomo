@@ -56,7 +56,8 @@ class Person(Base):
     # that review is over.
     last_review_due: Mapped[bool] = mapped_column(server_default=text("false"))
     # The name the person calls Domo by ("Brenda", ``tools.profile.DomoName``): shown to them
-    # alone, where the code writes "Domo" itself. ``None``: they call him Domo.
+    # alone, where the code writes "Domo" itself. ``None``: they see the house's name for him
+    # (``policy.settings``), else "Domo" (``naming.name_shown``).
     calls_domo: Mapped[str | None]
 
 

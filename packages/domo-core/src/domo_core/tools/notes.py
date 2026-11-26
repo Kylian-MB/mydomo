@@ -101,7 +101,7 @@ never accepted then refused half-way. A note of his keeps no exact words (a pass
 of the person's message is never shown as his), and its audit entry ``note.left`` is his (actor
 ``domo``, author ``domo``, and ``turn_of`` the person whose turn it came from). Whoever reads
 it reads that it is his: the context marks it ``yours`` and names him as the reader calls him,
-else ``DOMO_NAME``, and the cards of
+else the house's, else Domo, and the cards of
 ``note_leave``, ``note_told`` and ``note_show`` say it is his. A person's note never becomes his,
 nor his a person's: ``note_list_sent``, ``note_withdraw`` and ``note_keep`` reach the notes of
 whom the turn is (``ToolContext.turn_subject``): on his own, his own and nobody else's; in a
@@ -125,10 +125,11 @@ from domo_core.db import SessionFactory
 from domo_core.household.service import resolve_person
 from domo_core.llm.router import usable_keys
 from domo_core.llm.types import JsonObject, ToolDefinition
+from domo_core.naming import name_shown
 from domo_core.notes.models import Note
 from domo_core.policy.actions import DescribedAction, FactValue
-from domo_core.policy.facts import DOMO_NAME
 from domo_core.policy.roles import Actor, actor_label, domo_actor
+from domo_core.policy.settings import load_policy_settings
 from domo_core.prompts import MAX_NOTES_TOLD, NoteToTell
 from domo_core.text import is_plain_line
 from domo_core.tools.context import InvalidArguments, ToolContext, ToolOutcome
@@ -157,10 +158,10 @@ def _day_of(moment: datetime) -> date:
     return moment.astimezone(UTC).date()
 
 
-def _domo_as_called(calls_him: str | None) -> str:
+def _domo_as_called(calls_him: str | None, house_name: str | None) -> str:
     """Domo's name as the reader of a note of his reads it: the name they call him by
-    (``Person.calls_domo``), else ``DOMO_NAME``."""
-    return calls_him or DOMO_NAME
+    (``Person.calls_domo``), else the house's, else "Domo"."""
+    return name_shown(calls_him, house_name)
 
 
 def _left_by(subject: Actor) -> ColumnElement[bool]:
@@ -175,11 +176,13 @@ async def notes_to_tell(session: AsyncSession, person_id: uuid.UUID) -> tuple[No
     """The notes left for ``person_id`` that Domo has not told them yet (``told_at`` empty),
     that were not taken back, the oldest first, ``MAX_NOTES_TOLD`` at most: each
     with who left it (their display name now; for a note of Domo's own, marked ``yours``, the
-    name the person calls him by, else ``DOMO_NAME``), when (ISO 8601, in UTC) and its words,
-    for the context of the person's turn (``conversation.prepare.prepare_turn``). Reads only."""
+    name the person calls him by, else the house's, else "Domo"), when (ISO 8601, in UTC) and its
+    words, for the context of the person's turn (``conversation.prepare.prepare_turn``). Reads
+    only."""
     calls_him = (
         await session.execute(select(Person.calls_domo).where(Person.id == person_id))
     ).scalar_one_or_none()
+    house_name = (await load_policy_settings(session)).house_domo_name
     found = await session.execute(
         select(
             Note.id,
@@ -201,7 +204,7 @@ async def notes_to_tell(session: AsyncSession, person_id: uuid.UUID) -> tuple[No
     return tuple(
         NoteToTell(
             id=str(note_id),
-            author=_domo_as_called(calls_him) if by_domo else author,
+            author=_domo_as_called(calls_him, house_name) if by_domo else author,
             left_at=created_at.astimezone(UTC).isoformat(),
             words=words,
             exact=exact,
@@ -979,13 +982,14 @@ async def _received(
     *,
     lock: bool = False,
     calls_him: str | None = None,
+    house_name: str | None = None,
 ) -> tuple[Note, str]:
     """The note ``note_id`` left for ``recipient_id``, and its author's display name now (for a
-    note of Domo's own, the name the recipient calls him by, ``calls_him``, else
-    ``DOMO_NAME``); with ``lock``, its row locked until the transaction ends (a withdrawal at
-    the same moment waits, or is waited for). ``not_found`` for a note left for someone else or no
-    note at all (the same answer: nobody learns which notes exist), ``invalid`` for one taken
-    back."""
+    note of Domo's own, the name the recipient calls him by, ``calls_him``, else the house's,
+    ``house_name``, else "Domo"); with ``lock``, its row locked until the transaction ends (a
+    withdrawal at the same moment waits, or is waited for). ``not_found`` for a note left for
+    someone else or no note at all (the same answer: nobody learns which notes exist), ``invalid``
+    for one taken back."""
     query = (
         select(Note, Person.display_name)
         .outerjoin(Person, Person.id == Note.author_id)
@@ -998,7 +1002,7 @@ async def _received(
     note, author = row
     if note.withdrawn_at is not None:
         raise InvalidArguments("invalid", _GONE)
-    return note, _domo_as_called(calls_him) if note.by_domo else author
+    return note, _domo_as_called(calls_him, house_name) if note.by_domo else author
 
 
 def _note_parameters() -> JsonObject:
@@ -1062,7 +1066,12 @@ class NoteTold:
         now = ctx.clock()
         async with ctx.session_factory() as session:
             note, author = await _received(
-                session, note_id, ctx.person.id, lock=True, calls_him=ctx.person.calls_domo
+                session,
+                note_id,
+                ctx.person.id,
+                lock=True,
+                calls_him=ctx.person.calls_domo,
+                house_name=(await load_policy_settings(session)).house_domo_name,
             )
             his = note.by_domo
             # Told once: the first time stays, and so does the first time it was seen.
@@ -1131,7 +1140,12 @@ class NoteShow:
         now = ctx.clock()
         async with ctx.session_factory() as session:
             note, author = await _received(
-                session, note_id, ctx.person.id, lock=True, calls_him=ctx.person.calls_domo
+                session,
+                note_id,
+                ctx.person.id,
+                lock=True,
+                calls_him=ctx.person.calls_domo,
+                house_name=(await load_policy_settings(session)).house_domo_name,
             )
             his = note.by_domo
             # The author's own message when it was kept; else what Domo noted, said so.

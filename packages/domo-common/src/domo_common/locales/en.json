@@ -712,6 +712,7 @@
   "rights.example.confirmation.agree_asking": "{who} tells the assistant whether to keep asking before what cannot be undone.",
   "rights.example.policy.show": "{who} looks at the rules.",
   "rights.example.policy.update": "{who} changes a rule on confirming actions.",
+  "rights.example.house.name_domo": "{who} gives the assistant another name for the whole house.",
   "rights.example.rights.propose": "{who} has rights drafted.",
   "rights.example.rights.apply": "{who} applies a draft of rights.",
   "rights.example.successors.show": "{who} looks at the list of successors.",

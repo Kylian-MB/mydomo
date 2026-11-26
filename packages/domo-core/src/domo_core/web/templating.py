@@ -1,9 +1,9 @@
 """Jinja2 templates: every template can call ``t(key, **params)`` (the text the visitor reads,
 from their ``Texts``: ``request.state.texts`` for a page, the reader's own for a fragment rendered
 outside a request), read ``lang`` (the language of those texts, for ``<html lang>``) and
-``domo`` (the name the reader calls Domo by, spec 6.7: "Domo" unless they gave him another;
-a fragment rendered outside a request is given it, or reads "Domo"), and name a static file with
-``static_url(path)``.
+``domo`` (the name the reader sees for him, spec 6.7: their own, else the house's, else "Domo",
+``naming.name_shown``; a fragment rendered outside a request is given it, or reads "Domo"), and
+name a static file with ``static_url(path)``.
 
 Autoescaping is on and a missing variable is an error, not an empty string. Templates carry no
 inline script or style (the content security policy forbids them): code lives in ``static/``.
@@ -19,6 +19,7 @@ from jinja2 import Environment, PackageLoader, StrictUndefined
 from starlette.requests import Request
 from starlette.responses import Response
 
+from domo_core.naming import DEFAULT_NAME
 from domo_core.texts.view import Texts
 from domo_core.web.language import DOMO_STATE_KEY, request_texts
 
@@ -44,18 +45,13 @@ def _language_context(texts: Texts) -> dict[str, Any]:
     return {"lang": texts.language, "t": translate, "static_url": static_url}
 
 
-def domo_of(calls_domo: str | None) -> str:
-    """The name a reader's pages call Domo by: theirs, else Domo."""
-    return calls_domo or "Domo"
-
-
 def _i18n_context(request: Request) -> dict[str, Any]:
     # The texts ``web.texts_middleware`` read for the request (``request.state.texts``), and the
-    # name the reader calls Domo by, read with them.
-    calls_domo = request.scope.get("state", {}).get(DOMO_STATE_KEY)
+    # name the reader sees for Domo, read with them.
+    shown = request.scope.get("state", {}).get(DOMO_STATE_KEY)
     return {
         **_language_context(request_texts(request)),
-        "domo": domo_of(calls_domo if isinstance(calls_domo, str) else None),
+        "domo": shown if isinstance(shown, str) else DEFAULT_NAME,
     }
 
 
