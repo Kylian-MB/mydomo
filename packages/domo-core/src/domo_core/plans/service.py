@@ -146,20 +146,26 @@ async def change(
     repeat: str | None | EllipsisType = ...,
     on_return: bool | None = None,
     after_build_id: uuid.UUID | None | EllipsisType = ...,
+    their_words: str | None = None,
     forget_their_words: bool = False,
+    no_longer_his: bool = False,
 ) -> Plan:
     """Change what is given of a waiting ``plan``: ``None`` leaves ``why``, ``due_at`` and
     ``on_return`` as they are, and ``...`` leaves ``repeat`` (``None`` stops it repeating: it is
     then due at its next time only) and ``after_build_id`` (``None``: it no longer waits for a
     build; a build given, even the same, waits from ``now``: ``waits_since``). A new rule with no
     ``due_at`` is first due at its first time after ``now``.
-    ``forget_their_words`` empties the exact words it kept (a ``why`` that no longer comes from
-    them alone). Same refusals as ``make``, and ``ValueError`` for a plan that no longer waits or
-    would be left with no time, no rule, no return and no build. Flushed."""
+    ``their_words`` are the exact words it keeps from now on (the passage a new ``why`` comes
+    from, checked by the caller); ``forget_their_words`` empties the ones it kept (a ``why`` that
+    no longer comes from them alone); ``no_longer_his`` says it is not Domo's own any more
+    (``made_by_domo``). Same refusals as ``make``, and ``ValueError`` for a plan
+    that no longer waits or would be left with no time, no rule, no return and no build.
+    Flushed."""
     if plan.state != "waiting":
         raise ValueError("Only a plan that waits is changed.")
     if why is not None:
         _check_why(why)
+    _check_their_words(their_words)
     _check_due(due_at, now)
     new_repeat = plan.repeat if isinstance(repeat, EllipsisType) else repeat
     new_due = plan.due_at if due_at is None else due_at
@@ -173,8 +179,12 @@ async def change(
         raise ValueError("A plan needs a time, a rule, a return or a build.")
     if why is not None:
         plan.why = why
-    if forget_their_words:
+    if their_words is not None:
+        plan.their_words = their_words
+    elif forget_their_words:
         plan.their_words = None
+    if no_longer_his:
+        plan.made_by_domo = False
     plan.due_at = new_due
     plan.repeat = new_repeat
     plan.on_return = new_return

@@ -4,8 +4,9 @@ A nickname, "stop asking me for this", a complaint, a fact of trust, a confirmed
 no longer refuses them because a note, a request that waits, what an approver said or what a tool
 or a program gave is in the turn, nor because nobody wrote in it. He weighs each source, as a
 person would (the owner, 2026-11-26). A plan is set and changed in any turn too; the words it
-keeps are a mark of source, not a refusal: none are kept with someone else's words told to the
-turn, and a new why outside his own answer to them empties them.
+keeps are a mark of source, not a refusal: a passage of their own message is kept even beside a
+note someone left them (the owner, 2026-11-27), words that are only in the note never are, and a
+new why outside his own answer to them empties them unless it comes with such a passage.
 
 What stays in code is the tie of an act that says "this person said so": their exact passage
 ("stop asking me", a plan's words), or a message of theirs that the turn answers (a complaint, the
@@ -845,17 +846,72 @@ async def test_the_sayer_never_confirms_with_a_members_words_either(session_fact
 EXAM_SAID = "Dana left a note. Remind me to ask Sam how the exam went!"
 EXAM_WORDS = "Remind me to ask Sam how the exam went"
 EXAM_PLAN: dict[str, Any] = {"why": "Ask Alex whether Sam told about the exam.", "on_return": True}
+# What Dana's note says: told to the turn, never in Alex's own message.
+DANAS_NOTE = "Ask Sam how the exam went when he is back"
 
 
-async def test_a_plan_is_set_with_a_members_words_in_the_turn_and_keeps_no_words(session_factory):
+async def test_a_plan_keeps_their_exact_words_with_a_members_words_in_the_turn(session_factory):
     alex, _ = await pt.two_people(session_factory)
     turn = members_words(pt.context(alex, session_factory, said=EXAM_SAID))
     result = await mt.run_as("plan_set", {**EXAM_PLAN, "their_words": EXAM_WORDS}, turn)
-    # Why it is set may come from the words told to the turn: the plan is set all the same, it
-    # keeps no words (the result says so) and will not count as asked when due.
+    # The passage is in their own message, copied by the code: kept, so the plan counts as asked
+    # when due (the owner, 2026-11-27).
+    assert "their_words" not in result
+    (plan,) = await pt.stored(session_factory)
+    assert (plan.their_words, plan.made_by_domo) == (EXAM_WORDS, False)
+
+
+async def test_words_that_are_only_in_a_members_note_are_never_kept_as_theirs(session_factory):
+    alex, _ = await pt.two_people(session_factory)
+    turn = members_words(pt.context(alex, session_factory, said="Tomorrow at 8, heating off."))
+    result = await mt.run_as("plan_set", {**EXAM_PLAN, "their_words": DANAS_NOTE}, turn)
+    # Dana's words are in the turn, not in Alex's message: the plan is set and keeps none.
     assert result["their_words"] == "not_kept"
     (plan,) = await pt.stored(session_factory)
     assert (plan.their_words, plan.made_by_domo) == (None, False)
+
+
+async def test_a_real_note_of_the_turn_gives_no_words_and_takes_none(
+    owner_chat: ChatPilot, adult_member, leave_note
+):
+    """A turn built by ``prepare_turn`` with a note that waits: the note's text, in the context,
+    is in no message of theirs, so a passage of it is not kept; a passage of what they wrote in
+    that same turn is (the owner, 2026-11-27)."""
+    factory = owner_chat.server.session_factory
+    note = "turn the heating off tomorrow at 8"
+    await leave_note(adult_member.person, owner_chat.person, f"Dana asks to {note}.", exact=note)
+    plan = {"why": "Turn the heating off at 8.", "on_return": True}
+    from_note = await owner_chat.say_with_tool(
+        "plan_set", {**plan, "their_words": note}, text="Thanks."
+    )
+    assert from_note.model_results[0]["their_words"] == "not_kept"
+    # The note still waits (nobody marked it told): their own passage is kept beside it.
+    theirs = await owner_chat.say_with_tool(
+        "plan_set",
+        {**plan, "their_words": "switch the heating off at 8"},
+        text="Tomorrow, switch the heating off at 8.",
+    )
+    assert "their_words" not in theirs.model_results[0]
+    kept = [(p.their_words, p.made_by_domo) for p in await pt.stored(factory)]
+    assert kept == [(None, False), ("switch the heating off at 8", False)]
+
+
+async def test_a_passage_of_a_message_they_wrote_while_the_turn_ran_is_theirs(session_factory):
+    # Their messages of the turn are the one it answers and those they wrote while it ran
+    # (``ToolContext.said_later``): each is their own, and a passage is in one of them, never
+    # across two (ruling R62).
+    alex, _ = await pt.two_people(session_factory)
+    turn = replace(
+        members_words(pt.context(alex, session_factory, said="Dana left a note?")),
+        said_later=("Remind me to ask Sam", "how the exam went"),
+    )
+    later = await mt.run_as("plan_set", {**EXAM_PLAN, "their_words": "Remind me to ask Sam"}, turn)
+    across = await mt.run_as("plan_set", {**EXAM_PLAN, "their_words": EXAM_WORDS}, turn)
+    assert "their_words" not in later and across["their_words"] == "not_kept"
+    assert [p.their_words for p in await pt.stored(session_factory)] == [
+        "Remind me to ask Sam",
+        None,
+    ]
 
 
 async def test_a_plan_without_their_words_is_still_theirs_then(session_factory):
@@ -866,15 +922,31 @@ async def test_a_plan_without_their_words_is_still_theirs_then(session_factory):
     assert (plan.their_words, plan.made_by_domo) == (None, False)
 
 
-async def test_a_new_why_with_a_members_words_in_the_turn_empties_the_kept_words(session_factory):
+async def test_a_new_why_keeps_their_passage_with_a_members_words_in_the_turn(session_factory):
     alex, _ = await pt.two_people(session_factory)
     asked = pt.context(alex, session_factory, said=EXAM_SAID)
     set_ = await mt.run_as("plan_set", {**EXAM_PLAN, "their_words": EXAM_WORDS}, asked)
     turn = members_words(pt.context(alex, session_factory, said="Actually, ask about the trip."))
-    # The change is made; the new why may come from the words told, so the old words go.
-    await mt.run_as("plan_change", {"id": set_["id"], "why": "Ask about the trip."}, turn)
+    # The new why comes with the passage of their own message it comes from: kept in place of
+    # the old words (the owner, 2026-11-27).
+    change = {"id": set_["id"], "why": "Ask about the trip.", "their_words": "ask about the trip"}
+    assert "their_words" not in await mt.run_as("plan_change", change, turn)
     (plan,) = await pt.stored(session_factory)
-    assert (plan.why, plan.their_words) == ("Ask about the trip.", None)
+    assert (plan.why, plan.their_words) == ("Ask about the trip.", "ask about the trip")
+
+
+async def test_a_new_why_from_a_members_words_alone_empties_the_kept_words(session_factory):
+    alex, _ = await pt.two_people(session_factory)
+    asked = pt.context(alex, session_factory, said=EXAM_SAID)
+    set_ = await mt.run_as("plan_set", {**EXAM_PLAN, "their_words": EXAM_WORDS}, asked)
+    turn = members_words(pt.context(alex, session_factory, said="Thanks!"))
+    # No passage of their own message, or words that are only in the note: the change is made,
+    # the new why may come from the words told, so the old words go.
+    for why, more in (("Ask about the trip.", {}), ("The trip.", {"their_words": DANAS_NOTE})):
+        result = await mt.run_as("plan_change", {"id": set_["id"], "why": why, **more}, turn)
+        assert result.get("their_words") == ("not_kept" if more else None)
+        (plan,) = await pt.stored(session_factory)
+        assert (plan.why, plan.their_words) == (why, None)
 
 
 async def test_a_plan_keeps_their_passage_after_a_made_tool_returned(session_factory):
@@ -895,11 +967,12 @@ async def test_a_plan_without_their_words_follows_who_began_the_turn(session_fac
     await mt.run_as("plan_set", EXAM_PLAN, turns.pop("after a tool he made returned"))
     (plan,) = await pt.stored(session_factory)
     assert (plan.their_words, plan.made_by_domo) == (None, False)
-    # Nobody wrote: it is his own.
+    # Nobody wrote, but a program's text is in the turn: never his own either (Task 27 of the
+    # voice: words from outside never become his idea, judged later with his own rights).
     for turn in turns.values():
         await mt.run_as("plan_set", EXAM_PLAN, replace(turn, said=None))
     his = [plan.made_by_domo for plan in await pt.stored(session_factory)]
-    assert sorted(his) == [False, True, True]
+    assert his == [False, False, False]
 
 
 async def test_a_new_why_outside_his_own_answer_empties_the_kept_words(session_factory):
@@ -920,12 +993,32 @@ async def test_a_new_why_outside_his_own_answer_empties_the_kept_words(session_f
     assert kept == dict.fromkeys(turns)
 
 
-async def test_a_plan_set_when_nobody_wrote_is_his_own_with_a_members_words(session_factory):
+async def test_a_plan_set_when_nobody_wrote_is_not_his_with_a_members_words(session_factory):
     alex, _ = await pt.two_people(session_factory)
     turn = members_words(pt.context(alex, session_factory, answers=False))
     await mt.run_as("plan_set", EXAM_PLAN, turn)
     (plan,) = await pt.stored(session_factory)
-    assert (plan.their_words, plan.made_by_domo) == (None, True)
+    # A member's words may have led to it: it is not his own idea (Task 27 of the voice), nor
+    # asked by the person (no words of theirs kept).
+    assert (plan.their_words, plan.made_by_domo) == (None, False)
+
+
+async def test_a_new_why_where_words_came_from_outside_is_no_longer_his(session_factory):
+    alex, _ = await pt.two_people(session_factory)
+    alone = pt.context(alex, session_factory, answers=False)
+    his = await mt.run_as("plan_set", EXAM_PLAN, alone)
+    stays = await mt.run_as("plan_set", {**EXAM_PLAN, "why": "Check the bins."}, alone)
+    # A new why with a member's words in the turn, or in a turn they wrote in: no longer his alone.
+    await mt.run_as(
+        "plan_change", {"id": his["id"], "why": "Ask about the trip."}, members_words(alone)
+    )
+    # A new why where nobody wrote and nothing came from outside, and a change of time alone
+    # anywhere, leave it his.
+    await mt.run_as("plan_change", {"id": stays["id"], "why": "Check the bins again."}, alone)
+    late = {"id": stays["id"], "when": "2030-01-08T09:00:00+00:00"}
+    await mt.run_as("plan_change", late, members_words(alone))
+    kept = {plan.why: plan.made_by_domo for plan in await pt.stored(session_factory)}
+    assert kept == {"Ask about the trip.": False, "Check the bins again.": True}
 
 
 # --- a memory shows where it comes from ---------------------------------------------------------

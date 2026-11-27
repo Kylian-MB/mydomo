@@ -646,12 +646,22 @@ Ce qui précède reste tel qu'il a été approuvé ; voici où le code a suivi u
   confiance a été établi. L'origine d'un souvenir (R50) ne bouge pas, et le juge du oui lit un tel tour comme
   avant (choix 67).
 - Suite de la relecture (2026-11-26), sans aucun refus de plus. Un plan est posé ou changé dans tous les tours,
-  mais les mots qu'il garde restent une marque de source, comme avant ces deux notes : aucun mot gardé quand des
-  mots d'un autre ont été dits au tour (un mot laissé, une demande, ce qu'a dit celui qui a répondu), et un
-  nouveau « pourquoi » écrit hors de sa propre réponse à la personne vide les mots gardés ; le plan ne compte
-  alors pas comme demandé le jour venu. Et un souvenir gardé dans un tour où personne n'a écrit, alors que le
+  mais les mots qu'il garde restent une marque de source : un nouveau « pourquoi » écrit hors de sa propre
+  réponse à la personne, sans passage de son message, vide les mots gardés ; le plan ne compte alors pas comme
+  demandé le jour venu. (Cette note disait aussi : aucun mot gardé quand des mots d'un autre ont été dits au
+  tour ; revu le 2026-11-27, note suivante.) Et un souvenir gardé dans un tour où personne n'a écrit, alors que le
   texte d'un programme y est (un outil a réveillé Domo, ou un outil qu'il a fait ou un programme a rendu du
   texte), a l'origine « du dehors » (`external`) : il est dit de personne, avec pour source « un programme ou un
   outil », au modèle comme au juge du oui, jamais sous le nom de la personne de la conversation, et sans son
   chiffre de confiance ; il peut toujours être confirmé. Un mot laissé dit à un tel tour reste les mots d'une
   personne (relayé), et dans un tour où la personne a écrit rien ne change (R50).
+- Décision du propriétaire (2026-11-27), qui revient sur un point de la note précédente. Cas : Alex écrit
+  « demain à 8 h, éteins le chauffage » dans un tour où un mot laissé par Dana est aussi là. Ses mots : « La
+  demande d'alex doit être faite et mot laissé, domo doit comprendre que c'est un mot et doit aussi comprendre
+  le mot ». Un plan garde donc le passage du propre message de la personne même quand un mot laissé, une demande
+  d'un autre ou le texte d'un outil est dans le tour : le jour venu il compte comme demandé par elle. La
+  vérification reste stricte : le passage doit être, mot pour mot, dans un de ses messages du tour ; des mots
+  qui ne sont que dans le mot laissé ne sont jamais gardés comme les siens, et un tour où personne n'a écrit
+  ne garde aucun mot. Un nouveau « pourquoi » (`plan_change`) prend de la même façon le passage de son message
+  dont il vient (`their_words`), à la place des mots gardés ; sans passage, hors de sa propre réponse, il les
+  vide comme avant.
