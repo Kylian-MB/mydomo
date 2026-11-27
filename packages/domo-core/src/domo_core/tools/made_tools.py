@@ -105,6 +105,7 @@ from domo_core.madetools.risks import (
     accounts_named,
     addresses_named,
     operations_of,
+    reaches_told,
 )
 from domo_core.madetools.schema import schema_problem
 from domo_core.madetools.service import (
@@ -130,6 +131,7 @@ from domo_core.text import MAX_DISPLAY_NAME_LENGTH, is_plain_line
 from domo_core.tools.context import (
     HOUSE_SET_ON_A_YES,
     InvalidArguments,
+    OutsideSource,
     ToolContext,
     ToolOutcome,
     WaitsForAYes,
@@ -790,11 +792,12 @@ class MadeToolLook:
                 # The description and the state alone: the rest is for those who use it.
                 return ToolOutcome(status="done", model_result=result, card=_CARD)
             await self._add_the_rest(session, tool, result, look, zone, ctx.clock())
+            reaches = tuple(reaches_told(operations_of(tool.operations)))
         launches = cast(list[JsonValue], result.get("launches", []))
         if any(isinstance(line, dict) and line.get("error") for line in launches):
             # The error text a program said enters the turn: it is nobody of the house's (a tool
-            # he made).
-            ctx.raise_outside_text("tool")
+            # he made, named for the judge).
+            ctx.raise_outside_text("tool", OutsideSource("tool", name=name, reaches=reaches))
         return ToolOutcome(status="done", model_result=result, card=_CARD)
 
     async def _add_the_rest(
@@ -1261,8 +1264,9 @@ class MadeToolCheck:
             "all_same": all(run.passed for run in runs),
         }
         # What the program gave and said enters the turn: it is nobody of the house's (a tool he
-        # makes).
-        ctx.raise_outside_text("tool")
+        # makes, named for the judge).
+        reaches = tuple(reaches_told(operations_of(given.operations)))
+        ctx.raise_outside_text("tool", OutsideSource("tool", name=given.name, reaches=reaches))
         return ToolOutcome(status="done", model_result=result, card=_CARD)
 
 

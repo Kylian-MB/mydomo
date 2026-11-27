@@ -100,6 +100,7 @@ from domo_core.prompts import BeingBuilt, ToolAside
 from domo_core.tools.context import (
     InternalTool,
     InvalidArguments,
+    OutsideSource,
     ToolContext,
     ToolOutcome,
     WaitsForAYes,
@@ -513,16 +514,20 @@ def said_by(
     result of a launch that is done, or the error of one that failed. ``program`` is the tool's
     name of the household (or that it was run by hand), ``reaches`` what it is built to reach
     (``risks.reaches_told``): both are the code's, from what is kept, never what the program says
-    of itself. A result the code wrote alone (a stop, a refusal, a launch that goes on) has
-    none."""
+    of itself; the same is the outcome's ``source``, for the judge. A result the code wrote
+    alone (a stop, a refusal, a launch that goes on) has none."""
     result = launched.result
     its_words = launched.status == "done" or (
         launched.status == "failed" and isinstance(result, dict) and "error" in result
     )
     if not its_words:
         return outcome
-    source: JsonObject = {"program": program, "built_to_reach": list(reaches), "read_as": READ_AS}
-    return replace(outcome, model_result={**outcome.model_result, "from": source})
+    told: JsonObject = {"program": program, "built_to_reach": list(reaches), "read_as": READ_AS}
+    return replace(
+        outcome,
+        model_result={**outcome.model_result, "from": told},
+        source=OutsideSource("tool", name=program, reaches=tuple(reaches)),
+    )
 
 
 def offers(

@@ -186,7 +186,13 @@ from domo_core.sandbox_client import NO_SANDBOX, Sandbox
 from domo_core.texts.scheduler import TextWriting
 from domo_core.texts.view import Texts, person_texts
 from domo_core.tools.agreements import agreements_of
-from domo_core.tools.context import Notify, ToolContext, WakeStarter, tools_kept_from
+from domo_core.tools.context import (
+    Notify,
+    OutsideSource,
+    ToolContext,
+    WakeStarter,
+    tools_kept_from,
+)
 from domo_core.tools.notes import from_unknown_among, notes_to_tell
 from domo_core.tools.registry import InternalTool, tools_for
 from domo_core.tools.rights_tools import writer_timeouts
@@ -1384,6 +1390,14 @@ async def prepare_turn(
         told_outside=told_outside,
         told_unknown=told_unknown,
         tool_woke=bool(tool_wakes) or (decided is not None and decided.from_outside),
+        # Which tools or programs woke him, as the context names them: told to the judge. A
+        # decided request whose result a program gave names none (which is not known here).
+        woke_by=tuple(
+            OutsideSource("wake", run=wake.run)
+            if wake.run is not None
+            else OutsideSource("wake", name=wake.tool, reaches=reaches.get(wake.tool))
+            for wake in tool_wakes
+        ),
         due_plans=tuple(due_plans),
         # The plans due are what they asked for only when each one keeps their exact words: an
         # action of the turn may be for any of them, and one Domo made alone keeps none.

@@ -12,12 +12,14 @@ from its words; and nothing kept private by anyone but ``private_of`` enters
 (``memory.service.visible_to``, in every query). Everything in it is data, never instructions.
 """
 
+import json
 import logging
 import math
+import re
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime
-from typing import Any, Final, Literal, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -62,6 +64,9 @@ from domo_core.policy.subjects import Subject, owner_of_now
 from domo_core.prompts import sendable, today_of
 from domo_core.texts.view import REFERENCE
 from domo_core.trust.service import facts_of, trust_of
+
+if TYPE_CHECKING:
+    from domo_core.tools.context import OutsideSource
 
 logger = logging.getLogger(__name__)
 
@@ -270,21 +275,84 @@ PROGRAM_TEXT_WORDS: Final[Mapping[str, str]] = {
 _THEIR_WORDS_TOO: Final = (
     "; the person's own words, said in this turn or kept by a plan of theirs, are theirs"
 )
+# What the judge reads when the code does not know which tool or program gave the text: said so,
+# never guessed.
+NOT_KNOWN_WHICH: Final = "a tool, not known which"
+_PROGRAM_NOT_KNOWN: Final = "a program, not known which"
+# What the judge reads when such text is the only words in the turn that are not the assistant's
+# own (``ToolContext.anyones_words``: no message, no note, no plan keeping someone's words, nobody
+# heard).
+PROGRAM_TEXT_ALONE_WORDS: Final = (
+    "these are the only words in this turn not the assistant's own: no person said or wrote "
+    "anything in it"
+)
+# The most programs named, the most addresses of each (the rest is counted).
+_MOST_SOURCES: Final = 5
+_MOST_REACHES: Final = 8
+_NOT_IN_A_NAME: Final = re.compile(r"[^a-z0-9_]")
+_NOT_IN_A_RUN: Final = re.compile(r"[^0-9a-f-]")
 
 
-def outside_words(*, unknown: bool, kinds: Sequence[str], their_words: bool) -> str | None:
+def _reach_words(reaches: Sequence[str] | None) -> str:
+    if reaches is None:
+        return "what it is built to reach is not known"
+    if not reaches:
+        return "built to reach no address"
+    shown = json.dumps(list(reaches[:_MOST_REACHES]), ensure_ascii=False)
+    more = len(reaches) - _MOST_REACHES
+    return f"built to reach {shown}" + (f" and {more} more" if more > 0 else "")
+
+
+def source_words(source: "OutsideSource") -> str:
+    """Which program ``source`` is, as the judge reads it: a tool by its name of the household, a
+    program run by hand by its run, with what it is built to reach as declared; or that the code
+    does not know which (``NOT_KNOWN_WHICH``). Kept to the characters a name or a run has."""
+    if source.run is not None:
+        run = _NOT_IN_A_RUN.sub("", source.run)
+        return f'a program run by hand (run "{run}"), {_reach_words(source.reaches)}'
+    if source.name is not None:
+        name = _NOT_IN_A_NAME.sub("", source.name)
+        return f'the tool "{name}", {_reach_words(source.reaches)}'
+    return _PROGRAM_NOT_KNOWN if source.kind == "program" else NOT_KNOWN_WHICH
+
+
+def _kind_words(kind: str, sources: Sequence["OutsideSource"]) -> str:
+    named = [source_words(source) for source in sources if source.kind == kind]
+    if not named:
+        named = [_PROGRAM_NOT_KNOWN if kind == "program" else NOT_KNOWN_WHICH]
+    more = len(named) - _MOST_SOURCES
+    which = " and ".join(named[:_MOST_SOURCES]) + (f" and {more} more" if more > 0 else "")
+    return f"{PROGRAM_TEXT_WORDS[kind]}, from {which}"
+
+
+def outside_words(
+    *,
+    unknown: bool,
+    kinds: Sequence[str],
+    their_words: bool,
+    sources: Sequence["OutsideSource"] = (),
+    alone: bool = False,
+) -> str | None:
     """Where the words not theirs in the turn come from, for ``IdeaTold.after_outside_words``: a
     note born of an unknown source (``unknown``: ``UNKNOWN_SOURCE_WORDS``), a program's, a site's
-    or a tool's text of each kind (``kinds``, ``PROGRAM_TEXT_WORDS``), with the person's own words
-    named as theirs when there are some (``their_words``); ``None`` when neither is in it."""
+    or a tool's text of each kind (``kinds``, ``PROGRAM_TEXT_WORDS``), each named by which
+    program it is and what it is built to reach (``sources``, ``source_words``: "not known which"
+    when the code does not know), with the person's own words named as theirs when there are
+    some (``their_words``), or, when nobody's words are in the turn at all (``alone``), that this
+    text is the only words not the assistant's own (``PROGRAM_TEXT_ALONE_WORDS``); ``None`` when
+    neither a note nor such text is in it."""
     parts: list[str] = []
     if unknown:
         parts.append(UNKNOWN_SOURCE_WORDS)
     if kinds:
         text = "a program's, a site's or a tool's text, nobody's wish: " + "; ".join(
-            PROGRAM_TEXT_WORDS[kind] for kind in kinds
+            _kind_words(kind, sources) for kind in kinds
         )
-        parts.append(text + (_THEIR_WORDS_TOO if their_words else ""))
+        if their_words:
+            text += _THEIR_WORDS_TOO
+        elif alone:
+            text += "; " + PROGRAM_TEXT_ALONE_WORDS
+        parts.append(text)
     return ". Also, ".join(parts) or None
 
 

@@ -11,8 +11,8 @@ together.
 
 Agreeing and changing are the person's own and nobody else's (ruling T11), in a turn that
 answers them (``ToolContext.answers_them``; words of another member, a note or a program's text
-in the turn have the judge weigh that it is their wish: ``DescribedAction.whose_judged``; a
-program's text alone, with no words of anyone, refuses it), or
+in the turn, even alone, have the judge weigh that it is their wish, told which program:
+``DescribedAction.whose_judged``; a turn with no words of anyone and no text refuses it), or
 that their own yes runs (``approved_by``: a call the judge held for their yes); the speaker is
 them (one the code is not sure of is weighed by the judge, never refused); and, when the person
 has another means of proof (a password, a passkey), after a proof by it (a clue of the speaker).
@@ -41,11 +41,12 @@ concerns when one is asked (``policy.subjects``: the person the target names, no
 turn). A known person's voice, where someone spoke or words of the house came in, is weighed by the
 judge from the context (``whose_judged``: final fix wave, case 4; a person may ask it for someone
 else's voice too, a parent for their child, weighed the same way); a program's or a site's text
-alone never causes it. An unknown voice's, in any turn. Once a known person's prints went as his
+alone is weighed so too, the judge told which program (the owner, 2026-11-26: it all depends on
+the source). An unknown voice's, in any turn. Once a known person's prints went as his
 idea, or on someone else's wish, he leaves them a word of his own (``Note.by_domo``, news for them),
 in his words (``VOICE_ERASED_WORD``, a text of his): never silently. Stopping the listening is the
-person's own words too (a program's text alone never turns a microphone off; beside a person's
-words or a note, the judge weighs whose wish it is). It turns the person's
+person's own words too (a program's text, alone or beside a person's words or a note: the judge
+weighs whose wish it is, told which program; no text and no words: refused). It turns the person's
 listening pages off at once (``channels.voice.live.LIVE_VOICES``: the page saying this reply, else
 all of theirs), and keeps nothing to act on later (it is never shown:
 ``policy.catalog.SILENT_ACTIONS``). "That was not me" (``voice_unlearn``) takes back what was learnt
@@ -108,8 +109,8 @@ _FAILED_CARD: Final[JsonObject] = {"key": "action.card.failed", "params": {}}
 _OPENED_CARD: Final = "action.card.phrase_agree_opened"
 _NO_ARGUMENTS: Final = "this tool takes no argument"
 _NOT_THEIR_WORDS: Final = (
-    "nobody's words are in this turn, only a program's text or none: this is done only from the "
-    "person's own words: ask them first, and do it when they answer"
+    "nobody's words and no text are in this turn: this is done only from the person's own words: "
+    "ask them first, and do it when they answer"
 )
 _NOWHERE_TO_SAY: Final = "a phrase cannot be said aloud here: this place has no microphone for it"
 _NOT_SURE: Final = "it is done only for the person themself, speaking for themself"
@@ -125,9 +126,6 @@ _NOT_THEIRS: Final = (
     "own idea"
 )
 _NAME_WHOSE: Final = "as your own idea, say whose voice: a person, or an unknown voice"
-_SOMEONE_SPOKE: Final = (
-    "a known person's voice is never erased from a program's or a site's text alone"
-)
 _NOT_THE_SAME: Final = "the name no longer means the person this was asked for: nothing was done"
 # The word he leaves someone whose learnt voice he erased as his own idea (a text of his).
 VOICE_ERASED_WORD: Final = "voice.prints_erased_word"
@@ -184,13 +182,13 @@ def _their_own_words(ctx: ToolContext) -> bool:
     ``told_unknown``, which the judge is told by name), beside the person's words or in a turn
     with none (a wake, the note alone); or a plan of theirs whose time came keeps their own words
     (``asked_before``); and a program's, a site's or a tool's text (``tool_woke``, ``outside``)
-    beside any of these (the owner, 2026-11-26: the assistant tells each source apart; the judge
-    is told which kinds, ``ToolContext.outside_kinds``). Refused: a turn with no words of anyone
-    (nobody asked, no note), a program's, a site's or a tool's text alone included: such text
-    never causes this by itself."""
+    beside any of these or alone (the owner, 2026-11-26: the assistant tells each source apart,
+    and the judge weighs it like a person would; he is told which kinds, which program and what
+    it is built to reach, and that nobody wrote when nobody did: ``ToolContext.outside_sources``).
+    Refused: a turn with no words of anyone (nobody asked, no note) and no such text."""
     if ctx.approved_by == ctx.person.id:
         return False
-    if not _words_of_someone(ctx):
+    if not _words_of_someone(ctx) and not _a_programs_text(ctx):
         raise InvalidArguments("not_possible", _NOT_THEIR_WORDS)
     return ctx.reply_message_id is None or ctx.outside_text or ctx.told_unknown
 
@@ -612,27 +610,18 @@ async def _whose_voice(arguments: JsonObject, ctx: ToolContext, *, his: bool) ->
     judged = False
     if not _replayed(ctx) and not await _nobody_spoke(ctx):
         # Someone spoke, or words came in: the judge weighs his idea from the context (case 4),
-        # words of an unknown source carried in a note too, told to him by name (the owner's
-        # rule, 2026-11-26). A program's or a site's text alone, with no word of anyone of the
-        # house, never.
-        if _only_a_programs_text(ctx):
-            raise InvalidArguments("not_possible", _SOMEONE_SPOKE)
+        # words of an unknown source carried in a note, or a program's, a site's or a tool's text
+        # alone, told to him by name (the owner's rule, 2026-11-26: it all depends on the source).
         judged = True
     async with ctx.session_factory() as session:
         named = await resolve_person(session, name, now=ctx.clock(), speaker=ctx.person.id)
     return f"person:{named.id}", judged
 
 
-def _only_a_programs_text(ctx: ToolContext) -> bool:
-    """Whether the only words in this turn that are not his own are a program's, a tool's or a
-    site's (``tool_woke``, ``outside``): nobody of the house spoke, wrote or was told, no note
-    and no plan keeps a person's words (``_words_of_someone``, as on the person's path)."""
-    someone = (
-        _words_of_someone(ctx)
-        or ctx.heard_meanwhile.raised
-        or (ctx.speaker is not None and not ctx.speaker.nobody_spoke)
-    )
-    return not someone and (ctx.tool_woke or ctx.outside.raised)
+def _a_programs_text(ctx: ToolContext) -> bool:
+    """Whether a program's, a tool's or a site's text is in this turn (``tool_woke``,
+    ``outside``): weighed by the judge, told which, never refused for its source."""
+    return ctx.tool_woke or ctx.outside.raised
 
 
 def _replayed(ctx: ToolContext) -> bool:

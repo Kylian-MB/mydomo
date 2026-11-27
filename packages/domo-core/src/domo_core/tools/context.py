@@ -122,6 +122,28 @@ class InvalidArguments(Exception):
         self.setting = setting
 
 
+# Which kind of text nobody of the house said came into a turn, as far as the code knows it: what a
+# tool Domo made gave (it may carry a site's text: the code cannot tell), what a program he ran by
+# hand gave, or what a tool's or a program's launch gave, which started the turn
+# (``ToolContext.tool_woke``).
+OutsideKind = Literal["tool", "program", "wake"]
+
+
+@dataclass(frozen=True)
+class OutsideSource:
+    """Which program's text came into a turn, as the code knows it (what the context already tells
+    Domo with it: ``madetools.offered.said_by``, ``prompts.ToolWake``): its ``kind``, the tool's
+    name of the household (``name``) or the id of a program run by hand (``run``), and what it is
+    built to reach as declared (``reaches``, ``madetools.risks.reaches_told``; ``None`` when it is
+    not known). Neither ``name`` nor ``run``: the code does not know which. Never what the program
+    says of itself."""
+
+    kind: OutsideKind
+    name: str | None = None
+    run: str | None = None
+    reaches: tuple[str, ...] | None = None
+
+
 @dataclass(frozen=True)
 class ToolOutcome:
     """What came of a call that was executed.
@@ -146,6 +168,9 @@ class ToolOutcome:
     (``conversation.execution.execute_allowed``): the rest of a chain continued that runs at once
     is stored as a chain that ran at once (``chain.run``), so that the history a limit reads counts
     its steps (``policy.facts``). ``None``: the tool's own type.
+
+    ``source`` is which program's own words the result holds, when it holds some (a tool Domo
+    made, a program he ran by hand: ``madetools.offered.said_by``): the judge is told it.
     """
 
     status: Literal["done", "failed"]
@@ -154,23 +179,18 @@ class ToolOutcome:
     card_once: JsonObject | None = None
     confirmation_id: UUID | None = None
     recorded_as: str | None = None
-
-
-# Which kind of text nobody of the house said came into a turn, as far as the code knows it: what a
-# tool Domo made gave (it may carry a site's text: the code cannot tell), what a program he ran by
-# hand gave, or what a tool's or a program's launch gave, which started the turn
-# (``ToolContext.tool_woke``).
-OutsideKind = Literal["tool", "program", "wake"]
+    source: OutsideSource | None = None
 
 
 @dataclass
 class OutsideText:
-    """The one mutable mark of a turn that text of a program came into it (``raised``), and of
-    which kinds (``kinds``), shared by its ``ToolContext`` and every copy of it
-    (``ToolContext.outside_text``)."""
+    """The one mutable mark of a turn that text of a program came into it (``raised``), of
+    which kinds (``kinds``) and from which programs, when the code knows (``sources``), shared by
+    its ``ToolContext`` and every copy of it (``ToolContext.outside_text``)."""
 
     raised: bool = False
     kinds: set[OutsideKind] = field(default_factory=lambda: set[OutsideKind]())
+    sources: list[OutsideSource] = field(default_factory=lambda: list[OutsideSource]())
 
 
 @dataclass
@@ -366,6 +386,7 @@ class ToolContext:
     told_unknown: bool = False
     told_unsure: bool = False
     tool_woke: bool = False
+    woke_by: tuple[OutsideSource, ...] = ()
     outside: OutsideText = field(default_factory=lambda: OutsideText(), repr=False)
     heard_meanwhile: HeardMeanwhile = field(default_factory=lambda: HeardMeanwhile(), repr=False)
     checked_first: bool = False
@@ -499,12 +520,16 @@ class ToolContext:
         text comes from."""
         return self.told_outside or self.tool_woke or self.outside.raised
 
-    def raise_outside_text(self, kind: OutsideKind = "tool") -> None:
-        """Say that text of a program came into this turn, for good, and of which kind (a tool
-        he made, by default): in this context and in every copy of it (``dataclasses.replace``
-        keeps the same ``outside``)."""
+    def raise_outside_text(
+        self, kind: OutsideKind = "tool", source: OutsideSource | None = None
+    ) -> None:
+        """Say that text of a program came into this turn, for good, of which kind (a tool he
+        made, by default) and from which program when the code knows it (``source``): in this
+        context and in every copy of it (``dataclasses.replace`` keeps the same ``outside``)."""
         self.outside.raised = True
         self.outside.kinds.add(kind)
+        if source is not None and source not in self.outside.sources:
+            self.outside.sources.append(source)
 
     @property
     def outside_kinds(self) -> tuple[OutsideKind, ...]:
@@ -513,6 +538,34 @@ class ToolContext:
         found = {*self.outside.kinds, *(("wake",) if self.tool_woke else ())}
         order: tuple[OutsideKind, ...] = ("tool", "program", "wake")
         return tuple(kind for kind in order if kind in found)
+
+    @property
+    def outside_sources(self) -> tuple[OutsideSource, ...]:
+        """Which programs' text is in this turn, as far as the code knows: those whose launch
+        started it (``woke_by``), then those that spoke in it, each once (``raise_outside_text``):
+        what the judge is told (``confirmations.case.outside_words``)."""
+        found: list[OutsideSource] = []
+        for source in (*self.woke_by, *self.outside.sources):
+            if source not in found:
+                found.append(source)
+        return tuple(found)
+
+    @property
+    def anyones_words(self) -> bool:
+        """Whether anyone's words are in this turn: the person's message (``reply_message_id``),
+        words told to it (a note of any mark: ``told_outside``, ``told_unknown``), a plan of
+        theirs keeping their words (``asked_before``), words heard while it ran
+        (``heard_meanwhile``), or a speaker who spoke. A program's, a site's or a tool's raw text
+        is none of them."""
+        speaker = self.speaker
+        return (
+            self.reply_message_id is not None
+            or self.told_outside
+            or self.told_unknown
+            or self.asked_before
+            or self.heard_meanwhile.raised
+            or (speaker is not None and not speaker.nobody_spoke)
+        )
 
     @property
     def someone_else_said_yes(self) -> bool:

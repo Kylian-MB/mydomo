@@ -242,15 +242,20 @@ async def test_a_phrase_tool_from_someone_elses_words_is_refused(session_factory
     alex, _ = await alex_and_dana(session_factory)
     await agreed(session_factory, alex, "spoken_phrase")
     vault = FakeVault()
-    # No words of anyone, or a program's text alone in the turn: never.
+    # No words of anyone and no text at all in the turn: never.
     no_words = context(alex, session_factory, vault=vault, answers=False)
+    for name in PHRASE_TOOLS:
+        assert await refusal(name, no_words) == "not_possible", name
+    # A program's text alone (the owner, 2026-11-26: it all depends on the source): the judge
+    # weighs it, told which program; agreeing one stays refused here, one is agreed already.
     by_a_program = context(alex, session_factory, vault=vault, answers=False)
     by_a_program.raise_outside_text("program")
     woken = context(alex, session_factory, vault=vault, answers=False)
     woken.tool_woke = True
-    for ctx in (no_words, by_a_program, woken):
-        for name in PHRASE_TOOLS:
-            assert await refusal(name, ctx) == "not_possible", name
+    for ctx in (by_a_program, woken):
+        assert await refusal("spoken_phrase_agree", ctx) == "not_possible"
+        for name in PHRASE_TOOLS[1:]:
+            assert (await TOOLS[name].describe({}, ctx.actor, ctx)).whose_judged, name
     # Beside their own words, the judge weighs it (the owner, 2026-11-26).
     beside = context(alex, session_factory, vault=vault)
     beside.raise_outside_text("tool")
@@ -371,11 +376,14 @@ async def test_stop_listening_is_silent_and_turns_the_pages_off(session_factory)
 
 async def test_stop_listening_is_for_the_persons_own_words(session_factory):
     alex, dana = await alex_and_dana(session_factory)
-    # No words of anyone, or a program's text alone, never turns a microphone off.
+    # No words of anyone and no text at all never turns a microphone off.
+    nothing = context(alex, session_factory, answers=False)
+    assert await refusal("voice_stop_listening", nothing) == "not_possible"
+    # A program's text alone: the judge weighs whose wish it is (the owner, 2026-11-26).
     by_a_program = context(alex, session_factory, answers=False)
     by_a_program.raise_outside_text("tool")
-    for ctx in (context(alex, session_factory, answers=False), by_a_program):
-        assert await refusal("voice_stop_listening", ctx) == "not_possible"
+    stop = TOOLS["voice_stop_listening"]
+    assert (await stop.describe({}, by_a_program.actor, by_a_program)).whose_judged
     # A program's text beside their own words: the judge weighs it (the owner, 2026-11-26).
     beside = context(alex, session_factory)
     beside.raise_outside_text("tool")
@@ -561,11 +569,13 @@ async def test_someone_elses_phrase_is_never_his_idea_nor_a_programs_text(sessio
     assert await his_refusal(
         "spoken_phrase_remove", context(alex, session_factory), {"person": "Dana"}
     ) == ("not_possible")
+    # A program's text alone: weighed by the judge, whose verdict alone lets it go.
     by_a_program = context(alex, session_factory, answers=False)
     by_a_program.raise_outside_text("program")
-    assert await refusal("spoken_phrase_remove", by_a_program, {"person": "Dana"}) == (
-        "not_possible"
+    described = await TOOLS["spoken_phrase_remove"].describe(
+        {"person": "Dana"}, by_a_program.actor, by_a_program
     )
+    assert (described.whose_judged, described.verdict_needed) == (True, True)
     # Someone else speaking at Alex's page does not have Alex's say.
     at_his_page = context(alex, session_factory, speaker=sure(dana))
     assert await refusal("spoken_phrase_remove", at_his_page, {"person": "Dana"}) == (
@@ -821,14 +831,14 @@ async def test_unlearn_with_no_time_forgets_the_voice_entirely(session_factory):
 async def test_unlearn_is_the_persons_own_and_checks_its_argument(session_factory):
     alex, dana = await alex_and_dana(session_factory)
     await two_voices(session_factory, alex, dana)
-    # A program's text alone: refused; beside their words: judged.
+    # A program's text alone, or beside their words: judged.
     by_a_program = context(alex, session_factory, answers=False)
     by_a_program.raise_outside_text("program")
-    assert await refusal("voice_unlearn", by_a_program, {"since_minutes": None}) == "not_possible"
     beside = context(alex, session_factory)
     beside.raise_outside_text("program")
     whole = {"since_minutes": None}
-    assert (await TOOLS["voice_unlearn"].describe(whole, beside.actor, beside)).whose_judged
+    for ctx in (by_a_program, beside):
+        assert (await TOOLS["voice_unlearn"].describe(whole, ctx.actor, ctx)).whose_judged
     ctx = context(alex, session_factory)
     tool = TOOLS["voice_unlearn"]
     wrong = (
@@ -919,10 +929,10 @@ async def test_his_idea_on_a_known_voice_where_someone_spoke_is_judged(session_f
     ):
         described = await TOOLS["voice_unlearn"].describe(whole, domo_actor(), ctx)
         assert described.whose_judged
-    # A program's text alone, with nobody of the house in the turn: never.
+    # A program's text alone, with nobody of the house in the turn: judged too.
     by_a_program = nobody_spoke(alex, session_factory)
     by_a_program.raise_outside_text()
-    assert await his_refusal("voice_unlearn", by_a_program, whole) == "not_possible"
+    assert (await TOOLS["voice_unlearn"].describe(whole, domo_actor(), by_a_program)).whose_judged
     # Alone with nobody's words, as before: nothing to weigh.
     alone = await TOOLS["voice_unlearn"].describe(
         whole, domo_actor(), nobody_spoke(alex, session_factory)
@@ -1654,21 +1664,32 @@ async def test_a_plan_keeping_the_persons_words_is_judged_never_refused(session_
     assert described.whose_judged
 
 
-async def test_still_refused_with_nobody_s_words_or_a_programs_text_alone(session_factory):
-    # What the code still refuses: no words of anyone in the turn, or a program's, a site's or a
-    # tool's raw text alone (no words of any person, no note).
+async def test_a_programs_text_alone_is_judged_on_both_paths_and_nothing_at_all_refused(
+    session_factory,
+):
+    # The owner (2026-11-26): it all depends on the source; the judge weighs it like a person
+    # would. A program's, a site's or a tool's raw text alone in the turn, no word of anyone: the
+    # call goes to the judge, on the person's path and his idea's alike. Still refused by code: a
+    # turn with no word of anyone and no text at all.
+    from domo_core.policy import barrier
+
     alex, dana = await alex_and_dana(session_factory)
     await agreed(session_factory, alex, "spoken_phrase")
     await two_voices(session_factory, alex, dana)
     nothing = context(alex, session_factory, answers=False)
+    for name, arguments in VOICE_TOOLS_CALLS:
+        assert await refusal(name, nothing, arguments) == "not_possible", name
     woken = context(alex, session_factory, answers=False)
     woken.tool_woke = True
     read = context(alex, session_factory, answers=False)
     read.raise_outside_text("program")
-    for ctx in (nothing, woken, read):
+    for ctx in (woken, read):
         for name, arguments in VOICE_TOOLS_CALLS:
-            assert await refusal(name, ctx, arguments) == "not_possible", name
-    # His idea where the only outside words are a program's text.
+            described = await TOOLS[name].describe(arguments, ctx.actor, ctx)
+            assert described.whose_judged, name
+            decision = barrier.decide(ctx.actor, described, DEFAULT_POLICY)
+            assert getattr(decision, "judge_identity", False), name
+    # His idea where the only outside words are a program's text: judged.
     whole = {"since_minutes": None, "person": "Dana"}
     for kind in ("wake", "tool", "program"):
         only_a_program = nobody_spoke(alex, session_factory)
@@ -1676,8 +1697,121 @@ async def test_still_refused_with_nobody_s_words_or_a_programs_text_alone(sessio
             only_a_program.tool_woke = True
         else:
             only_a_program.raise_outside_text(kind)  # type: ignore[arg-type]
-        assert await his_refusal("voice_unlearn", only_a_program, whole) == "not_possible"
+        described = await TOOLS["voice_unlearn"].describe(whole, domo_actor(), only_a_program)
+        assert described.whose_judged, kind
+    # Nobody's words and no text at all: his own idea, as before, nothing to weigh.
+    alone = await TOOLS["voice_unlearn"].describe(
+        whole, domo_actor(), nobody_spoke(alex, session_factory)
+    )
+    assert not alone.whose_judged
     assert len(await prints_of(session_factory)) == 4
+
+
+def test_the_judge_is_told_which_program_what_it_reaches_and_that_nobody_wrote():
+    from domo_core.confirmations.case import (
+        NOT_KNOWN_WHICH,
+        PROGRAM_TEXT_ALONE_WORDS,
+        PROGRAM_TEXT_WORDS,
+        outside_words,
+    )
+    from domo_core.tools.context import OutsideSource
+
+    doors = OutsideSource("wake", name="doors", reaches=("doors.lan:8123 (in the house)",))
+    told = outside_words(
+        unknown=False, kinds=("wake",), their_words=False, sources=(doors,), alone=True
+    )
+    assert told is not None
+    assert PROGRAM_TEXT_WORDS["wake"] in told
+    assert 'the tool "doors", built to reach ["doors.lan:8123 (in the house)"]' in told
+    assert PROGRAM_TEXT_ALONE_WORDS in told
+    assert NOT_KNOWN_WHICH not in told
+    # Which tool, the code does not know: said so, never invented.
+    unknown = outside_words(unknown=False, kinds=("tool",), their_words=False, alone=True)
+    assert unknown is not None and NOT_KNOWN_WHICH in unknown
+    # A program run by hand: named by its run; a tool declaring no address says so.
+    by_hand = OutsideSource("program", run="ab12", reaches=())
+    quiet = OutsideSource("tool", name="tally", reaches=())
+    both = outside_words(
+        unknown=False, kinds=("tool", "program"), their_words=True, sources=(by_hand, quiet)
+    )
+    assert both is not None
+    assert 'a program run by hand (run "ab12"), built to reach no address' in both
+    assert 'the tool "tally", built to reach no address' in both
+    # Beside the person's own words, nobody-wrote is never said.
+    assert PROGRAM_TEXT_ALONE_WORDS not in both
+    # A tool no longer ready: what it reaches is not known.
+    gone = OutsideSource("wake", name="gone")
+    told = outside_words(unknown=False, kinds=("wake",), their_words=False, sources=(gone,))
+    assert told is not None and 'the tool "gone", what it is built to reach is not known' in told
+
+
+async def test_a_tools_wake_alone_saying_stop_listening_is_judged_and_a_silent_judge_asks_a_proof(
+    session_factory, monkeypatch
+):
+    # The house's hub woke him through a tool of his ("doors"), nobody wrote: what it gave asks
+    # to stop listening. Judged, the judge told the tool, what it reaches and that nobody wrote;
+    # silent, a proof is asked: never a silent "do". Trusted, it is done.
+    from domo_core.confirmations.case import PROGRAM_TEXT_ALONE_WORDS
+    from domo_core.confirmations.judge import Judgement, fallback
+    from domo_core.confirmations.models import Confirmation
+    from domo_core.conversation.execution import handle_tool_call
+    from domo_core.llm.types import ToolCall
+    from domo_core.tools.context import OutsideSource
+
+    alex, dana = await alex_and_dana(session_factory)
+    await two_voices(session_factory, alex, dana)
+    conversation_id, reply_id = await _alex_s_reply(session_factory, alex)
+    doors = OutsideSource("wake", name="doors", reaches=("doors.lan:8123 (in the house)",))
+    ctx = replace(
+        context(alex, session_factory, answers=False),
+        speaker=None,
+        conversation_id=conversation_id,
+        domo_message_id=reply_id,
+        tool_woke=True,
+        woke_by=(doors,),
+    )
+    cases = _judge(monkeypatch, fallback("no_model", they_asked=False))
+    stop = ToolCall("s", "voice_stop_listening", "{}")
+    record = await handle_tool_call(stop, ctx=ctx, reply_id=reply_id)
+    told = cases[0].as_json()["idea"]["after_outside_words"]
+    assert isinstance(told, str)
+    assert 'the tool "doors", built to reach ["doors.lan:8123 (in the house)"]' in told
+    assert PROGRAM_TEXT_ALONE_WORDS in told
+    assert record.status == "waiting", record.model_result
+    async with session_factory() as reader:
+        [request] = await reader.scalars(select(Confirmation))
+    assert (request.ask, request.asked_by) == ("proof", "judge")
+    _judge(monkeypatch, Judgement("do"))
+    record = await handle_tool_call(stop, ctx=ctx, reply_id=reply_id)
+    assert record.status == "done", record.model_result
+
+
+async def test_his_idea_on_a_programs_text_alone_is_judged_and_left_undone_when_silent(
+    session_factory, monkeypatch
+):
+    from domo_core.confirmations.case import NOT_KNOWN_WHICH, PROGRAM_TEXT_ALONE_WORDS
+    from domo_core.confirmations.judge import Judgement, fallback
+    from domo_core.conversation.execution import handle_tool_call
+
+    alex, dana = await alex_and_dana(session_factory)
+    await two_voices(session_factory, alex, dana)
+    conversation_id, reply_id = await _alex_s_reply(session_factory, alex)
+    ctx = _his_own_turn(replace(context(alex, session_factory), conversation_id=conversation_id))
+    # What a tool gave is in the turn, which tool the code does not know here.
+    ctx.raise_outside_text("tool")
+    cases = _judge(monkeypatch, fallback("no_model", they_asked=False))
+    erase = _erase({"since_minutes": None, "person": "Dana"})
+    record = await handle_tool_call(erase, ctx=ctx, reply_id=reply_id)
+    assert len(cases) == 2
+    told = cases[0].as_json()["idea"]["after_outside_words"]
+    assert NOT_KNOWN_WHICH in told and PROGRAM_TEXT_ALONE_WORDS in told
+    assert record.model_result["reason"] == "judge_silent"
+    assert len(await prints_of(session_factory)) == 4
+    assert await words_left(session_factory, dana) == []
+    _judge(monkeypatch, Judgement("do"))
+    record = await handle_tool_call(erase, ctx=ctx, reply_id=reply_id)
+    assert record.status == "done", record.model_result
+    assert len(await words_left(session_factory, dana)) == 1
 
 
 async def test_a_programs_text_beside_a_note_or_their_words_is_judged_on_both_paths(

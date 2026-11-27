@@ -226,6 +226,7 @@ from domo_core.tools.context import (
     InvalidArguments,
     NamesPeople,
     NothingDoneInTime,
+    OutsideKind,
     OwnIdea,
     PlansSteps,
     ToolContext,
@@ -461,8 +462,10 @@ async def execute_allowed(
         # said: from here the turn is marked (``ToolContext.outside_text``: no longer his own
         # answer, and what he keeps in it is not surely the person's words), on this context and
         # on every copy of it (a request decided in the turn runs on one); the judge is told which
-        # kind (``ToolContext.outside_kinds``).
-        ctx.raise_outside_text("program" if tool.action_type == PROGRAM_RUN else "tool")
+        # kind (``ToolContext.outside_kinds``) and which program, when its result holds its own
+        # words (``ToolOutcome.source``: else, "not known which").
+        kind: OutsideKind = "program" if tool.action_type == PROGRAM_RUN else "tool"
+        ctx.raise_outside_text(kind, outcome.source)
     result: JsonObject = {"status": outcome.status}
     result.update((key, value) for key, value in outcome.model_result.items() if key != "status")
     return ActionRecord(
@@ -1248,13 +1251,17 @@ def _idea_told(ctx: ToolContext, idea: OwnIdea | None, born_of: str | None) -> I
     (``after_outside_words``, ruling R77): what came of it may have been prompted by words that
     are not the person's. Among them, a note born of a source nobody of the house is known for
     (``ToolContext.told_unknown``) is told by name (``UNKNOWN_SOURCE_WORDS``), and so is each
-    kind of a program's, a site's or a tool's text in it (``ToolContext.outside_kinds``), the
-    person's own words named as theirs beside it (``outside_words``): the judge weighs the source
-    like a person would, and the code refuses nothing for it."""
+    kind of a program's, a site's or a tool's text in it (``ToolContext.outside_kinds``), with
+    which program it is and what it is built to reach (``ToolContext.outside_sources``), the
+    person's own words named as theirs beside it, or, with nobody's words in the turn at all
+    (``ToolContext.anyones_words``), that nobody said or wrote anything (``outside_words``): the
+    judge weighs the source like a person would, and the code refuses nothing for it."""
     told = outside_words(
         unknown=ctx.told_unknown,
         kinds=ctx.outside_kinds,
         their_words=ctx.reply_message_id is not None or ctx.asked_before,
+        sources=ctx.outside_sources,
+        alone=not ctx.anyones_words,
     )
     outside: bool | str = ctx.outside_text if told is None else told
     if idea is None:
