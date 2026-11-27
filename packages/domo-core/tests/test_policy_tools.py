@@ -315,6 +315,10 @@ def test_the_voice_settings_are_told_with_their_values():
     description = TOOLS["policy_update"].definition.description
     for word in ("speech.hear_outside", "voice.after_a_gesture", "held key"):
         assert word in description, word
+    # Found from the owner's plain words: how the voice listens, holding something to talk with
+    # everything kept at home, or letting what is heard leave the house.
+    for words in ("how the voice listens", "while holding it", "stays at home", "leave the house"):
+        assert words in description, words
 
 
 async def test_only_the_owner_chooses_how_the_voice_listens(adult_chat, current_settings):

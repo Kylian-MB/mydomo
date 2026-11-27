@@ -179,7 +179,8 @@ class PolicyUpdate:
         name="policy_update",
         description=(
             "Record their choice: how long a request may wait, the rights writer's time, "
-            "the household's time zone, how big your tools' own base may grow. A null value "
+            "the household's time zone, how big your tools' own base may grow, how the voice "
+            "listens. A null value "
             "clears it. Whether an action is confirmed, "
             'and how, is not a setting: your judge decides it, and their rules "always ask me '
             'before…" are rights (rights_propose). Keys: '
@@ -191,10 +192,12 @@ class PolicyUpdate:
             f"{TOOLS_BASE_KEY} (how big the base your tools keep their data in may grow, a whole "
             "number of MB from 16 to 1048576, 1024 unless they choose: beyond it a write of a "
             f"tool is refused); {HEAR_OUTSIDE_KEY} (yes or no, no unless they choose: whether what "
-            "the microphones hear may go to a model outside the house); "
+            "the microphones hear may go to a model outside the house: the voice then listens "
+            "freely, and the sound and the words said near it leave the house); "
             f"{VOICE_GESTURE_KEY} (yes or no, no unless they choose: when no model at home can "
             "tell whether a sentence is said to you, the voice hears only what is said while the "
-            "gesture is made, such as a held key)."
+            "gesture is made, such as a held key: they talk while holding it, and what is heard "
+            "stays at home)."
         ),
         parameters={
             "type": "object",
