@@ -42,7 +42,7 @@ from domo_core.llm.types import (
     ToolChoice,
     ToolDefinition,
 )
-from domo_core.policy.settings import VOICE_GESTURE_KEY, update_policy_setting
+from domo_core.policy.settings import HEAR_OUTSIDE_KEY, VOICE_GESTURE_KEY, update_policy_setting
 from domo_core.proofs.kinds import PROOF_KINDS, SpokenPhraseProof, phrase_ref
 from domo_core.proofs.service import agree
 from fakes import FakeChatModel, is_judge_call
@@ -53,6 +53,7 @@ from voice_session_support import (
     HOME_CHAT_MODEL,
     PRINT_MODEL,
     SAY_MODEL,
+    FakePage,
     House,
     a_household_that_hears_at_home,
     add_key,
@@ -62,6 +63,17 @@ from voice_session_support import (
 
 MIC = "desk-1"
 VOICE_DIR = Path(domo_core.__file__).parent / "channels" / "voice"
+# What the owner is told when nothing at home can weigh what is heard, and he did not choose.
+NO_ATTENTION_FACT = {
+    "hearing": "no_attention",
+    "why": session_module.NO_ATTENTION_WHY,
+    "outside_allowed": False,
+    "choices": [
+        {"setting": VOICE_GESTURE_KEY, "value": "yes", "means": session_module.GESTURE_MEANS},
+        {"setting": HEAR_OUTSIDE_KEY, "value": "yes", "means": session_module.OUTSIDE_MEANS},
+    ],
+    "chosen_with": "policy_update",
+}
 
 
 @pytest.fixture(autouse=True)
@@ -430,18 +442,20 @@ async def test_without_a_local_model_the_voice_stays_off_and_the_owner_is_told_o
     assert page.of("listening") and set(map(str, page.of("listening"))) == {
         str({"type": "listening", "on": False})
     }
-    assert page.socket.messages()[0] == {"type": "state", "hearing": "unavailable"}
+    # Its own state, never the "cannot hear" of a hearing that fails: the owner is the one who
+    # chooses, and his page says so.
+    assert page.socket.messages()[0] == {
+        "type": "state",
+        "hearing": "no_attention",
+        "chooses": True,
+    }
+    assert {"type": "state", "hearing": "unavailable"} not in page.socket.messages()
     assert h.attention.asked == []
     assert await h.messages() == []
-    # Told once, in his own conversation, as a fact with the choices he has (his words say it).
+    # Told once, in his own conversation, as a fact with the choices he has and what each means
+    # (his words say it, in plain words: the setting's name is for his tool).
     assert [w[0] for w in h.woken.wakes] == [owner.id]
-    assert h.woken.contents() == [
-        {
-            "hearing": "no_attention",
-            "outside_allowed": False,
-            "choices": ["speech.hear_outside", VOICE_GESTURE_KEY],
-        }
-    ]
+    assert h.woken.contents() == [NO_ATTENTION_FACT]
     # He chose: only after a gesture. The page is told, and a sentence said with it is his.
     async with session_factory() as writer:
         await update_policy_setting(
@@ -470,6 +484,112 @@ async def test_without_a_local_model_the_voice_stays_off_and_the_owner_is_told_o
     kitchen = h.page("kitchen")
     await until(lambda: bool(kitchen.of("state")))
     assert kitchen.socket.messages()[0] == {"type": "state", "hearing": "gesture"}
+
+
+async def no_small_model_at_home(session_factory, owner) -> None:
+    """A paid key that thinks, the speech service at home (for the household), and no small
+    model at home."""
+    await add_key(session_factory, owner, CHAT_MODELS, home=False)
+    await add_key(
+        session_factory, owner, (HEAR_MODEL, PRINT_MODEL, SAY_MODEL), home=True, general=True
+    )
+
+
+async def test_a_fact_whose_turn_could_not_run_is_told_at_the_next_switch_on(
+    house, session_factory, owner, caplog
+):
+    await no_small_model_at_home(session_factory, owner)
+    h = await house(keys=False)
+    h.woken.runs = False  # his conversation stays busy (the welcome being written, say)
+    first = h.page("desk-a")
+    await until(lambda: bool(first.of("listening")) and len(h.woken.wakes) == 1)
+    await h.turns_over()
+    # Not told: a line says so (the fact's name alone), and it is kept to tell.
+    assert "could not be told" in caplog.text and "no_attention" in caplog.text
+    # He turns the voice on again: told this time.
+    h.woken.runs = True
+    second = h.page("desk-b")
+    await until(lambda: bool(second.of("listening")) and len(h.woken.wakes) == 2)
+    await h.turns_over()
+    assert h.woken.contents() == [NO_ATTENTION_FACT, NO_ATTENTION_FACT]
+    # Told once is once: a third switch-on wakes him no more.
+    third = h.page("desk-c")
+    await until(lambda: bool(third.of("listening")))
+    await h.turns_over()
+    assert len(h.woken.wakes) == 2
+
+
+async def test_a_fact_being_told_is_not_told_again_meanwhile(
+    house, session_factory, owner, monkeypatch
+):
+    await no_small_model_at_home(session_factory, owner)
+    h = await house(keys=False)
+    let_go = asyncio.Event()
+    asked: list[uuid.UUID] = []
+
+    async def slow(person_id: uuid.UUID, wakes: Sequence[Any]) -> bool:
+        asked.append(person_id)
+        await let_go.wait()  # his conversation is busy: the wake waits for it to be free
+        return True
+
+    monkeypatch.setattr(type(h.woken), "__call__", lambda self, p, w: slow(p, w))
+    first = h.page("desk-a")
+    await until(lambda: len(asked) == 1)
+    second = h.page("desk-b")
+    await until(lambda: bool(second.of("listening")))
+    assert len(asked) == 1
+    let_go.set()
+    await h.turns_over()
+    assert first.of("listening") and len(asked) == 1
+
+
+async def test_another_member_is_not_told_he_explains_the_choices(
+    house, session_factory, owner, add_member
+):
+    await no_small_model_at_home(session_factory, owner)
+    h = await house(keys=False)
+    dana = await add_member("Dana", "adult")
+    socket = FakePage()
+    session = session_module.VoiceSession(
+        h.deps,
+        person_id=dana.id,
+        microphone="dana-desk",
+        origin="https://domo.example.com/",
+        sink=socket,
+    )
+    try:
+        await until(lambda: bool(socket.of("state")))
+        # The owner chooses; Dana's page says he was told, never that she is offered the choice.
+        assert socket.of("state")[0] == {
+            "type": "state",
+            "hearing": "no_attention",
+            "chooses": False,
+        }
+        # The owner is told, in his own conversation; nobody else is.
+        await until(lambda: bool(h.woken.wakes))
+        await h.turns_over()
+        assert [w[0] for w in h.woken.wakes] == [owner.id]
+    finally:
+        await session.close()
+
+
+async def test_once_he_chose_the_gesture_a_page_that_opens_shows_hold_to_talk(
+    house, session_factory, owner, live_clock
+):
+    await no_small_model_at_home(session_factory, owner)
+    async with session_factory() as writer:
+        await update_policy_setting(
+            writer, key=VOICE_GESTURE_KEY, value="yes", by=owner.id, now=live_clock()
+        )
+        await writer.commit()
+    h = await house(keys=False)
+    page = h.page(MIC)
+    await until(lambda: bool(page.of("state")))
+    await h.turns_over()
+    assert page.socket.messages()[0] == {"type": "state", "hearing": "gesture"}
+    # The voice stays on, with the button to hold, and nothing is told any more.
+    assert page.of("listening") == []
+    assert h.woken.wakes == []
 
 
 # --- words kept while a reply is written are answered aloud, once (ruling T25) --------------

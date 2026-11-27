@@ -118,18 +118,43 @@ class MeteredSpeechOpener:
         return kept[1].get(model)
 
 
+@dataclass
+class Told:
+    """The facts the owner was told once in this process (``told``), and those being told now
+    (``telling``), shared by the voice sessions. A fact is told once the assistant's turn that
+    tells it ran; one whose turn could not run stays to tell, and the next try tells it."""
+
+    told: set[str] = field(default_factory=lambda: set[str]())
+    telling: set[str] = field(default_factory=lambda: set[str]())
+
+    def begin(self, fact: str) -> bool:
+        """Whether ``fact`` is to be told now (neither told nor being told): it is then being
+        told until ``end``."""
+        if fact in self.told or fact in self.telling:
+            return False
+        self.telling.add(fact)
+        return True
+
+    def end(self, fact: str, *, told: bool) -> None:
+        """``fact`` is no longer being told; ``told``: his turn ran, and it is never told again."""
+        self.telling.discard(fact)
+        if told:
+            self.told.add(fact)
+
+
 @dataclass(frozen=True)
 class VoiceDeps:
     """What a voice session needs: what every turn needs (``turn``), the metered speech clients
     (``speech``), the count of the password checks (``throttle``: the account page's, which a
     proof shares; a spoken phrase is counted by the gatekeeper), how the assistant is woken with a
     fact of the channel (``wake``; ``None``: ``conversation.tool_wakes.tool_wake_turn`` on
-    ``turn``), and the facts the owner was already told in this process (``told``). The voice
-    sessions live in the process and the moments they share are ``live.LIVE_VOICES``, the one
-    object the sessions and the tool that stops the listening both reach."""
+    ``turn``), and the facts the owner was already told in this process, or is being told
+    (``told``). The voice sessions live in the process and the moments they share are
+    ``live.LIVE_VOICES``, the one object the sessions and the tool that stops the listening both
+    reach."""
 
     turn: TurnDeps
     speech: MeteredSpeechOpener
     throttle: LoginThrottle
     wake: Wake | None = None
-    told: set[str] = field(default_factory=lambda: set[str]())
+    told: Told = field(default_factory=Told)

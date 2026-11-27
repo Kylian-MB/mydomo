@@ -408,6 +408,35 @@ async def test_while_the_phrase_is_held_back_the_window_takes_nothing_by_voice(
     assert await name_of(session_factory, owner) == "Alex B"
 
 
+async def test_a_hold_whose_wake_could_not_run_is_told_at_the_next_sentence(
+    voice, session_factory, owner
+):
+    v = voice(asks_a_proof())
+    await a_proof_is_asked(v, session_factory, owner)
+    v.vault.held_back = 60.0
+    v.woken.runs = False  # his conversation stays busy
+    await v.say(PHRASE)
+    # Not told: the next sentence of the hold tries again, and once told, never again.
+    v.woken.runs = True
+    await v.say(ORDINARY)
+    await v.say(ORDINARY)
+    assert v.woken.contents() == [{"proof": "did_not_work"}] * 2
+
+
+async def test_an_outage_whose_wake_could_not_run_is_told_at_the_next_sentence(
+    voice, session_factory, owner
+):
+    v = voice(asks_a_proof())
+    await a_proof_is_asked(v, session_factory, owner)
+    v.vault.down = True
+    v.woken.runs = False
+    await v.say(PHRASE)
+    v.woken.runs = True
+    await v.say(ORDINARY)
+    await v.say(ORDINARY)
+    assert v.woken.contents() == [{"proof": "not_checked"}] * 2
+
+
 async def test_with_the_gatekeeper_out_of_reach_he_is_woken_once(voice, session_factory, owner):
     v = voice(asks_a_proof())
     c = await a_proof_is_asked(v, session_factory, owner)

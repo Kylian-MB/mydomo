@@ -18,8 +18,11 @@ From the page, text frames (JSON, at most ``MAX_TEXT_BYTES``), each one exactly:
   to its end;
 * ``{"type": "off"}``: the person turned the voice off.
 
-To the page, text frames: ``state`` (``hearing``: ``ready``, ``preparing``, ``unavailable``, or
-``gesture``: the page sends a moment of speech only while the person holds the gesture to talk),
+To the page, text frames: ``state`` (``hearing``: ``ready``, ``preparing``, ``unavailable``,
+``gesture``: the page sends a moment of speech only while the person holds the gesture to talk,
+or ``no_attention`` with ``chooses``: the house hears, but nothing at home can judge whether a
+sentence is said to the assistant and no choice was made, so the voice stays off; ``chooses``
+when the page's person is the one who chooses, told in the conversation),
 ``say`` (``reply``, ``index``, ``rate``) then the sound as binary frames (16-bit, ``SAY_RATE``,
 mono) then ``say_end``; ``duck``, ``stop``, ``resume`` (the page raises its sound, and a reply
 it was told to stop plays its next sentences); ``speech_unavailable`` (``reason``);
@@ -160,7 +163,7 @@ def dump(message: PageMessage) -> str:
 
 # --- to the page ------------------------------------------------------------------------------
 
-type Hearing = Literal["ready", "preparing", "unavailable", "gesture"]
+type Hearing = Literal["ready", "preparing", "unavailable", "gesture", "no_attention"]
 
 
 def duck() -> JsonObject:
@@ -181,6 +184,13 @@ def resume() -> JsonObject:
 def state(hearing: Hearing) -> JsonObject:
     """Whether the assistant can hear."""
     return {"type": "state", "hearing": hearing}
+
+
+def no_attention(*, chooses: bool) -> JsonObject:
+    """The house hears, but nothing at home can judge whether a sentence is said to the assistant,
+    and no choice was made: the voice stays off. ``chooses``: the page's person is the one who
+    chooses (the assistant tells them the choices in the conversation)."""
+    return {"type": "state", "hearing": "no_attention", "chooses": chooses}
 
 
 def say(reply: UUID, index: int) -> JsonObject:

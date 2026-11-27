@@ -64,10 +64,12 @@ voice nobody knows, the last lines it is given are those of its own exchange wit
 remembered, else the page person's (at home, like the sentence). A sentence that is not for him
 enters no discussion: it is kept in memory for this microphone (``channels.voice.unaddressed``)
 and sorted once the room is quiet. With no model for the judgement (none at home, and the owner
-keeps what is heard at home), the voice stays off and the owner is told once by the assistant,
-who offers the choice (``speech.hear_outside``, or ``voice.after_a_gesture``); once the owner
-chose to be heard after a gesture, the page is told (``{"type": "state", "hearing": "gesture"}``)
-and a sentence said with the gesture is for him.
+keeps what is heard at home), the voice stays off (the page is told so, ``no_attention``, never
+that it cannot hear) and the owner is told once by the assistant, who offers the choice
+(``speech.hear_outside``, or ``voice.after_a_gesture``), once meaning once his turn ran (a turn
+that could not run is told at the next try); once the owner chose to be heard after a gesture,
+the page is told (``{"type": "state", "hearing": "gesture"}``) and a sentence said with the
+gesture is for him.
 
 A voice read like nobody known at this signed-in page is not made a stranger by the score alone
 (audit case 5): once any open proof window weighed it by code, and when no phrase moment may take
@@ -202,6 +204,23 @@ logger = logging.getLogger(__name__)
 WAITING_UTTERANCES: Final = 3
 # The name the voice channel wakes the assistant under, with a fact of the channel as data.
 WAKE_TOOL: Final = "voice_channel"
+# What the owner is told, as data, when nothing at home can weigh what is heard and he did not
+# choose: why the voice cannot stay on, and what each choice means for the household. He says it
+# in his own plain words; the settings' names are for his tool (``POLICY_TOOL``).
+NO_ATTENTION_WHY: Final = (
+    "nothing at home can judge quickly whether a sentence heard is said to you, so the voice "
+    "cannot stay on yet; hearing itself works"
+)
+GESTURE_MEANS: Final = (
+    "the person holds a button on the page while talking to you, and only then are they heard; "
+    "everything heard stays at home"
+)
+OUTSIDE_MEANS: Final = (
+    "the voice listens freely, without a button: what the microphones hear goes to a model "
+    "outside the house, so the sound and the words said near them leave the house"
+)
+# The tool that records the owner's choice.
+POLICY_TOOL: Final = "policy_update"
 _PHRASE_PURPOSES: Final = frozenset({"phrase_agree", "phrase_change"})
 # How long a sentence sent to the page counts as heard there with no word that it was played.
 SOUNDING_AT_MOST_S: Final = 120.0
@@ -602,7 +621,7 @@ class VoiceSession:
         if await self._after_a_gesture():
             await self._hearing_is("gesture")
         else:
-            await self._no_attention()
+            await self._no_attention(page)
 
     async def _work(self) -> None:
         try:
@@ -1002,7 +1021,7 @@ class VoiceSession:
         attention = await open_attention(self._deps, page)
         if attention is None:
             if not await self._after_a_gesture():
-                await self._no_attention()
+                await self._no_attention(page)
                 return False
             began = self._sound_began or heard.at
             if self._hearing != "gesture" or (
@@ -1130,10 +1149,13 @@ class VoiceSession:
         async with self._deps.turn.session_factory() as session:
             return (await load_policy_settings(session)).after_a_gesture
 
-    async def _no_attention(self) -> None:
+    async def _no_attention(self, page: Person) -> None:
         """No model may weigh what is heard, and the owner did not choose: the voice stays off,
-        and the owner is told once, offered the choice."""
-        await self._hearing_is("unavailable")
+        and the owner is told once, offered the choice. The page is told so as it is (its own
+        state, never the "cannot hear" of a hearing that fails), and whether its person is the
+        one who chooses."""
+        self._hearing = "no_attention"
+        await self._send(protocol.no_attention(chooses=page.id == await self._owner_id()))
         await self._send(protocol.listening(on=False))
         await self._tell_the_owner_once("no_attention")
 
@@ -1246,26 +1268,58 @@ class VoiceSession:
         self._hearing = hearing
         await self._send(protocol.state(hearing))
 
+    async def _owner_id(self) -> uuid.UUID | None:
+        """The owner of the household (the first, should there be several): the one told."""
+        async with self._deps.turn.session_factory() as session:
+            return await session.scalar(
+                select(Person.id).where(Person.role == "owner").order_by(Person.created_at).limit(1)
+            )
+
     async def _tell_the_owner_once(self, fact: str) -> None:
         """No model may hear (``no_model``), or weigh what is heard (``no_attention``): the owner is
         told, once in this process, by the assistant in his conversation (a wake with the fact as
-        data; for the weighing, with the settings that let him choose)."""
+        data; for the weighing, with why, what each choice means and the setting that makes it).
+
+        Once is once TOLD: the fact is told when his turn ran (``deps.Told``). While it is being
+        told nobody tells it again; a turn that could not run (his conversation stayed busy past
+        the wake's wait for it to be free, no key, a failure) leaves it to tell, logged, and the
+        next try tells it: the next time the voice is turned on, or the next sentence heard."""
         told = self._deps.told
-        if fact in told:
+        if not told.begin(fact):
             return
-        told.add(fact)
-        turn = self._deps.turn
-        async with turn.session_factory() as session:
-            owner_id = await session.scalar(
-                select(Person.id).where(Person.role == "owner").order_by(Person.created_at).limit(1)
-            )
-            outside = (await load_policy_settings(session)).hear_outside
+        try:
+            owner_id = await self._owner_id()
+            async with self._deps.turn.session_factory() as session:
+                outside = (await load_policy_settings(session)).hear_outside
+        except BaseException:
+            told.end(fact, told=False)
+            raise
         if owner_id is None:
+            told.end(fact, told=False)
             return
         content: JsonObject = {"hearing": fact, "outside_allowed": outside}
         if fact == "no_attention":
-            content["choices"] = [HEAR_OUTSIDE_KEY, VOICE_GESTURE_KEY]
-        turn.wakes.spawn(self._wake(owner_id, content, tell_the_page=False))
+            content = {
+                "hearing": fact,
+                "why": NO_ATTENTION_WHY,
+                "outside_allowed": outside,
+                "choices": [
+                    {"setting": VOICE_GESTURE_KEY, "value": "yes", "means": GESTURE_MEANS},
+                    {"setting": HEAR_OUTSIDE_KEY, "value": "yes", "means": OUTSIDE_MEANS},
+                ],
+                "chosen_with": POLICY_TOOL,
+            }
+        self._deps.turn.wakes.spawn(self._tell(fact, owner_id, content))
+
+    async def _tell(self, fact: str, owner_id: uuid.UUID, content: JsonObject) -> None:
+        """Tell the owner ``fact`` (``_tell_the_owner_once``): told only when his turn ran."""
+        ran = False
+        try:
+            ran = await self._wake(owner_id, content, tell_the_page=False)
+        except Exception as error:
+            logger.error("A fact of the voice could not be told (%s)", type(error).__name__)
+        finally:
+            self._deps.told.end(fact, told=ran)
 
     # --- reserved moments ----------------------------------------------------------------------
 
@@ -1320,15 +1374,18 @@ class VoiceSession:
                 # Not compared, dropped all the same; told once per hold and window, as a failed
                 # try (a bystander cannot tell a held phrase from a wrong one); then silently.
                 # Only their own voice tells them: another's sentence never wakes them about it.
-                if not doubted and person.id not in self._hold_told:
+                if (
+                    not doubted
+                    and person.id not in self._hold_told
+                    and await self._wake(person.id, {"proof": "did_not_work"})
+                ):
+                    # Told once it was told: a turn that could not run tells it at the next one.
                     self._hold_told.add(person.id)
-                    await self._wake(person.id, {"proof": "did_not_work"})
             case "not_checked":
                 # The gatekeeper out of reach: dropped, the request still waits; told once for
                 # the outage, not once per sentence.
-                if not self._outage_told:
+                if not self._outage_told and await self._wake(person.id, {"proof": "not_checked"}):
                     self._outage_told = True
-                    await self._wake(person.id, {"proof": "not_checked"})
             case "another_proof" | "did_not_work":
                 # The request still waits: he is woken to say it (another proof, a failed try),
                 # and the next sentences are weighed again.
@@ -1382,10 +1439,11 @@ class VoiceSession:
 
     async def _wake(
         self, person_id: uuid.UUID, content: JsonObject, *, tell_the_page: bool = True
-    ) -> None:
+    ) -> bool:
         """Wake the assistant in ``person_id``'s conversation with a fact of the channel, as data:
-        he says it in his own words, through whoever listens to them. When he cannot be woken (his
-        conversation stays busy, no key), the page is told (``failed``, ``not_told``)."""
+        he says it in his own words, through whoever listens to them. Whether his turn ran. When
+        he cannot be woken (his conversation stays busy past the wake's wait, no key), a line is
+        logged (the fact's name alone) and the page is told (``failed``, ``not_told``)."""
         # The channel's own fact: given by the house's code, never told as a tool of a name.
         wakes = (ToolWake(tool=WAKE_TOOL, content=content, given_by="channel"),)
         wake = self._deps.wake
@@ -1393,8 +1451,14 @@ class VoiceSession:
             ran = await wake(person_id, wakes)
         else:
             ran = await tool_wake_turn(self._deps.turn, person_id, wakes)
-        if not ran and tell_the_page:
-            await self._send(protocol.failed("not_told"))
+        if not ran:
+            logger.warning(
+                "A fact of the voice could not be told: his turn could not run (%s)",
+                _fact_name(content),
+            )
+            if tell_the_page:
+                await self._send(protocol.failed("not_told"))
+        return ran
 
     # --- a voice nobody knows ------------------------------------------------------------------
 
@@ -1706,6 +1770,14 @@ class VoiceSession:
             await self._sink.send_json(data)
         except Exception as error:
             logger.info("The page could not be told (%s)", type(error).__name__)
+
+
+def _fact_name(content: JsonObject) -> str:
+    """The name of a fact of the channel, for a log: its first entry, a code of the channel
+    (``hearing=no_attention``, ``proof=did_not_work``), never anything heard."""
+    for key, value in content.items():
+        return f"{key}={value}" if isinstance(value, str) else key
+    return "nothing"
 
 
 async def _no_decision(event: Decided) -> str | None:

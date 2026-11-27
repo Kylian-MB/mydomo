@@ -10,7 +10,7 @@ from uuid import UUID
 from fastapi import FastAPI
 
 from domo_core.channels.turns import app_turn_deps
-from domo_core.channels.voice.deps import MeteredSpeechOpener, VoiceDeps
+from domo_core.channels.voice.deps import MeteredSpeechOpener, Told, VoiceDeps
 from domo_core.channels.voice.listener import VoiceSink
 from domo_core.channels.voice.routes import VoiceSessionFactory
 from domo_core.channels.voice.session import VoiceSession
@@ -18,8 +18,9 @@ from domo_core.channels.voice.session import VoiceSession
 
 def voice_sessions_of(app: FastAPI) -> VoiceSessionFactory:
     """The factory of the voice sessions of ``app``. The facts the owner was told once (no model
-    may hear) are shared by its sessions, for the life of the process."""
-    told: set[str] = set()
+    may hear, or weigh what is heard), or is being told, are shared by its sessions, for the life
+    of the process."""
+    told = Told()
 
     async def open_session(
         *,
