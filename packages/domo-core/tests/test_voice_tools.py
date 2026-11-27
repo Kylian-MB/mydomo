@@ -1745,6 +1745,56 @@ def test_the_judge_is_told_which_program_what_it_reaches_and_that_nobody_wrote()
     assert told is not None and 'the tool "gone", what it is built to reach is not known' in told
 
 
+async def test_a_fact_of_the_voice_channel_is_the_houses_own_and_a_program_unknown_is_a_program(
+    session_factory,
+):
+    # The voice channel's own fact (a phrase held back, hearing unavailable) is the house's code
+    # speaking: never a tool's name, never "a program's text"; a program run by hand whose run
+    # the code lost is "a program, not known which", never the tool "program_run".
+    from domo_core.confirmations.case import (
+        CHANNEL_FACT_WORDS,
+        PROGRAM_TEXT_ALONE_WORDS,
+        outside_words,
+    )
+    from domo_core.conversation.prepare import wake_sources
+    from domo_core.prompts import ToolWake
+    from domo_core.tools.context import OutsideSource
+
+    fact = ToolWake("voice_channel", {"hearing": "no_model"}, given_by="channel")
+    lost = ToolWake("program_run", {"status": "done"}, given_by="program")
+    # A tool Domo made, whatever its name, stays a tool by its name.
+    named = ToolWake("voice_channel", {"n": 1})
+    sources = wake_sources((fact, lost, named), {"voice_channel": ()})
+    assert sources == (
+        OutsideSource("channel"),
+        OutsideSource("wake", program=True),
+        OutsideSource("wake", name="voice_channel", reaches=()),
+    )
+    alex, _ = await alex_and_dana(session_factory)
+    ctx = replace(
+        context(alex, session_factory),
+        tool_woke=True,
+        woke_by=(sources[0],),
+    )
+    assert ctx.outside_kinds == ("channel",)
+    told = outside_words(
+        unknown=False,
+        kinds=ctx.outside_kinds,
+        their_words=False,
+        sources=ctx.outside_sources,
+        alone=True,
+    )
+    assert told is not None and CHANNEL_FACT_WORDS in told
+    assert "voice_channel" not in told and "nobody's wish" not in told
+    assert PROGRAM_TEXT_ALONE_WORDS in told
+    both = outside_words(unknown=False, kinds=("wake",), their_words=False, sources=sources[1:])
+    assert both is not None and "a program, not known which" in both
+    assert 'the tool "program_run"' not in both
+    assert 'the tool "voice_channel", built to reach no address' in both
+    mixed = replace(ctx, woke_by=sources)
+    assert mixed.outside_kinds == ("wake", "channel")
+
+
 async def test_a_tools_wake_alone_saying_stop_listening_is_judged_and_a_silent_judge_asks_a_proof(
     session_factory, monkeypatch
 ):

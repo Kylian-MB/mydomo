@@ -171,19 +171,26 @@ async def _owner_now(deps: LaunchDeps) -> uuid.UUID | None:
 
 
 async def _tell(
-    deps: LaunchDeps, person_id: WakeFor, said: Said, *, hand_run: uuid.UUID | None = None
+    deps: LaunchDeps,
+    person_id: WakeFor,
+    said: Said,
+    *,
+    by_hand: bool = False,
+    hand_run: uuid.UUID | None = None,
 ) -> bool:
     """Wake Domo for ``person_id`` (``None``: the owner of now, for the house, in a turn where
-    he acts on his own) with what each tool of ``said`` says (what ``BY_HAND`` says, as the
-    program run by hand ``hand_run``, by its id): whether the turn ran (``launch.Waker``; nobody
-    to wake is nothing to try again). Never raises but for its cancellation."""
+    he acts on his own) with what each tool of ``said`` says (``by_hand``: what ``BY_HAND`` says
+    is a program run by hand's, by its id ``hand_run`` when it is known; never told by the name
+    alone, which a tool may have too): whether the turn ran (``launch.Waker``; nobody to wake is
+    nothing to try again). Never raises but for its cancellation."""
     if deps.waker is None or not said:
         return True
     wakes = [
         ToolWake(
             tool=name,
             content=contents[0] if len(contents) == 1 else contents,
-            run=str(hand_run) if hand_run is not None and name == BY_HAND else None,
+            run=str(hand_run) if by_hand and hand_run is not None and name == BY_HAND else None,
+            given_by="program" if by_hand and name == BY_HAND else "tool",
         )
         for name, contents in said
     ]
@@ -216,7 +223,13 @@ async def _told_or_kept(
     turn could not run, what it would have told is kept (a ``wake`` row of ``made_tool_runs`` of
     ``source``, its first try counted; ``for_house`` when it is the house's) for the upkeep to try
     again (``deliver_runs``). Never raises but for its cancellation."""
-    if await _tell(deps, person_id, said, hand_run=source.id if source.by_hand else None):
+    if await _tell(
+        deps,
+        person_id,
+        said,
+        by_hand=source.by_hand,
+        hand_run=source.id if source.by_hand else None,
+    ):
         return
     also: list[JsonValue] = [
         {"tool": name, "content": content} for name, contents in said for content in contents
@@ -543,7 +556,7 @@ async def _delivered(deps: LaunchDeps, run_id: uuid.UUID) -> None:
             # A row of the house's is told to the owner of now.
             status, result, also = told
             wakes = _wakes_of(known, status, result, also, run=kind == "run")
-            settled = await _tell(deps, person_id, wakes, hand_run=hand_run)
+            settled = await _tell(deps, person_id, wakes, by_hand=tool is None, hand_run=hand_run)
         async with deps.session_factory() as session:
             run = await session.get(
                 MadeToolRun, run_id, with_for_update=True, populate_existing=True

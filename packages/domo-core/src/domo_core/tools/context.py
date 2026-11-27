@@ -125,8 +125,9 @@ class InvalidArguments(Exception):
 # Which kind of text nobody of the house said came into a turn, as far as the code knows it: what a
 # tool Domo made gave (it may carry a site's text: the code cannot tell), what a program he ran by
 # hand gave, or what a tool's or a program's launch gave, which started the turn
-# (``ToolContext.tool_woke``).
-OutsideKind = Literal["tool", "program", "wake"]
+# (``ToolContext.tool_woke``); or a fact a channel of the house's own code reports, which started
+# it (``channel``: not a program's text, nor anyone's words).
+OutsideKind = Literal["tool", "program", "wake", "channel"]
 
 
 @dataclass(frozen=True)
@@ -135,13 +136,15 @@ class OutsideSource:
     Domo with it: ``madetools.offered.said_by``, ``prompts.ToolWake``): its ``kind``, the tool's
     name of the household (``name``) or the id of a program run by hand (``run``), and what it is
     built to reach as declared (``reaches``, ``madetools.risks.reaches_told``; ``None`` when it is
-    not known). Neither ``name`` nor ``run``: the code does not know which. Never what the program
-    says of itself."""
+    not known). Neither ``name`` nor ``run``: the code does not know which (``program``: a program
+    run by hand, whose run is not known). Never what the program says of itself. A ``channel``
+    source is the house's own code: it has no name."""
 
     kind: OutsideKind
     name: str | None = None
     run: str | None = None
     reaches: tuple[str, ...] | None = None
+    program: bool = False
 
 
 @dataclass(frozen=True)
@@ -535,8 +538,13 @@ class ToolContext:
     def outside_kinds(self) -> tuple[OutsideKind, ...]:
         """The kinds of a program's, a site's or a tool's text in this turn, in a fixed order:
         what the judge is told (``confirmations.case.outside_words``)."""
-        found = {*self.outside.kinds, *(("wake",) if self.tool_woke else ())}
-        order: tuple[OutsideKind, ...] = ("tool", "program", "wake")
+        channel = {source.kind for source in self.woke_by} & {"channel"}
+        # A turn the house's own channel alone woke him for carries no program's text of its own.
+        woke = self.tool_woke and (
+            not self.woke_by or any(source.kind != "channel" for source in self.woke_by)
+        )
+        found = {*self.outside.kinds, *(("wake",) if woke else ()), *channel}
+        order: tuple[OutsideKind, ...] = ("tool", "program", "wake", "channel")
         return tuple(kind for kind in order if kind in found)
 
     @property

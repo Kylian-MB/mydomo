@@ -997,3 +997,22 @@ def test_how_sure_the_code_was_of_who_asked_goes_with_the_launch_whoever_asked()
     assert not handover._for(None, other).trusted
     assert handover._for(person, Actor(person.id, "adult")).trusted
     assert handover._for(None, None).trusted
+
+
+async def test_a_program_run_by_hand_is_told_as_a_program_even_without_its_run():
+    # A program run by hand is told as one by what the code knows of it, never by the name it is
+    # told under: without its run id it is still a program; a tool of that name stays a tool.
+    told: list[list[ToolWake]] = []
+
+    async def waker(_: uuid.UUID, wakes: Sequence[ToolWake], *, on_his_own: bool) -> bool:
+        told.append(list(wakes))
+        return True
+
+    deps: Any = type("Deps", (), {"waker": staticmethod(waker)})()
+    person = uuid.uuid4()
+    assert await handover._tell(deps, person, [(handover.BY_HAND, [1])], by_hand=True)
+    assert await handover._tell(deps, person, [(handover.BY_HAND, [2])])
+    assert told == [
+        [ToolWake(handover.BY_HAND, 1, given_by="program")],
+        [ToolWake(handover.BY_HAND, 2)],
+    ]

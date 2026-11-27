@@ -278,6 +278,11 @@ _THEIR_WORDS_TOO: Final = (
 # What the judge reads when the code does not know which tool or program gave the text: said so,
 # never guessed.
 NOT_KNOWN_WHICH: Final = "a tool, not known which"
+# What the judge reads of a fact the house's own voice channel reports (a phrase held back, hearing
+# unavailable, a proof that did not work): the code's own words, never a tool's name.
+CHANNEL_FACT_WORDS: Final = (
+    "a fact reported by the house's own voice channel, not a person's words and not a tool's text"
+)
 _PROGRAM_NOT_KNOWN: Final = "a program, not known which"
 # What the judge reads when such text is the only words in the turn that are not the assistant's
 # own (``ToolContext.anyones_words``: no message, no note, no plan keeping someone's words, nobody
@@ -307,13 +312,15 @@ def source_words(source: "OutsideSource") -> str:
     """Which program ``source`` is, as the judge reads it: a tool by its name of the household, a
     program run by hand by its run, with what it is built to reach as declared; or that the code
     does not know which (``NOT_KNOWN_WHICH``). Kept to the characters a name or a run has."""
+    if source.kind == "channel":
+        return CHANNEL_FACT_WORDS
     if source.run is not None:
         run = _NOT_IN_A_RUN.sub("", source.run)
         return f'a program run by hand (run "{run}"), {_reach_words(source.reaches)}'
-    if source.name is not None:
+    if source.name is not None and not source.program:
         name = _NOT_IN_A_NAME.sub("", source.name)
         return f'the tool "{name}", {_reach_words(source.reaches)}'
-    return _PROGRAM_NOT_KNOWN if source.kind == "program" else NOT_KNOWN_WHICH
+    return _PROGRAM_NOT_KNOWN if source.kind == "program" or source.program else NOT_KNOWN_WHICH
 
 
 def _kind_words(kind: str, sources: Sequence["OutsideSource"]) -> str:
@@ -344,13 +351,20 @@ def outside_words(
     parts: list[str] = []
     if unknown:
         parts.append(UNKNOWN_SOURCE_WORDS)
-    if kinds:
+    programs = [kind for kind in kinds if kind != "channel"]
+    if programs:
         text = "a program's, a site's or a tool's text, nobody's wish: " + "; ".join(
-            _kind_words(kind, sources) for kind in kinds
+            _kind_words(kind, sources) for kind in programs
         )
         if their_words:
             text += _THEIR_WORDS_TOO
         elif alone:
+            text += "; " + PROGRAM_TEXT_ALONE_WORDS
+        parts.append(text)
+    if "channel" in kinds:
+        # The house's own code speaking, apart from any program's text.
+        text = CHANNEL_FACT_WORDS
+        if alone and not programs and not their_words:
             text += "; " + PROGRAM_TEXT_ALONE_WORDS
         parts.append(text)
     return ". Also, ".join(parts) or None

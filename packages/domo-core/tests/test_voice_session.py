@@ -169,6 +169,8 @@ async def test_no_model_at_home_turns_the_voice_off_and_tells_the_owner_once(
         # Told once, in the owner's conversation, as a fact (his words say it).
         assert v.woken.wakes and [w[0] for w in v.woken.wakes] == [owner.id]
         assert v.woken.contents() == [{"hearing": "no_model", "outside_allowed": False}]
+        # The channel's own fact: given by the house's code, never as a tool of a name.
+        assert [w.given_by for _, wakes in v.woken.wakes for w in wakes] == ["channel"]
         assert await v.messages() == []
     finally:
         await v.house.close()

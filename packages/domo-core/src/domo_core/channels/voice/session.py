@@ -1386,7 +1386,8 @@ class VoiceSession:
         """Wake the assistant in ``person_id``'s conversation with a fact of the channel, as data:
         he says it in his own words, through whoever listens to them. When he cannot be woken (his
         conversation stays busy, no key), the page is told (``failed``, ``not_told``)."""
-        wakes = (ToolWake(tool=WAKE_TOOL, content=content),)
+        # The channel's own fact: given by the house's code, never told as a tool of a name.
+        wakes = (ToolWake(tool=WAKE_TOOL, content=content, given_by="channel"),)
         wake = self._deps.wake
         if wake is not None:
             ran = await wake(person_id, wakes)

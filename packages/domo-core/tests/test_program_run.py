@@ -196,7 +196,17 @@ async def test_a_long_run_is_handed_over_like_a_tools_and_wakes_domo_with_its_re
     # Domo is woken for Dana with what it gave, as a program he ran by hand, by its run id
     # (Task 12): never as a tool of his named "program_run".
     assert woken == [
-        (dana.id, [ToolWake("program_run", {"status": "done", "result": 42}, run=str(run.id))])
+        (
+            dana.id,
+            [
+                ToolWake(
+                    "program_run",
+                    {"status": "done", "result": 42},
+                    run=str(run.id),
+                    given_by="program",
+                )
+            ],
+        )
     ]
     heading = tool_wake_heading("program_run", str(run.id))
     assert heading == (

@@ -324,6 +324,24 @@ class NoKey(Exception):
     cannot be written (``prepare_turn``)."""
 
 
+def wake_sources(
+    wakes: Sequence[ToolWake], reaches: Mapping[str, tuple[str, ...]]
+) -> tuple[OutsideSource, ...]:
+    """Which tools or programs woke Domo, as the judge is told (``ToolContext.woke_by``), by
+    what gave each wake (``ToolWake.given_by``), never by the name alone: a fact of a channel of
+    the house's own code has no name (``channel``); a program run by hand is one even when its
+    run is not known; a tool he made is named, with what it is built to reach (``reaches``, by
+    name: ``None`` when it is not among them)."""
+    return tuple(
+        OutsideSource("channel")
+        if wake.given_by == "channel"
+        else OutsideSource("wake", run=wake.run, program=True)
+        if wake.given_by == "program" or wake.run is not None
+        else OutsideSource("wake", name=wake.tool, reaches=reaches.get(wake.tool))
+        for wake in wakes
+    )
+
+
 def made_tool_finder(deps: TurnDeps) -> Callable[[str], Awaitable[InternalTool | None]]:
     """What finds a tool of Domo's by the name it is offered under (``t_<name>``), with the
     application's launch deps (``made_tool_deps``): for a turn (``ToolContext.made_tool_named``),
@@ -1392,12 +1410,7 @@ async def prepare_turn(
         tool_woke=bool(tool_wakes) or (decided is not None and decided.from_outside),
         # Which tools or programs woke him, as the context names them: told to the judge. A
         # decided request whose result a program gave names none (which is not known here).
-        woke_by=tuple(
-            OutsideSource("wake", run=wake.run)
-            if wake.run is not None
-            else OutsideSource("wake", name=wake.tool, reaches=reaches.get(wake.tool))
-            for wake in tool_wakes
-        ),
+        woke_by=wake_sources(tool_wakes, reaches),
         due_plans=tuple(due_plans),
         # The plans due are what they asked for only when each one keeps their exact words: an
         # action of the turn may be for any of them, and one Domo made alone keeps none.
