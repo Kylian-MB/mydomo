@@ -24,6 +24,11 @@ pass, every conversation is resolved and a maintainer has approved it. It is
 squashed into one commit on `main`, whose message is the pull request's title
 and description.
 
+The maintainer's own changes take the same road: a branch of this repository, a
+pull request, the same checks. The `Maintainer approval` workflow approves a
+pull request opened by the maintainer's account, which then merges by itself
+once every check is green. Nobody pushes to `main` directly.
+
 Security problems are not reported this way: see [SECURITY.md](SECURITY.md).
 
 ## Licensing
@@ -46,7 +51,7 @@ uv run --isolated --no-default-groups --group licenses python scripts/check_lice
 
 ```bash
 uv sync                      # install the workspace and the development tools
-uv run pre-commit install    # enable the commit hooks
+uv run pre-commit install    # enable the commit and push hooks
 uv run pytest -m "not stack" # run the unit tests
 uv run ruff check .          # lint
 uv run ruff format .         # format
@@ -228,3 +233,8 @@ local denylist. The denylist is a plain text file kept outside the repository,
 one term per line, read from `$DOMO_DENYLIST` or, by default, from
 `~/.config/domo-dev/denylist.txt`. Without that file the hook only prints a
 warning. Never commit the denylist or any of its terms.
+
+The `check-push` hook runs before a push. It reads the message, the author and
+the committer of each new commit against the same denylist, and it refuses a
+branch whose history does not start where the remote's does: a branch grown
+from another repository is never pushed here.

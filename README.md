@@ -1727,7 +1727,7 @@ Compose.
 
 ```bash
 uv sync                           # create the environment and install everything
-uv run pre-commit install         # enable the commit hooks
+uv run pre-commit install         # enable the commit and push hooks
 uv run pytest -m "not stack"      # unit tests
 uv run playwright install chromium  # once: the browser of the end-to-end tests
 uv run pytest -m stack            # the Docker stack and the end-to-end tests (slow)
