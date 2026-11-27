@@ -31,9 +31,10 @@ and what it says reaches the page's person as a word of the assistant's own, mar
 as coming from an unknown source: before that word can make him stop listening,
 change or remove a spoken phrase, or forget a voice, his judge weighs it, told
 where it comes from (a silent judge asks the person a proof). A program's, a
-site's or a tool's text beside a person's words or a note is weighed the same way,
-the judge told which kind of text it is; such text alone, with no words of anyone,
-never does. Only its holder agrees or changes a spoken phrase; the owner, or an
+site's or a tool's text is weighed the same way, beside a person's words or a
+note or alone: the judge is told which tool or program it comes from, what it is
+built to reach, and when no person said or wrote anything (a silent judge does
+nothing without a proof). Only its holder agrees or changes a spoken phrase; the owner, or an
 adult for a child, may have someone else's removed: the judge weighs it every
 time (when he cannot, nothing is removed and no proof stands in for him), and
 that person is told. A "no" said by a voice the assistant is not sure
