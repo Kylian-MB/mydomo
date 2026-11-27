@@ -1022,6 +1022,8 @@
   "voice.off": "La voix est éteinte",
   "voice.preparing": "Je me prépare à écouter",
   "voice.unavailable": "Je ne peux pas entendre pour le moment",
+  "voice.no_attention": "J'entends bien, mais la voix ne peut pas encore rester allumée : rien à la maison ne sait vite dire quand on me parle. Je t'explique tes deux choix dans notre conversation",
+  "voice.no_attention_asked": "J'entends bien, mais la voix ne peut pas encore rester allumée : rien à la maison ne sait vite dire quand on me parle. Seul le propriétaire choisit comment je dois écouter, et je le lui demande",
   "voice.no_microphone": "Aucun micro trouvé",
   "voice.refused_by_browser": "Le navigateur n'a pas autorisé le micro",
   "voice.moved": "La voix est passée sur un autre onglet ou appareil",

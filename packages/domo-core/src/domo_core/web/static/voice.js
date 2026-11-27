@@ -10,7 +10,11 @@
    of `window.DomoVoice` (`onMessage`, `onSound`), which that player fills.
 
    States, as `DomoVoice.state().state` and `data-state` of the fragment:
-     off, preparing, listening, unavailable, no_microphone, refused, moved, reload.
+     off, preparing, listening, unavailable, no_attention, no_attention_asked, no_microphone,
+     refused, moved, reload.
+   "unavailable" is a hearing that fails; "no_attention" (to the one who chooses) and
+   "no_attention_asked" (to anyone else) say the house hears but cannot yet tell what is said to
+   the assistant, so the voice stays off until a choice is made.
    "listening" is said only while the microphone is open, the audio runs, the socket is up and
    the house can hear: the line is never more optimistic than the facts. When the house hears only
    what is said with a gesture (`state` with hearing "gesture"), the talk button shows, and a moment
@@ -57,6 +61,8 @@ const STATE_TEXT = {
   preparing: "preparing",
   listening: "listening",
   unavailable: "unavailable",
+  no_attention: "no_attention",
+  no_attention_asked: "no_attention_asked",
   no_microphone: "no_microphone",
   refused: "refused_by_browser",
   moved: "moved",
@@ -698,6 +704,12 @@ function onSocketMessage(data) {
   }
   switch (message.type) {
     case "state":
+      if (message.hearing === "no_attention") {
+        // The house hears, but nothing at home tells yet what is said to the assistant: the voice
+        // stays off, and the line says so (to the one who chooses, or to someone who does not).
+        stayOff(message.chooses === true ? "no_attention" : "no_attention_asked");
+        break;
+      }
       hearing = message.hearing;
       refresh();
       break;
@@ -769,6 +781,11 @@ async function turnOn() {
 }
 
 function turnOff() {
+  stayOff("off");
+}
+
+// The voice goes off and the line says `next`: turned off by the person, or by the house.
+function stayOff(next) {
   if (socket && socket.readyState === WebSocket.OPEN && helloSent) {
     // The moment in progress ends, and what was cut is told, before the house hears `off`.
     if (speaking) {
@@ -781,7 +798,7 @@ function turnOff() {
   }
   abandonMoment();
   store(STORE_CHOICE, null);
-  stopAll("off");
+  stopAll(next);
 }
 
 // Held to talk, when the house hears only after a gesture.

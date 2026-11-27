@@ -26,6 +26,8 @@ KEYS = (
     "voice.off",
     "voice.preparing",
     "voice.unavailable",
+    "voice.no_attention",
+    "voice.no_attention_asked",
     "voice.no_microphone",
     "voice.refused_by_browser",
     "voice.moved",
@@ -221,6 +223,23 @@ def test_the_page_talks_only_while_the_gesture_is_held_when_the_house_asks_it():
     assert "held" in handle
     fragment = FRAGMENT.read_text(encoding="utf-8")
     assert 'data-voice="talk" hidden' in fragment
+
+
+def test_a_voice_that_cannot_stay_on_for_want_of_a_judgement_says_so_not_that_it_cannot_hear():
+    """The house hears, but nothing at home judges whether a sentence is said to him: the page
+    stays off with its own line (the owner's, or the one of a member who does not choose), never
+    the "cannot hear" of a hearing that fails."""
+    source = (STATIC / "voice.js").read_text(encoding="utf-8")
+    received = source[source.index("function onSocketMessage") : source.index("function callHook")]
+    assert '"no_attention"' in received and "chooses" in received
+    assert "stayOff(" in received
+    assert 'no_attention: "no_attention"' in source
+    assert 'no_attention_asked: "no_attention_asked"' in source
+    # Not a running state: the button turns the voice on again, and the line is not red.
+    running = source[source.index("const RUNNING_STATES") :].splitlines()[0]
+    assert "no_attention" not in running
+    css = (STATIC / "app.css").read_text(encoding="utf-8")
+    assert 'data-state="no_attention' not in css
 
 
 def test_a_failed_reconnect_never_resets_the_back_off():

@@ -1022,6 +1022,8 @@
   "voice.off": "The voice is off",
   "voice.preparing": "Getting ready to listen",
   "voice.unavailable": "Cannot hear right now",
+  "voice.no_attention": "I hear well, but the voice cannot stay on yet: nothing at home can quickly tell when someone is talking to me. I explain your two choices in our conversation",
+  "voice.no_attention_asked": "I hear well, but the voice cannot stay on yet: nothing at home can quickly tell when someone is talking to me. Only the owner chooses how I should listen, and I am asking them",
   "voice.no_microphone": "No microphone found",
   "voice.refused_by_browser": "The browser did not allow the microphone",
   "voice.moved": "The voice moved to another tab or device",
