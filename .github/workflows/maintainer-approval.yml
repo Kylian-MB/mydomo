@@ -1,0 +1,38 @@
+name: Maintainer approval
+
+# Approves a pull request that the maintainer's own account opened from a branch of this
+# repository, so that it merges by itself once every required check is green. Anyone else's pull
+# request is left alone: it waits for the maintainer's review, as the rule on `main` requires.
+#
+# pull_request_target: the file that runs is the base branch's, so a pull request cannot change
+# what approves it. It holds a write token, so it must NEVER check out or run anything from the
+# pull request: it reads the event only.
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions: {}
+
+concurrency:
+  group: maintainer-approval-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  approve:
+    name: Maintainer approval
+    if: >-
+      github.event.pull_request.user.login == github.repository_owner
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Approve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr review "$PR" -R "$GITHUB_REPOSITORY" --approve \
+            --body "Opened by the maintainer's account: approved, it merges once every check is green."
