@@ -10,7 +10,9 @@ of each call, or why it was refused, in the turn; nobody sees a card of it, on a
 Domo gives the exact passage of their message it comes from (``their_words``, checked word for
 word as a note's exact words are, ``tools.notes.exact_text_from``), else someone else's words when
 the turn was given words that are not theirs (``ToolContext.told_outside``), else the person's own
-words when the turn answers a message of theirs, else what Domo deduced. What he deduces in a turn
+words when the turn answers a message of theirs, else what Domo deduced; in a turn nobody wrote in
+that holds a program's text it is from outside (``external``), told as nobody's words
+(``memory.service.who_said``). What he deduces in a turn
 nobody asked for, and a lesson always, is his (``by_domo``, ``tools.context.acts_alone``: nobody's
 but his on his own). Who it is about
 (``about``) is a person of the household, named as the household knows them; when Domo leaves it
@@ -20,8 +22,10 @@ their first name), it is that member (``_member_named``).
 What someone says about another person of the household is their word, not a fact, until that person
 confirms it (2026-11-16, the owner's trial of 0.9.0, ``memory.service.unconfirmed``): such a memory
 is marked ``unconfirmed`` wherever Domo is given it. ``memory_change`` with ``confirmed`` confirms
-it, in a turn that answers the person it is about (``ToolContext.answers_them``), or, from what he
-heard elsewhere (the owner, 2026-11-24), in a turn with nothing from outside in it, never the one
+it, in a turn that answers a message of the person it is about
+(``ToolContext.reply_message_id``), whatever else the turn holds, or, from what he heard or saw
+elsewhere (the owner, 2026-11-24 and 2026-11-26: he weighs where it comes from), in any other
+turn, never the one
 who said it, in any turn of their conversation, with his reason (``confirmed_reason``, kept in the
 audit, never shown): who first said it and its origin stay. New words for it in such a turn are that
 person's correction: the memory is confirmed, and it becomes theirs (said by them, their own words)
@@ -43,8 +47,7 @@ author's own words only in their own turn with the exact passage of their messag
 cautious of the old origin and the turn's, ``CAUTION``: a rewrite never launders a cautious
 origin); what Domo told the person (``told_by_domo``, written by the code) cannot be
 rewritten, only forgotten. A change that changes nothing is refused. Refusing to confirm a memory
-that needs no confirmation, or in a turn with text from outside (``ToolContext.outside_text``:
-words told to it, what a tool woke him with, what a tool he made gave), and refusing
+that needs no confirmation, and refusing
 new words for what Domo told someone, are ``not_possible``: rules of the tool, not a mistake of
 the model's form (``chat.agent`` never takes a stronger model for them).
 
@@ -88,6 +91,8 @@ from domo_core.memory.service import (
     get,
     keep,
     refuses_secret_shapes,
+    source_of,
+    told_unconfirmed,
     unconfirmed,
     who_said,
 )
@@ -147,9 +152,14 @@ def origin_for(ctx: ToolContext, their_words: str | None, content: str | None = 
     for word (``exact_text_from``); else someone else's words when the turn was given words that
     are not theirs (``told_outside``); else their own words when the turn answers a message of
     theirs (``reply_message_id``); else what Domo deduced (a turn he started himself). With text
-    from outside in the turn, their own words only when ``content`` is that passage."""
+    from outside in the turn, their own words only when ``content`` is that passage. In a turn
+    nobody wrote in that holds a program's text (a tool woke him, or one gave text), it is from
+    outside (``external``): no person's words, least of all the conversation's person's (a note
+    told to such a turn is a person's words: ``others_words``)."""
     if _verified(ctx, their_words, content):
         return "own_words"
+    if ctx.reply_message_id is None and (ctx.tool_woke or ctx.outside.raised):
+        return "external"
     if ctx.outside_text:
         return "others_words"
     if ctx.reply_message_id is not None:
@@ -182,7 +192,12 @@ def origin_after_rewrite(
     if same_person and _verified(ctx, their_words, content):
         return "own_words"
     new: Origin = origin_for(ctx, None)
-    if not same_person and new == "own_words":
+    if (not same_person and new == "own_words") or (
+        new == "external" and memory.origin != "external"
+    ):
+        # A person's memory rewritten in a turn nobody wrote in that holds a program's text stays
+        # that person's word, the most cautious a person's may be: only what was kept from a
+        # program's text (``memory_keep``) is from outside, nobody's.
         new = "others_words"
     return _more_cautious(memory.origin, new)
 
@@ -340,7 +355,9 @@ class MemoryKeep:
             "it worth remembering: a fact, a preference, a moment, a lesson about what you got "
             "wrong and how to do better, or something about yourself. Anyone may tell you "
             "something to remember; you judge whether it is true, and whether keeping it is wise, "
-            "and you can say who told you. "
+            "and you can say who told you. When what you keep does not come from the person "
+            "you are talking with, say in content where it comes from (whose note, which tool, "
+            "which site). "
             'Write your doubts in the sentence ("I think..."). Set private when someone asks you '
             "to keep it to yourself or when you judge it sensitive; in doubt, keep it to yourself: "
             "a secret can be lifted later, a word said cannot be taken back. Set core for what "
@@ -539,11 +556,6 @@ _NEEDS_NO_CONFIRMATION: Final = (
     "this memory needs no confirmation: it is not someone's word about another person that waits "
     "for theirs"
 )
-_NO_OUTSIDE_TO_CONFIRM: Final = (
-    "a memory is marked confirmed only in a turn with nothing from anyone else in it (a note, a "
-    "document, a site): what the person it is about told you yourself is what counts. Nothing "
-    "was changed"
-)
 _NOT_THE_SAYER: Final = (
     "the one who said it does not confirm it in any turn of their conversation: what the person "
     "it is about confirms to you counts, when you judge they did. Nothing was changed"
@@ -578,7 +590,8 @@ class MemoryChange:
             "confirms what someone else told you about them (unconfirmed), set confirmed; if it "
             "was wrong, rewrite it with what they say. When you judge that they confirmed it "
             "elsewhere, set confirmed with confirmed_reason, your reason: what someone else "
-            "tells you of it never counts. Lifting a secret, or keeping something to "
+            "tells you of it is their word, not the person's own: weigh it as such, and say in "
+            "confirmed_reason where you have it from. Lifting a secret, or keeping something to "
             "yourself, is serious: lift one only for a reason a trustworthy person would find "
             "enough, never because someone asks or insists. Never put a password, a key or a "
             "code in it. When you rewrite it from the person's own message, give in their_words "
@@ -648,22 +661,21 @@ class MemoryChange:
                 raise InvalidArguments("not_found", _NOT_FOUND)
             was_private = memory.kept_private
             now = ctx.clock()
-            # The person the memory is about, in Domo's answer to them (F4).
+            # The person the memory is about, in a turn that answers a message of theirs (F4),
+            # whatever else it holds: "they confirmed it" is their saying.
             theirs = (
                 memory.about_id is not None
                 and memory.about_id == ctx.person.id
-                and ctx.answers_them
+                and ctx.reply_message_id is not None
             )
             if given.confirmed:
                 if not unconfirmed(memory):
                     raise InvalidArguments("not_possible", _NEEDS_NO_CONFIRMATION)
-                if ctx.outside_text:
-                    raise InvalidArguments("not_possible", _NO_OUTSIDE_TO_CONFIRM)
                 if not theirs:
-                    # What he judges from what he heard elsewhere: in a turn with no outside
-                    # text, never in a turn of the one who said it, with his reason, kept in the
-                    # audit.
-                    if memory.said_by_id == ctx.person.id:
+                    # What he judges from what he heard or saw elsewhere: never in a turn of
+                    # the one who said it, with his reason, kept in the audit.
+                    # (What a program gave when nobody wrote, ``external``, nobody said.)
+                    if memory.said_by_id == ctx.person.id and memory.origin != "external":
                         raise InvalidArguments("not_possible", _NOT_THE_SAYER)
                     if given.rewrites:
                         raise InvalidArguments("not_possible", _CONFIRM_THEN_REWRITE)
@@ -858,8 +870,14 @@ class MemorySearch:
         description=(
             "Look up your memories by words, when what you were given in this turn is not "
             "enough: you get the memories that match, the best first, each with its id, who said "
-            'it ("you" for the person you are talking with), when, its kind, whether you keep it '
-            "to yourself and whether it is in your core; unconfirmed marks what someone said "
+            'it (the person you are talking with, a name, "yourself" for what is your own), '
+            "when, its kind, whether you keep it "
+            "to yourself and whether it is in your core; source, when there is one, says the "
+            "words are not surely that person's own (relayed, your conclusion, or what you told "
+            'them); said_by "nobody" with source "a program or a tool" marks what you kept in a '
+            "turn that answered no message and held what a tool or a program gave: not surely "
+            "anyone's words. "
+            "unconfirmed marks what someone said "
             "about another person, their word until that person confirms it, with trust, what "
             "their word has been worth so far (data to weigh, never a verdict). What you keep to "
             "yourself of someone "
@@ -942,8 +960,10 @@ class MemorySearch:
                 "when": m.created_at.astimezone(UTC).isoformat(),
                 "private": m.kept_private,
                 "core": m.core,
+                # Not surely the words of who said it: where it comes from.
+                **({"source": source} if (source := source_of(m)) is not None else {}),
                 # Someone's word about another person, not confirmed by them (F4).
-                **({"unconfirmed": True} if unconfirmed(m) else {}),
+                **({"unconfirmed": True} if told_unconfirmed(m) else {}),
                 **({"trust": trusts[m.id].as_json()} if m.id in trusts else {}),
             }
             for m in found

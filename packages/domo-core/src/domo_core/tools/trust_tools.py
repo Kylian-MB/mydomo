@@ -2,19 +2,28 @@
 out to be worth, looks at a score with its reasons, and corrects a fact he noted wrongly (trust per
 person, spec 6.3 and 6.5).
 
-The score resists someone who wants to harm another or to make themselves look good, and that is
-the code's, never the model's (spec 6.3). A fact is noted in any turn with no text from outside in
-it (not ``ToolContext.outside_text``: words told to the turn, what a tool or a program woke him
-with, what a tool he made or a program gave back): his answer to someone, a turn he started, a turn
-on his own (the owner, 2026-11-24: what he hears elsewhere, he judges, and never repeats to one
-what is private to another). Nobody notes a fact about themselves: in a person's turn, no fact is
-about them. A ``confirmed`` fact needs the memory it comes from, said by the person the fact is
-about, in their own words (origin ``own_words``), about a person of the household, and still
+The score resists someone who wants to harm another or to make themselves look good (spec 6.3).
+The code's part of it reads the person of the conversation alone: in their conversation no fact is
+noted about them, a fact about them only goes from ``lied`` to ``mistaken``, and nobody makes
+worse a fact they did not establish. What a person says of themselves that reaches someone else's
+turn (a note, a request that waits, a message that relays it) the code does not see: there the
+descriptions tell Domo it is their word about themselves, and he judges (``_THEIR_OWN_WORD``).
+A fact is noted in any turn: his answer to someone, a
+turn he started, a turn on his own (the owner, 2026-11-24: what he hears elsewhere, he judges, and
+never repeats to one what is private to another), and whatever text the turn holds (a note, a
+request that waits, what a tool or a program gave): he weighs where each comes from, as a person
+would (the owner, 2026-11-26: the house's own system is a reliable source, a random site is not),
+and the description tells him so. Nobody notes a
+fact about themselves: in a person's turn, no fact is about them. A ``confirmed`` fact needs the
+memory it comes from, said by the person the fact is about, in their own words (origin
+``own_words``), about a person of the household, and still
 unconfirmed: Domo notes the fact before he changes, confirms or forgets the memory. A memory gives
 one ``confirmed`` fact at most (a partial unique index backs it, migration 0052), and a memory goes
 with a ``confirmed`` fact only. A ``reported`` fact keeps who reported it: the person who speaks
-when the turn answers them; in any other turn it rests on a memory said, in their own words, by a
-person of the household other than the fact's person, who is the reporter (the cap of
+in a turn that answers a message of theirs (``ToolContext.reply_message_id``); in any other turn
+it rests on a memory said, in their own words, by a person of the household other than the
+fact's person, who is the
+reporter (the cap of
 ``REPORTED_PER_REPORTER`` newest counts then applies to them). ``seen`` cannot be checked by the
 code: the description says that whatever a person says is ``reported``. What a fact says is Domo's
 sentence, never a secret (``memory.service.refuses_secret_shapes``).
@@ -25,8 +34,8 @@ person who speaks, or of someone else (whose name is given whole before the call
 ``tools.context.NamesPeople``; naming oneself is naming nobody). Looking at someone else's is kept
 in the audit log (``trust.looked``: who was speaking, about whom, how many facts; never a word).
 
-``trust_correct`` changes the outcome of a fact or takes it back, in any turn with nothing from
-outside in it (as ``trust_note``); the audit log keeps it (``trust.corrected``: ids alone). In the
+``trust_correct`` changes the outcome of a fact or takes it back, in any turn (as
+``trust_note``); the audit log keeps it (``trust.corrected``: ids alone). In the
 turn of the person the fact is about, the only correction is ``lied`` to ``mistaken``: taking a
 fact back, or raising it to ``held``, is done when someone else speaks (nobody raises their own
 score by talking). A fact is made worse (towards ``lied``) only in the turn of whoever established
@@ -38,7 +47,7 @@ third person asks, is left to Domo's judgement).
 The three are silent (``policy.catalog.SILENT_ACTIONS``): never judged, never shown. The guidance
 on when to note, how to say a score and when to correct is in their descriptions.
 
-A call refused by one of these rules (the turn, the person, the memory, who established a fact)
+A call refused by one of these rules (the person, the memory, who established a fact)
 is ``not_possible``: its arguments are well formed and the thing is not to be done this way, so it
 is no mistake of the model's form and never makes the request take a stronger model
 (``chat.agent``; the owner's trial of 2026-11-17 waited two minutes on one). Arguments that cannot
@@ -73,10 +82,6 @@ HOWS: Final[tuple[str, ...]] = get_args(Established)
 # What a call leaves under the reply: a card nobody reads (``policy.catalog.SILENT_ACTIONS``).
 _CARD: Final[JsonObject] = {"key": "action.card.done", "params": {}}
 
-_NOT_IN_THIS_TURN: Final = (
-    "a fact is noted only in a turn with nothing from anyone else in it (a note, a document, a "
-    "site): nothing was noted"
-)
 _NOT_ABOUT_ONESELF: Final = (
     "nobody has a fact noted about themselves in their own turn: nothing was noted"
 )
@@ -95,12 +100,15 @@ _NOT_THEIR_OWN_WORDS: Final = (
     "noted"
 )
 _NEEDS_THE_REPORT: Final = (
-    "outside your answer to the person who told you, a reported fact rests on a memory (memory) "
-    "kept from what a person of the household said, in their own words, about the one it is "
-    "about: keep what a person says in the turn where they say it. Nothing was noted"
+    "a reported fact names who reported it: the person whose message this turn answers, or, when "
+    "it answers none, the one of the household who said, in their own words, a memory you kept "
+    "about the person the fact is about (memory): keep what a person says in the turn where they "
+    "say it. What a note says was reported by its author, in their own conversation; what a tool "
+    "of yours showed you is seen. Nothing was noted"
 )
 _REPORT_IS_THE_SPEAKER: Final = (
-    "in your answer to the person who told you, they are the reporter: leave memory out"
+    "this turn answers a message of the person you are talking with: a reported fact noted here "
+    "names them as the reporter, so leave memory out"
 )
 _NO_MEMORY: Final = "no memory has this id"
 _MEMORY_ONLY_CONFIRMED: Final = (
@@ -118,10 +126,6 @@ _SECRET: Final = (
     "this looks like a secret: a fact never holds one. Nothing was noted. If it is not a secret, "
     "say it differently (in words, without a long code, a long number or a run of letters and "
     "digits)"
-)
-_CORRECT_IN_A_TURN: Final = (
-    "a fact is corrected only in a turn with nothing from anyone else in it (a note, a document, "
-    "a site): nothing was changed"
 )
 _NO_FACT: Final = "no fact has this id"
 _SAME_OUTCOME: Final = "this fact already has this outcome: nothing changes"
@@ -207,19 +211,26 @@ class _Note:
             raise InvalidArguments("invalid", _MEMORY_ONLY_CONFIRMED)
 
 
+# What both descriptions say of a person's word about themselves: the code's guards read the
+# person of the conversation only, so relayed words are his to weigh (review finding 2).
+_THEIR_OWN_WORD: Final = (
+    "What a person says of a fact about themselves, in their own conversation or relayed by a "
+    "note, a request or anyone's message, is their word about themselves: alone, it never takes "
+    "back or raises their own fact."
+)
+
+
 async def _notable(
     session: AsyncSession, given: _Note, ctx: ToolContext
 ) -> tuple[Person, uuid.UUID | None]:
-    """The person the fact is about and, for a ``reported`` fact, who reported it, once this turn
-    may note it (spec 6.3): a turn with no text from outside (``ToolContext.outside_text``), a fact
-    about someone else than the person of the conversation, and for a ``confirmed`` fact a memory
+    """The person the fact is about and, for a ``reported`` fact, who reported it, once it may
+    be noted (spec 6.3), in any turn: a fact about someone else than the person of the
+    conversation, and for a ``confirmed`` fact a memory
     said by the fact's person about a person of the household, in their own words (origin
     ``own_words``: not words rewritten by the review or in a turn that carried someone else's),
     still unconfirmed, that gave no confirmed fact yet. The reporter of a ``reported`` fact is the
-    person who speaks when the turn answers them; in any other turn it is the sayer of the memory
-    the fact rests on (``_reporter``). ``InvalidArguments`` otherwise."""
-    if ctx.outside_text:
-        raise InvalidArguments("not_possible", _NOT_IN_THIS_TURN)
+    person who speaks in a turn that answers a message of theirs; in any other turn it is the
+    sayer of the memory the fact rests on (``_reporter``). ``InvalidArguments`` otherwise."""
     person = await resolve_person(session, given.person, now=ctx.clock(), speaker=ctx.person.id)
     if person.id == ctx.person.id:
         raise InvalidArguments("not_possible", _NOT_ABOUT_ONESELF)
@@ -227,8 +238,8 @@ async def _notable(
         memory = await get_memory(session, given.memory)
         if memory is None:
             raise InvalidArguments("not_found", _NO_MEMORY)
-        # He judges, in any turn with no outside text, that the person a memory is about
-        # confirmed or denied it, wherever he heard it (as ``memory_change`` does).
+        # He judges, in any turn, that the person a memory is about confirmed or denied it,
+        # wherever he heard it (as ``memory_change`` does).
         if memory.said_by_id != person.id or memory.about_id is None:
             raise InvalidArguments("not_possible", _NOT_THAT_MEMORY)
         if memory.origin != "own_words":
@@ -248,13 +259,15 @@ async def _notable(
 async def _reporter(
     session: AsyncSession, given: _Note, person: Person, ctx: ToolContext
 ) -> uuid.UUID | None:
-    """Who reported a ``reported`` fact (``None`` for another): the person who speaks in his answer
-    to them. In any other turn the fact cites a memory (``memory``) said, in their own words
+    """Who reported a ``reported`` fact (``None`` for another): the person who speaks, in a turn
+    that answers a message of theirs (``ToolContext.reply_message_id``), whatever else it holds:
+    a reported fact says "this person said so". In any other turn the fact cites a memory
+    (``memory``) said, in their own words
     (origin ``own_words``), by a person of the household other than the fact's person, that rests
     no other fact yet: its sayer, read from the row by the code, is the reporter."""
     if given.how != "reported":
         return None
-    if ctx.answers_them:
+    if ctx.reply_message_id is not None:
         if given.memory is not None:
             raise InvalidArguments("invalid", _REPORT_IS_THE_SPEAKER)
         return ctx.person.id
@@ -308,11 +321,15 @@ class TrustNote:
             "people, and never who reported it (the person it is about may read it). One fact "
             "per thing that happened: when the person comes back to something that may be "
             "noted already, look first (trust_look with their name) and correct it rather than "
-            "add one. What you hear in another person's conversation you may weigh and note here, "
-            "in any turn without text from outside (a note, a site, what a tool gave); outside "
+            "add one. What you hear or see anywhere you may weigh and note here: weigh where it "
+            "comes from. The house's own system, or a tool of yours that reads the house, is a "
+            "witness you can go by; a site, a document or an unknown person's words are not, "
+            "alone. For a seen fact, say in about what showed it (which tool, what it reads). A "
+            "reported fact is only what the person who writes to you now tells you themselves; "
+            "what a note says was reported by its author; outside "
             "your answer to the person who told you, a reported fact cites the memory you kept "
             "of what they said (memory). Never repeat to one what is private to another. Nobody is "
-            "shown that you note it."
+            "shown that you note it. " + _THEIR_OWN_WORD
         ),
         parameters={
             "type": "object",
@@ -510,14 +527,11 @@ class TrustLook:
         return ToolOutcome(status="done", model_result=result, card=_CARD)
 
 
-def _correct_arguments(arguments: JsonObject, ctx: ToolContext) -> tuple[uuid.UUID, Outcome | None]:
+def _correct_arguments(arguments: JsonObject) -> tuple[uuid.UUID, Outcome | None]:
     _only(arguments, frozenset({"id"}), frozenset({"id", "outcome"}))
     fact_id = _uuid(arguments["id"], _NO_FACT)
     outcome = arguments.get("outcome")
-    checked = None if outcome is None else _outcome(outcome)
-    if ctx.outside_text:
-        raise InvalidArguments("not_possible", _CORRECT_IN_A_TURN)
-    return fact_id, checked
+    return fact_id, None if outcome is None else _outcome(outcome)
 
 
 async def _correctable(
@@ -559,7 +573,8 @@ class TrustCorrect:
             "mistaken; taking it back or raising it is done when someone else speaks. A fact "
             "becomes worse (towards lied) only in the turn of whoever established it (who "
             "confirmed or denied it, or in whose turn it was seen or reported): what anyone else "
-            "tells you is theirs to report, as a new fact (trust_note, reported)."
+            "tells you is theirs to report, as a new fact (trust_note, reported). "
+            + _THEIR_OWN_WORD
         ),
         parameters={
             "type": "object",
@@ -576,7 +591,7 @@ class TrustCorrect:
     async def describe(
         self, arguments: JsonObject, actor: Actor, ctx: ToolContext
     ) -> DescribedAction:
-        fact_id, outcome = _correct_arguments(arguments, ctx)
+        fact_id, outcome = _correct_arguments(arguments)
         async with ctx.session_factory() as session:
             await _correctable(session, fact_id, outcome, ctx)
         return DescribedAction(
@@ -588,7 +603,7 @@ class TrustCorrect:
         )
 
     async def execute(self, arguments: JsonObject, ctx: ToolContext) -> ToolOutcome:
-        fact_id, outcome = _correct_arguments(arguments, ctx)
+        fact_id, outcome = _correct_arguments(arguments)
         async with ctx.session_factory() as session:
             fact = await _correctable(session, fact_id, outcome, ctx)
             about = fact.person_id

@@ -16,7 +16,8 @@ criteria of each case of ``toolmaking_cases.json``.
 A case gives what the person said (``said``), or, for a turn a plan woke him for, the plan due
 (``due``: its why, their words, how its build stands and the tool's name once ready), or, for a
 turn a tool of his woke him for, what it says (``woken``: each tool's name and content, as
-``conversation.tool_wakes`` gives them), after the conversation it came from (``history``); the
+``conversation.tool_wakes`` gives them; the context says it as a real turn does, with what the
+tool is built to reach, from its operations), after the conversation it came from (``history``); the
 builds in progress (``building``), the tools he made that are offered (``made_tools``: each one's
 definition and operations, the result its stub gives back, and the triggers ``tool_look`` shows),
 the tools set aside or given up (``aside``), and what a program he runs by hand gives
@@ -74,7 +75,12 @@ from domo_core.llm.types import (
 from domo_core.madetools.build import GIVE_UP, SUBMIT, toolmaking_prompt
 from domo_core.madetools.imports import forbidden
 from domo_core.madetools.offered import offered_name
-from domo_core.madetools.risks import OperationsNotRight, read_operations
+from domo_core.madetools.risks import (
+    OperationsNotRight,
+    operations_of,
+    reaches_told,
+    read_operations,
+)
 from domo_core.madetools.schema import unsupported
 from domo_core.prompts import (
     BeingBuilt,
@@ -82,9 +88,9 @@ from domo_core.prompts import (
     HouseholdLine,
     ToolAside,
     ToolWake,
+    _tool_wake_lines,  # pyright: ignore[reportPrivateUsage]
     build_system_prompt,
     today_of,
-    tool_wake_heading,
 )
 from domo_core.tools.registry import TOOLS
 from fakes import FakeChatModel, FixedModels
@@ -165,9 +171,21 @@ def _due(case: dict[str, Any]) -> tuple[DuePlan, ...]:
 
 
 def _woken(case: dict[str, Any]) -> tuple[ToolWake, ...]:
-    """What woke him in the case's turn: each tool and what it says."""
+    """What woke him in the case's turn: each tool and what it says, with what a ready tool is
+    built to reach as a real turn reads it from its row (``conversation.prepare``:
+    ``reaches_told`` of its operations; ``None`` for a tool that is not among the case's)."""
+    operations = {tool["name"]: tool["operations"] for tool in case.get("made_tools", [])}
     return tuple(
-        ToolWake(tool=woke["tool"], content=woke["content"]) for woke in case.get("woken", [])
+        ToolWake(
+            tool=woke["tool"],
+            content=woke["content"],
+            reaches=(
+                tuple(reaches_told(operations_of(operations[woke["tool"]])))
+                if woke["tool"] in operations
+                else None
+            ),
+        )
+        for woke in case.get("woken", [])
     )
 
 
@@ -645,12 +663,18 @@ async def test_a_case_done_by_hand_is_answered_with_a_run_and_checked_on_from_ru
 async def test_a_case_woken_by_a_tool_gives_the_wake_and_a_yes_for_waits(
     cases: list[dict[str, Any]],
 ):
-    """A turn a tool woke him for ends with the code's line, the context says what the tool said,
-    and a call of the tool with ``yes_for`` is answered as a request that waits."""
+    """A turn a tool woke him for ends with the code's line, the context says what the tool said
+    as a real turn does (what a ready tool is built to reach in its heading, its content under
+    ``result``), and a call of the tool with ``yes_for`` is answered as a request that waits."""
     case = next(case for case in cases if case["id"] == "asks_the_yes_not_the_tool")
     assert [message.content for message in _history(case)][-1] == TOOL_MARKER
     [woke] = case["woken"]
-    assert tool_wake_heading(woke["tool"]) in _prompt(case)
+    [wake] = _woken(case)
+    assert wake.reaches is not None
+    [line] = _tool_wake_lines([wake])
+    assert line in _prompt(case).splitlines()
+    assert "a program built to reach " in line
+    assert line.endswith(json.dumps({"result": woke["content"]}, ensure_ascii=False))
     stop = woke["content"]["needs_yes"]["stop"]
     asked = ToolCall(
         id="c1", name=offered_name(woke["tool"]), arguments=json.dumps({"yes_for": stop})

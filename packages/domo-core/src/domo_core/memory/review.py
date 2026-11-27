@@ -105,7 +105,7 @@ from domo_core.llm.router import Route, choose_key, usable_keys
 from domo_core.llm.spending import at_limit
 from domo_core.llm.types import ChatMessage, ErrorKind, JsonObject, ToolCall, ToolDefinition
 from domo_core.memory.models import Memory
-from domo_core.memory.service import unconfirmed, visible_to, who_said
+from domo_core.memory.service import source_of, told_unconfirmed, visible_to, who_said
 from domo_core.policy.rights import RightsTable, load_rights
 from domo_core.policy.roles import Actor, as_role
 from domo_core.policy.settings import load_policy_settings
@@ -473,7 +473,8 @@ async def _known_of(
             break
         kept.append(memory)
         used += weight
-    said_by = await who_said(session, kept, person_id)
+    # Nobody talks in a review: what they said is under their name, never the label of a turn.
+    said_by = await who_said(session, kept, person_id, by_name=True)
     trusts = (
         await trust_shown(
             session, kept, speaker=person_id, with_speaker=False, start=start, now=now
@@ -488,8 +489,9 @@ async def _known_of(
             said_by=said_by[m.id],
             when=m.created_at.astimezone(UTC).isoformat(),
             private=m.kept_private,
-            unconfirmed=unconfirmed(m),
+            unconfirmed=told_unconfirmed(m),
             trust=trusts.get(m.id),
+            source=source_of(m),
         )
         for m in kept
     )

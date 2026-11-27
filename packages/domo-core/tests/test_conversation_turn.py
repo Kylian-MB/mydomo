@@ -14,6 +14,7 @@ from domo_core.conversation.prepare import NoKey, prepare_turn
 from domo_core.conversation.service import Conversation
 from domo_core.gatekeeper_client import GatekeeperClient
 from domo_core.llm.types import ChatUsage, ToolCall
+from domo_core.memory.models import Memory
 from domo_core.prompts import JustDecided
 from domo_core.trust.models import TrustFact
 from fakes import FakeChatModel
@@ -199,18 +200,21 @@ async def test_an_answer_cut_short_in_a_turn_that_may_stay_silent_says_nothing(
     assert listener.events == [Ended("complete")]
 
 
-@pytest.mark.parametrize(("from_outside", "noted"), [(True, 0), (False, 1)])
-async def test_a_decision_wake_of_a_made_tool_moves_no_trust(
+@pytest.mark.parametrize(("from_outside", "origin"), [(True, "external"), (False, "deduced")])
+async def test_a_decision_wake_of_a_made_tool_marks_the_turn_and_closes_no_trust(
     chat_server: ChatServer,
     owner_member: Member,
     add_member,
     settings: CoreSettings,
     gk_client: GatekeeperClient,
     from_outside: bool,
-    noted: int,
+    origin: str,
 ):
     # The turn a decision wakes him for carries what the decided request gave: from a made tool
-    # or a program it is text nobody of the house said (``JustDecided.from_outside``).
+    # or a program it is text nobody of the house said (``JustDecided.from_outside``). The mark
+    # still says where a memory kept there comes from (nobody wrote in this turn: from outside,
+    # no person's words); it no longer closes a fact of trust: he
+    # weighs the source.
     owner = owner_member.person
     await add_member("Sam Martin", "adult")
     call = ToolCall(
@@ -218,9 +222,15 @@ async def test_a_decision_wake_of_a_made_tool_moves_no_trust(
         "trust_note",
         '{"person": "Sam", "outcome": "held", "how": "seen", "about": "The boiler was off."}',
     )
+    keep = ToolCall(
+        "c2",
+        "memory_keep",
+        '{"content": "The boiler was off.", "subject": "the boiler", "kind": "fact", '
+        '"private": false, "core": false}',
+    )
     deps = turn_deps(
         session_factory=chat_server.session_factory,
-        model=FakeChatModel(tool_script=[call, "ok"]),
+        model=FakeChatModel(tool_script=[call, keep, "ok"]),
         settings=settings,
         gatekeeper=gk_client,
         clock=chat_server.clock,
@@ -246,4 +256,6 @@ async def test_a_decision_wake_of_a_made_tool_moves_no_trust(
     await turn.run(Collecting())
     async with chat_server.session_factory() as session:
         count = await session.scalar(select(func.count()).select_from(TrustFact))
-    assert count == noted
+        origins = list(await session.scalars(select(Memory.origin)))
+    assert count == 1
+    assert origins == [origin]

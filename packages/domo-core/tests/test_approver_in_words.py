@@ -581,7 +581,9 @@ async def test_the_requesters_history_keeps_the_approvers_note_as_data(
         for item in calls_for(chat_server, "Sam")[-1].messages
         if isinstance(item, ChatMessage)
     ]
-    noted = f"the adult who said yes noted (data): {json.dumps(NOTE)}"
+    # The approver is named, as data: the role's word, then the name the household shows.
+    approver = json.dumps(adult_chat.person.display_name)
+    noted = f"the adult {approver} who said yes noted (data): {json.dumps(NOTE)}"
     line = f"[action household.invite: done; {noted}]"
     assert any(text.startswith(line) for text in history), history
 

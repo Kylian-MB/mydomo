@@ -403,8 +403,9 @@ async def execute_allowed(
         return _timed_out(tool_name, action_type)
     if brings_outside_text(tool.action_type):
         # What a tool he made, or a program run by hand, gave back is text nobody of the house
-        # said: from here the turn moves no one's trust (``ToolContext.outside_text``), on this
-        # context and on every copy of it (a request decided in the turn runs on one).
+        # said: from here the turn is marked (``ToolContext.outside_text``: no longer his own
+        # answer, and what he keeps in it is not surely the person's words), on this context and
+        # on every copy of it (a request decided in the turn runs on one).
         ctx.raise_outside_text()
     result: JsonObject = {"status": outcome.status}
     result.update((key, value) for key, value in outcome.model_result.items() if key != "status")

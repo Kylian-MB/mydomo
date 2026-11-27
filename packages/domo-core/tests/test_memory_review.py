@@ -41,7 +41,7 @@ from domo_core.llm.types import (
 )
 from domo_core.memory.models import Memory, Origin
 from domo_core.memory.review import review, review_pass
-from domo_core.memory.service import keep
+from domo_core.memory.service import SAID_BY_YOU, keep
 from domo_core.prompts import REVIEW_LEFT_LINE, memory_review_prompt
 from fakes import FakeCall, FakeChatModel
 from sqlalchemy import func, select, update
@@ -188,6 +188,45 @@ async def test_a_quiet_conversation_is_reviewed_once(owner_chat: ChatPilot):
     owner_chat.clock.advance(QUIET)
     await run_the_pass(owner_chat)
     assert len(server.calls) == calls
+
+
+async def test_a_review_names_the_person_it_is_run_for_and_a_turn_does_not(
+    owner_chat: ChatPilot,
+):
+    """Nobody talks in a review: a memory the reviewed person said carries their name there,
+    never the label of a turn (``SAID_BY_YOU``), which a turn of theirs still gives."""
+    server = owner_chat.server
+    async with server.session_factory() as session:
+        await keep(
+            session,
+            said_by=owner_chat.person.id,
+            subject="home",
+            content="The boiler is noisy.",
+            kind="fact",
+            origin="own_words",
+            kept_private=False,
+            core=True,
+            now=server.clock(),
+            about_id=None,
+        )
+        await session.commit()
+
+    def said_by(system: str) -> list[str]:
+        (line,) = [
+            line for line in system.splitlines() if line.startswith("What you know (always): ")
+        ]
+        return [m["said_by"] for m in json.loads(line.removeprefix("What you know (always): "))]
+
+    turns = len(server.calls)
+    await owner_chat.say("Hello!")
+    assert said_by(server.calls[turns].system) == [SAID_BY_YOU]
+    owner_chat.use_model(reviewer())
+    owner_chat.clock.advance(QUIET)
+    await run_the_pass(owner_chat)
+    (call,) = review_calls(server)
+    name = owner_chat.person.display_name
+    assert name and name != SAID_BY_YOU
+    assert said_by(call.system) == [name]
 
 
 async def test_nothing_is_reviewed_while_they_still_talk(owner_chat: ChatPilot):
@@ -618,9 +657,12 @@ async def test_a_guest_who_left_gets_one_last_review_and_nothing_is_deleted_by_t
     (of_alex,) = [call for call in left if '"Alex"' in call.system]
     context = of_alex.system.split("\n\nContext\n", 1)[1]
     (known,) = [line for line in context.splitlines() if line.startswith(KNOWN_OF_THEM)]
-    assert sorted(m["content"] for m in json.loads(known.removeprefix(KNOWN_OF_THEM))) == [
-        "Alex likes jazz.",
-        "I play the guitar.",
+    # Each with who said it, by name: nobody talks in a review, the one it is run for neither.
+    assert sorted(
+        (m["content"], m["said_by"]) for m in json.loads(known.removeprefix(KNOWN_OF_THEM))
+    ) == [
+        ("Alex likes jazz.", owner_chat.person.display_name),
+        ("I play the guitar.", "Alex"),
     ]
     # Nothing is forgotten unless Domo forgets it.
     assert {"Alex likes jazz.", "I play the guitar."} <= set(await memories(server))

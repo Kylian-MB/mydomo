@@ -37,7 +37,7 @@ from domo_core.madetools.handover import AskingTool, launch_in_a_turn
 from domo_core.madetools.launch import HOUSE, ForWhom, LaunchDeps, Launched, launch
 from domo_core.madetools.means import STOPPED, Chain, LaunchScope, Means
 from domo_core.madetools.models import DeclaredSpending, LaunchStop, StandingAgreement
-from domo_core.madetools.offered import STOPPED_NEXT, offer_named, outcome_of
+from domo_core.madetools.offered import READ_AS, STOPPED_NEXT, offer_named, outcome_of
 from domo_core.madetools.risks import OperationsNotRight, read_operations
 from domo_core.madetools.settings import set_house
 from domo_core.madetools.yes import take_yes
@@ -517,7 +517,12 @@ async def test_a_yes_call_waits_and_is_shown_and_the_judge_never_reads_the_outpu
     assert offer is not None
     ctx = replace(tool_context, person=dana, actor=Actor(dana.id, as_role(dana.role)))
     ran = await offer.execute({"yes_for": str(stop.id)}, ctx)
-    assert ran.model_result == {"launch": "done", "result": secret_result}
+    assert ran.model_result == {
+        "launch": "done",
+        "result": secret_result,
+        # What speaks: the tool's name, and what it is built to reach (it declares no address).
+        "from": {"program": "order", "built_to_reach": [], "read_as": READ_AS},
+    }
     assert shop.ordered == 1
     with pytest.raises(InvalidArguments):
         # The yes was used.

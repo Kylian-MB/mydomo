@@ -6,10 +6,10 @@ after the whole name): Domo acts on it directly, and the card, the judge and the
 read the whole name (``household.service.whole_names``). Whether to ask first ("Sam, is that
 Samuel?") is Domo's judgement; the description says when it is worth it.
 
-Who a person's nickname means is decided by that person alone: it is kept, or forgotten, only in
-a turn that answers a message of theirs with nothing from outside in it
-(``ToolContext.answers_them``): never from a note someone left them, a request of someone else, or
-a turn Domo started himself. A
+A nickname is that person's own way of naming someone. Whether it is theirs is Domo's judgement,
+in any turn: the code refuses none for where a text of the turn comes from, nor because nobody
+wrote in it; the description tells him that what a note, someone else or a tool says they call
+someone is a hint, not their word. A
 whole name always means its owner: a nickname that reads as the whole name of someone in the
 household, or of an invitation that waits, is refused.
 
@@ -34,10 +34,6 @@ MAX_NICKNAME_LENGTH: Final = nicknames.MAX_NICKNAME_LENGTH
 # What a call leaves under the reply: a card nobody reads (``policy.catalog.SILENT_ACTIONS``).
 _CARD: Final[JsonObject] = {"key": "action.card.done", "params": {}}
 
-_ASK_THEM_FIRST: Final = (
-    "a nickname is kept or forgotten only from the person's own words in answer to them: ask "
-    "them first, and do it when they answer"
-)
 _A_WHOLE_NAME: Final = (
     "this is the whole name of someone in the household, or of an invitation that waits: it "
     "always means them, there is nothing to keep"
@@ -74,16 +70,12 @@ def _keep_arguments(arguments: JsonObject) -> tuple[str, str]:
     return nickname_from(arguments["nickname"]), person
 
 
-def _forget_argument(arguments: JsonObject, ctx: ToolContext) -> str:
-    """The nickname to forget, once this turn may forget it: one that answers the person with
-    nothing from outside (``ToolContext.answers_them``). Forgetting changes whom a short name
-    means (it falls back to a first name or a beginning): someone else's words never decide it."""
+def _forget_argument(arguments: JsonObject) -> str:
+    """The nickname to forget. Forgetting changes whom a short name means (it falls back to a
+    first name or a beginning): whether the person wants it is Domo's judgement."""
     if set(arguments) != {"nickname"}:
         raise InvalidArguments("invalid", 'the only argument is "nickname"')
-    nickname = nickname_from(arguments["nickname"])
-    if not ctx.answers_them:
-        raise InvalidArguments("invalid", _ASK_THEM_FIRST)
-    return nickname
+    return nickname_from(arguments["nickname"])
 
 
 def _described(action_type: str, actor: Actor) -> DescribedAction:
@@ -98,12 +90,9 @@ def _described(action_type: str, actor: Actor) -> DescribedAction:
 
 
 async def _keepable(session: AsyncSession, nickname: str, person: str, ctx: ToolContext) -> Person:
-    """The one person in the household ``person`` means to the person who speaks, once this turn
-    may keep ``nickname`` for them: a turn that answers them with nothing from outside
-    (``ToolContext.answers_them``), and a nickname that is no whole name of someone in the
-    household or of an invitation that waits. ``InvalidArguments`` otherwise."""
-    if not ctx.answers_them:
-        raise InvalidArguments("invalid", _ASK_THEM_FIRST)
+    """The one person in the household ``person`` means to the person who speaks, once
+    ``nickname`` may be kept for them: it is no whole name of someone in the household or of an
+    invitation that waits. ``InvalidArguments`` otherwise."""
     now = ctx.clock()
     key = name_key(nickname)
     names = [p.display_name for p in await active_persons(session, now)]
@@ -128,7 +117,9 @@ class NicknameKeep:
             "their answer with this tool; when it is plain who is meant, keep it without asking. "
             "Once it is kept, act on it directly and never ask again. A nickname is this person's "
             "own way of naming someone: others may use other names, or the same one for someone "
-            "else. Only from their own words in answer to them; never a whole name."
+            "else. So keep it from how they name people themselves. "
+            "What a note, someone else or a tool says they call someone is a hint, not their "
+            "word: ask them when it matters who is meant. Never a whole name."
         ),
         parameters={
             "type": "object",
@@ -209,11 +200,11 @@ class NicknameForget:
     async def describe(
         self, arguments: JsonObject, actor: Actor, ctx: ToolContext
     ) -> DescribedAction:
-        _forget_argument(arguments, ctx)
+        _forget_argument(arguments)
         return _described(self.action_type, actor)
 
     async def execute(self, arguments: JsonObject, ctx: ToolContext) -> ToolOutcome:
-        nickname = _forget_argument(arguments, ctx)
+        nickname = _forget_argument(arguments)
         async with ctx.session_factory() as session:
             forgotten = await nicknames.forget(session, person_id=ctx.person.id, nickname=nickname)
             await session.commit()

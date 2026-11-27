@@ -257,7 +257,9 @@ class ToolContext:
     Domo's own: a note someone left them, a request of someone else that waits for their yes,
     what an approver said of a request of theirs, waiting or quoted in the history
     (``conversation.prepare.prepare_turn``). They are data, and what Domo does in such a turn is
-    not known to be what the person asked for (``they_asked``).
+    not known to be what the person asked for (``they_asked``). They close no act of his: he
+    judges, weighing where each text comes from (the owner, 2026-11-26); an act that says "this
+    person said so" reads ``reply_message_id``, or checks their passage (``said_messages``).
 
     ``ask_more`` is what Domo asked for the next action he calls in this answer
     (``ask_before_acting``): the ask and his reason. The next call the judge is consulted about
@@ -423,17 +425,21 @@ class ToolContext:
         """Whether the reply of this turn is Domo's own answer to a message of the person, with
         no text from outside in the turn (``outside_text``, ``Message.own_answer``); the judge
         reads any other reply as relayed. A turn a plan woke him for answers no message, even
-        when the plan keeps what they asked (``asked_before``)."""
+        when the plan keeps what they asked (``asked_before``). Words of a household member told
+        to the turn make it false too. Whether the person wrote in the turn at all is
+        ``reply_message_id``."""
         return self.reply_message_id is not None and not self.outside_text
 
     @property
     def outside_text(self) -> bool:
-        """Whether text nobody of the house said is in this turn, for the tools that move a
-        person's trust (``trust_note``, ``trust_correct``, ``memory_change`` with ``confirmed``):
-        words told to the turn (``told_outside``), a turn a tool or a program woke him for, which
-        carries what it gave (``tool_woke``), or what a tool he made, or a program, said came into
-        it (``outside``, shared by every copy of the context: ``raise_outside_text``). What a tool
-        that only reads what he knows or holds gave is not in it."""
+        """Whether text that is not the person's own is in this turn: words told to the turn
+        (``told_outside``), a turn a tool or a program woke him for, which carries what it gave
+        (``tool_woke``), or what a tool he made, or a program, said came into it (``outside``,
+        shared by every copy of the context: ``raise_outside_text``). What a tool that only reads
+        what he knows or holds gave is not in it. It says whether the turn is their request and
+        his own answer (``they_asked``, ``answers_them``) and where a memory written in it comes
+        from (``tools.memory_tools.origin_for``); it closes no act of his: he weighs where each
+        text comes from."""
         return self.told_outside or self.tool_woke or self.outside.raised
 
     def raise_outside_text(self) -> None:

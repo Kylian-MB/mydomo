@@ -18,7 +18,8 @@
   judged with his own rights and what he knows (``conversation.execution.handle_tool_call``);
 * ``asking_agreed``: after the person answered something that could not be undone, keep what
   they agreed about being asked again the next times (``memory.told.agreed_asking``), for them
-  alone and only in a turn that answers them; the judge weighs it, no yes is imposed by code;
+  alone and only with a passage of a message they wrote in this turn, whatever else the turn
+  holds; the judge weighs it, no yes is imposed by code;
 * ``confirmation_amend``: apply the change the person asked for when they answered a request
   with a yes and a change; only then, in that turn (``ToolContext.change_grant``). An approver's
   change of someone else's request comes with a note of what they said, for the one who asked,
@@ -422,7 +423,8 @@ class AskingAgreed:
             "false when they need not be asked again, true when they want to be. action_type is "
             "the type of that action, as the context gives it (could_not_be_undone). their_words "
             "is the passage of their message of now that says it, copied character for character. "
-            "Only in a turn that answers them, for what you told them before such an action."
+            "Only for what they tell you themselves now, about what you told them before such an "
+            "action."
         ),
         parameters={
             "type": "object",
@@ -471,16 +473,21 @@ class AskingAgreed:
 
     async def execute(self, arguments: JsonObject, ctx: ToolContext) -> ToolOutcome:
         action_type, keep_asking, their_words = self._read(arguments)
-        # Tied to their own words of now (ruling R68): a turn that answers them with nothing from
-        # outside, and a passage of one of their messages of this turn, never across two.
-        if ctx.on_his_own or not ctx.answers_them:
-            raise InvalidArguments("not_possible", "only in a turn that answers the person")
-        if (
-            len(their_words) > MAX_NOTE_LENGTH
-            or exact_text_in(ctx.said_messages, their_words) is None
-        ):
+        # Tied to their own words of now (ruling R68): a passage of one of their messages of this
+        # turn, never across two. Whatever else the turn holds closes nothing; a turn nobody
+        # wrote in (one he acts in on his own, a wake) holds no message of theirs, so no passage.
+        if len(their_words) > MAX_NOTE_LENGTH:
             raise InvalidArguments(
-                "not_possible", "their_words is not a passage of their message of now: nothing kept"
+                "not_possible",
+                f"their_words is longer than {MAX_NOTE_LENGTH} characters: nothing kept. Give "
+                "the short passage of their message that says it, copied character for character",
+            )
+        if exact_text_in(ctx.said_messages, their_words) is None:
+            raise InvalidArguments(
+                "not_possible",
+                "their_words is not a passage of a message they wrote to you in this turn: "
+                "nothing kept. What they agree to is kept in their own words: ask them, and call "
+                "this when they answer",
             )
         async with ctx.session_factory() as session:
             kept = await agreed_asking(

@@ -36,6 +36,7 @@ from domo_core.madetools.models import (
     MadeToolRun,
     ToolBuild,
 )
+from domo_core.madetools.offered import READ_AS
 from domo_core.madetools.settings import set_house
 from domo_core.madetools.upkeep import toolmaking_pass
 from domo_core.policy.roles import Actor, as_role
@@ -156,7 +157,13 @@ async def test_a_program_by_hand_runs_at_once_for_the_person_of_the_turn(
     came = await ran_by_hand(context_of(tool_context, dana, deps), by_hand())
     [run] = await hand_runs(chat_server.session_factory)
     assert came.status == "done"
-    assert came.model_result == {"launch": "done", "result": 42, "run": str(run.id)}
+    assert came.model_result == {
+        "launch": "done",
+        "result": 42,
+        "run": str(run.id),
+        # What speaks: a program run by hand, built to reach what its call declared (nothing).
+        "from": {"program": "run by hand", "built_to_reach": [], "read_as": READ_AS},
+    }
     # Checked by the analyser, then run once: no dry run, no review.
     assert sandbox.scans == [CODE]
     [request] = sandbox.runs
@@ -685,3 +692,21 @@ async def test_a_run_by_hand_kept_for_longer_than_a_date_holds_is_kept_without_a
         await toolmaking_pass(app_turn_deps(chat_server.app))(chat_server.clock())
     assert [r for r in caplog.records if r.name == upkeep.__name__] == []
     assert len(await hand_runs(chat_server.session_factory)) == 1
+
+
+async def test_what_a_run_is_built_to_reach_is_read_before_it_runs(
+    chat_server: ChatServer, tool_context: ToolContext, dana: Person, monkeypatch
+):
+    # Review finding 5: read after the launch, a read that fails told him the call failed though
+    # the program had run.
+    from domo_core.tools import program_run as module
+
+    async def fails(ctx: ToolContext, run_id: uuid.UUID) -> list[str]:
+        raise RuntimeError("the database is away")
+
+    monkeypatch.setattr(module, "_reaches", fails)
+    sandbox = FakeSandbox(program=doubles)
+    deps = deps_of(chat_server.session_factory, chat_server.clock, sandbox, [])
+    with pytest.raises(RuntimeError):
+        await ran_by_hand(context_of(tool_context, dana, deps), by_hand())
+    assert sandbox.runs == []

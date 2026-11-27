@@ -294,6 +294,8 @@ async def test_trust_gives_the_figure_and_the_last_facts(session, add_person):
     assert len(lately) == TRUST_FACTS
     assert lately[0] == {
         "outcome": "mistaken",
+        # How it was established: what the judge weighs it by.
+        "how": "seen",
         "about": f"fact number {TRUST_FACTS + 1}",
         "when": (NOW - timedelta(days=10 - TRUST_FACTS - 1)).date().isoformat(),
     }

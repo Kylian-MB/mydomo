@@ -47,7 +47,7 @@ from domo_core.madetools.models import (
     MadeToolVersion,
     ToolBuild,
 )
-from domo_core.madetools.offered import offers
+from domo_core.madetools.offered import READ_AS, offers
 from domo_core.madetools.schema import schema_problem
 from domo_core.madetools.service import fingerprint, ready_tools
 from domo_core.madetools.settings import SETTINGS, set_for_tool, set_house
@@ -84,6 +84,12 @@ OPERATIONS: dict[str, Any] = {"run": {"says": "Does what it does.", "risks": []}
 BEGIN: dict[str, Any] = {"do": "begin", "operation": "run"}
 # How many tools a turn offers at its start (``madetools.settings``).
 MAX_OFFERED = SETTINGS["tools_offered"].start
+
+
+def from_program(name: str) -> dict[str, Any]:
+    """What a result says of the program whose words it holds: the tool ``name``, built to reach
+    no address (the test tools declare none)."""
+    return {"program": name, "built_to_reach": [], "read_as": READ_AS}
 
 
 async def add_tool(
@@ -200,7 +206,9 @@ async def test_a_call_is_run_in_the_sandbox_and_shown_nowhere(
     reply = await adult_chat.say_with_tool("t_split", LUNCH)
     # Stored with the reply, as any action, and read by the model in the turn...
     assert reply.actions == [{"tool": "t_split", "status": "done"}]
-    assert reply.model_results == [{"status": "done", "launch": "done", "result": EACH}]
+    assert reply.model_results == [
+        {"status": "done", "launch": "done", "result": EACH, "from": from_program("split")}
+    ]
     # ... but never shown: not live, not on the page,
     assert not [event for event in reply.events if event.event == "action"]
     assert reply.cards_html == ""
@@ -460,7 +468,9 @@ async def test_past_thirty_tools_one_not_offered_still_runs_when_called(
     chat_server.sandbox = FakeSandbox(answers(done(EACH)))
     reply = await adult_chat.say_with_tool("t_split", LUNCH)
     assert reply.actions == [{"tool": "t_split", "status": "done"}]
-    assert reply.model_results == [{"status": "done", "launch": "done", "result": EACH}]
+    assert reply.model_results == [
+        {"status": "done", "launch": "done", "result": EACH, "from": from_program("split")}
+    ]
     assert reply.cards_html == ""
     assert [run.entry["arguments"] for run in chat_server.sandbox.runs] == [LUNCH]
     # One set aside is no tool at all.

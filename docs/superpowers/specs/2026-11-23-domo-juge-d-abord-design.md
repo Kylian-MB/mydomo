@@ -620,3 +620,38 @@ Ce qui précède reste tel qu'il a été approuvé ; voici où le code a suivi u
 - Partie 15 : « l'oubli de ce qui touche la santé » est réglé par D2 (dans les consignes de Domo, choix 91) ;
   « le journal » est décidé par D3 mais pas construit (choix 45) ; « marquer un souvenir confirmé » suit D5 ;
   « retirer un compte de lui-même » suit D8.
+- Partie 17, choix 63 (R42), 67 (R46) et 89 (R68) (note du 2026-11-26) : les mots de quelqu'un de la maison dans
+  le tour (un mot laissé pour la personne, une demande qui attend son oui, ce qu'a dit celui qui a répondu à une
+  demande), et un mot ou une demande de Domo lui-même, ne ferment plus ces gestes quand la personne a écrit dans
+  ce tour : Domo juge si la demande est bien la sienne. Cela vaut pour un surnom gardé ou oublié, « pas la peine
+  de redemander », une plainte notée, un fait de confiance noté ou corrigé, un souvenir confirmé, et les mots
+  exacts qu'un plan garde. Le texte d'un programme, d'un site ou d'un inconnu, et le tour où personne n'a
+  écrit, sont réglés par la note qui suit. Le juge du oui, lui, lit toujours un tel tour comme avant (choix 67 :
+  `they_asked`, `answers_them`).
+- Partie 17, choix 63 (R42), 67 (R46) et 89 (R68), suite (seconde note du 2026-11-26 ; le propriétaire : tout
+  dépend de la source, le système de la maison est une source fiable, un site pris au hasard non, et Domo doit
+  réfléchir comme un humain le ferait, avec tout ce qu'il sait) : ces gestes ne sont plus fermés par l'origine
+  d'un texte du tour (un mot laissé, une demande qui attend, ce qu'un outil ou un programme a donné, un site),
+  ni par un tour où personne n'a écrit. Domo juge, en pesant chaque source. Ce qui reste dans le code est le
+  lien d'un geste qui dit « cette personne l'a dit » : le passage exact de son message pour « pas la peine de
+  redemander » et pour les mots qu'un plan garde ; un message d'elle auquel le tour répond pour une plainte,
+  pour celui qui rapporte un fait de confiance, et pour un souvenir confirmé par la personne dont il parle
+  (ailleurs, Domo le confirme avec sa raison, jamais dans la conversation de celui qui l'a dit). Chaque texte
+  du tour et chaque souvenir dit maintenant d'où il vient : un souvenir qui n'est pas sûrement les mots de la
+  personne porte sa source (relayé, conclusion de Domo, ce qu'il lui a dit) et ce qui est de Domo est dit de
+  lui-même ; le résultat d'un outil qu'il a fait ou d'un programme lancé à la main, et le réveil d'un outil,
+  disent quel programme parle et les adresses qu'il est fait pour atteindre, dans la maison ou hors de la
+  maison ; une demande décidée par quelqu'un d'autre, et le mot de celui qui a répondu, nomment cette
+  personne ; un plan dit s'il garde les mots de la personne ; le juge du oui lit comment chaque fait de
+  confiance a été établi. L'origine d'un souvenir (R50) ne bouge pas, et le juge du oui lit un tel tour comme
+  avant (choix 67).
+- Suite de la relecture (2026-11-26), sans aucun refus de plus. Un plan est posé ou changé dans tous les tours,
+  mais les mots qu'il garde restent une marque de source, comme avant ces deux notes : aucun mot gardé quand des
+  mots d'un autre ont été dits au tour (un mot laissé, une demande, ce qu'a dit celui qui a répondu), et un
+  nouveau « pourquoi » écrit hors de sa propre réponse à la personne vide les mots gardés ; le plan ne compte
+  alors pas comme demandé le jour venu. Et un souvenir gardé dans un tour où personne n'a écrit, alors que le
+  texte d'un programme y est (un outil a réveillé Domo, ou un outil qu'il a fait ou un programme a rendu du
+  texte), a l'origine « du dehors » (`external`) : il est dit de personne, avec pour source « un programme ou un
+  outil », au modèle comme au juge du oui, jamais sous le nom de la personne de la conversation, et sans son
+  chiffre de confiance ; il peut toujours être confirmé. Un mot laissé dit à un tel tour reste les mots d'une
+  personne (relayé), et dans un tour où la personne a écrit rien ne change (R50).

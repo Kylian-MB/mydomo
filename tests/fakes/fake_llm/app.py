@@ -233,8 +233,9 @@ TOOLS_SEPARATOR: Final = "; tools: "
 FIGURES_SEPARATOR: Final = "; figures: "
 # The line of the core that ends the conversation of a turn a tool of Domo woke him for
 # (conversation/prepare.py's TOOL_MARKER), how the context says what a tool woke him with (the
-# core's ``prompts.tool_wake_heading``: its start, the tool's name, its end, then the JSON on the
-# same line), all tied by tests/fakes/test_fake_llm.py; the calls of a tool in trouble, and what the
+# core's ``prompts.tool_wake_heading``: its start, the tool's name, for a ready tool what it is
+# built to reach, its end, then the JSON on the same line, what the tool says under ``result``),
+# all tied by tests/fakes/test_fake_llm.py; the calls of a tool in trouble, and what the
 # fake says once it went back a version, or left the tool as it is.
 TOOL_MARKER: Final = "[a tool of yours has something for you: see the context]"
 TOOL_WAKE_START: Final = 'Your tool "'
@@ -744,20 +745,23 @@ def figures_text(figures: dict[str, Any]) -> str:
 
 
 _TOOL_WAKE_LINE = re.compile(
-    re.escape(TOOL_WAKE_START) + r"([a-z0-9_]*)" + re.escape(TOOL_WAKE_END) + r"(.*)"
+    re.escape(TOOL_WAKE_START)
+    + r'([a-z0-9_]*)"(?:, a program built to reach .*?)?'
+    + re.escape(TOOL_WAKE_END[1:])
+    + r"(.*)"
 )
 
 
 def trouble_in(request: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
     """The first tool in trouble the context of a tool's wake tells (a line of
-    ``TOOL_WAKE_START``, its name, ``TOOL_WAKE_END`` and JSON with a ``trouble``): its name and
-    what it says; ``None`` when no tool woke Domo for a trouble."""
+    ``TOOL_WAKE_START``, its name, ``TOOL_WAKE_END`` and JSON whose ``result`` holds a
+    ``trouble``): its name and what it says; ``None`` when no tool woke Domo for a trouble."""
     for line in system_prompt(request).splitlines():
         match = _TOOL_WAKE_LINE.fullmatch(line)
         if match is None:
             continue
-        told = _json_object(match.group(2))
-        if isinstance(told.get("trouble"), str):
+        told = _json_object(match.group(2)).get("result")
+        if isinstance(told, dict) and isinstance(told.get("trouble"), str):
             return match.group(1), told
     return None
 

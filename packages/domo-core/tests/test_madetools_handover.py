@@ -43,6 +43,7 @@ from domo_core.madetools.models import (
     MadeToolTrigger,
     MadeToolVersion,
 )
+from domo_core.madetools.offered import READ_AS
 from domo_core.madetools.service import fingerprint, set_aside
 from domo_core.madetools.settings import set_for_tool, set_house
 from domo_core.policy.catalog import DEFAULT_POLICY
@@ -808,12 +809,19 @@ def tool_calls(calls: Sequence[FakeCall]) -> list[FakeCall]:
 
 
 def data_lines(system: str, tool: str) -> list[Any]:
-    heading = tool_wake_heading(tool)
-    return [
+    """What the tool ``tool`` woke him with, in the context: under its plain heading (a tool that
+    is not ready any more) or the one that says what it is built to reach (a ready tool that
+    declares no address, as the test tools). Its words are under ``result``, the only key of
+    the line."""
+    headings = (tool_wake_heading(tool), tool_wake_heading(tool, reaches=()))
+    told = [
         json.loads(line.removeprefix(heading))
         for line in system.split("\n\nContext\n", 1)[1].splitlines()
+        for heading in headings
         if line.startswith(heading)
     ]
+    assert all(set(line) == {"result"} for line in told)
+    return [line["result"] for line in told]
 
 
 async def test_a_wake_runs_a_turn_with_the_content_as_data_alone(
@@ -836,7 +844,7 @@ async def test_a_wake_runs_a_turn_with_the_content_as_data_alone(
     assert call.system.count(HOSTILE) == 1
     [line] = [line for line in call.system.splitlines() if HOSTILE in line]
     assert line.startswith(tool_wake_heading("tally"))
-    assert json.loads(line.removeprefix(tool_wake_heading("tally")))["note"] == HOSTILE
+    assert json.loads(line.removeprefix(tool_wake_heading("tally")))["result"]["note"] == HOSTILE
     # The judge of the action taken in that turn never reads it (asked twice: it is an idea of
     # his, the tool's wake his reason, and the judge stays silent).
     judged = model.judge_calls()
@@ -880,7 +888,14 @@ async def test_a_launch_in_a_turn_wakes_the_person_of_the_turn(
         FakeChatModel(tool_script=[ToolCall("t1", "t_tally", "{}"), "Counted.", "Three.", "ok"])
     )
     reply = await adult_chat.say("count")
-    assert reply.model_results == [{"status": "done", "launch": "done", "result": 3}]
+    assert reply.model_results == [
+        {
+            "status": "done",
+            "launch": "done",
+            "result": 3,
+            "from": {"program": "tally", "built_to_reach": [], "read_as": READ_AS},
+        }
+    ]
     await chat_server.wait_for_wakes()
     [call] = tool_calls(chat_server.calls)
     assert data_lines(call.system, "tally") == [{"count": 3}]

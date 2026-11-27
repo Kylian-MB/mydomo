@@ -1,6 +1,6 @@
 [project]
 name = "domo-talk"
-version = "0.13.0"
+version = "0.13.1"
 description = "The assistant text program: talk with the assistant from a terminal, on a computer entrusted to him."
 readme = "README.md"
 requires-python = ">=3.12"

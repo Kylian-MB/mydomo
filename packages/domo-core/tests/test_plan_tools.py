@@ -227,7 +227,8 @@ async def test_their_exact_words_are_kept_only_when_they_are_in_their_message(se
     await run(
         "plan_set", {**base, "their_words": "Remind me"}, alex, session_factory, answers=False
     )
-    # Words of someone else in the turn: not known to be what they asked for.
+    # Words that are not theirs told to a turn they wrote in: the plan follows who began the
+    # turn, so it is theirs.
     await run("plan_set", base, alex, session_factory, said=said, told_outside=True)
     kept = [(p.their_words, p.made_by_domo) for p in await stored(session_factory)]
     assert kept == [
@@ -235,7 +236,7 @@ async def test_their_exact_words_are_kept_only_when_they_are_in_their_message(se
         (None, False),
         (None, True),
         (None, True),
-        (None, True),
+        (None, False),
     ]
 
 
@@ -260,10 +261,11 @@ async def test_a_turn_with_someone_elses_words_keeps_none_of_theirs(session_fact
     base = {"why": "Ask Alex whether Sam told about the exam.", "on_return": True}
     words = {**base, "their_words": "Remind me to ask Sam how the exam went"}
     outside = await run("plan_set", words, alex, session_factory, said=said, told_outside=True)
-    # Even a passage of their message is not kept then, and the result says so.
+    # Even a passage of their message is not kept then, and the result says so. Nothing is
+    # refused: the plan is set, and it is theirs (they wrote in the turn).
     assert outside["their_words"] == "not_kept"
     (plan,) = await stored(session_factory)
-    assert plan.their_words is None
+    assert (plan.their_words, plan.made_by_domo) == (None, False)
 
 
 async def test_a_new_why_outside_their_own_answer_forgets_their_words(session_factory):

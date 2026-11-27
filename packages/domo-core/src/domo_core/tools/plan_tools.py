@@ -21,10 +21,11 @@ waited for, and never one that was abandoned. The exact words of the person it c
 (``tools.notes.exact_text_from``; otherwise the result says they were ``not_kept``), and never
 in a turn that carried someone else's words (``ToolContext.told_outside``: why may come from
 them); a new ``why`` set in a turn that is not their own answer (``ToolContext.answers_them``)
-empties the words a plan kept. A plan due counts as asked only by the words it keeps
-(``conversation.prepare``). Without them, in a turn that answers no message of theirs (a plan's
-turn included), the plan is Domo's own (``made_by_domo``). What has the shape of a secret is
-refused in why it is set and in those words (``memory.service.refuses_secret_shapes``).
+empties the words a plan kept. Neither refuses anything: the plan is set or changed all the same.
+A plan due counts as asked only by the words it keeps (``conversation.prepare``). Without them,
+in a turn that answers no message of theirs (a plan's turn included), the plan is Domo's own
+(``made_by_domo``). What has the shape of a secret is refused in why it is set and in those words
+(``memory.service.refuses_secret_shapes``).
 
 The audit log keeps that a plan was set (``plan.made``), changed (``plan.changed``) or cancelled
 (``plan.cancelled``), with its id alone, never why nor the person's words.
@@ -312,7 +313,7 @@ class PlanSet:
         given = _Set(arguments)
         # In a turn that carried someone else's words (a note, a request of another), why the plan
         # is set may come from them: their exact words are not kept, and the plan will not count as
-        # asked when it is due (final review I4).
+        # asked when it is due (final review I4). Nothing is refused: the plan is set.
         words = (
             None
             if given.their_words is None
@@ -342,10 +343,12 @@ class PlanSet:
                     repeat=given.repeat,
                     on_return=given.on_return,
                     their_words=words,
-                    # It answers no message of theirs, and comes from no words of theirs: his own
-                    # (one he sets in a turn a plan woke him for, to put something off, too; on his
-                    # own it is the conversation's person's, as the keys are, but his).
-                    made_by_domo=words is None and (not ctx.answers_them or acts_alone(ctx)),
+                    # The turn answers no message of theirs, and it comes from no words of
+                    # theirs: his own (one he sets in a turn a plan woke him for, to put something
+                    # off, too; on his own it is the conversation's person's, as the keys are, but
+                    # his).
+                    made_by_domo=words is None
+                    and (ctx.reply_message_id is None or acts_alone(ctx)),
                     after_build_id=after_build,
                 )
             except SecretRefused:
@@ -482,9 +485,10 @@ class PlanChange:
                     repeat=given.repeat,
                     on_return=given.on_return,
                     after_build_id=after_build,
-                    # A new why written in a turn that is not their own answer (a plan's turn, or
-                    # one with someone else's words) no longer comes from their words alone: the
-                    # words it kept go, and it will not count as asked (final review I4).
+                    # A new why written in a turn that is not their own answer (a plan's turn, a
+                    # wake, or one with text that is not theirs) no longer comes from their words
+                    # alone: the words it kept go, and it will not count as asked (final review
+                    # I4). The change itself is made.
                     forget_their_words=given.why is not None and not ctx.answers_them,
                 )
             except SecretRefused:

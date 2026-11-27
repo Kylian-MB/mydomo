@@ -1,11 +1,13 @@
 """``went_wrong_note`` and ``went_wrong_asked``: the assistant notes a complaint about what he did,
 and marks that he asked what was wrong (spec 9.1 and 9.3, "Domo judges first").
 
-The code cannot recognise a complaint by itself: he notes it, in his answer to the person who makes
-it (``ToolContext.answers_them``) and in no turn that carries text of anyone else's or of a
-program's (``ToolContext.outside_text``): what a tool brought must never become "a complaint by
-Dana" (``not_possible``). The fact is the person's: by them and about them, and it is about his own
-act (``of_domo``). Its reason is the person's own message when the turn has it
+The code cannot recognise a complaint by itself: he notes it. A complaint is the person's own
+saying, so the turn must answer a message of theirs (``ToolContext.reply_message_id``; else
+``not_possible``); whatever else the turn holds (a note, a request that waits, what a tool gave)
+closes nothing: he judges whether the complaint is theirs, and the description tells him that what
+a note, a document, a site or a tool says they feel is not it. The fact is the person's: by them and
+about them, and it
+is about his own act (``of_domo``). Its reason is the person's own message when the turn has it
 (``ToolContext.said``), cut and never a secret (``learning.record.kept_reason``), or nothing: his
 own wording is never kept under the person's name (``words`` only says what the complaint is about).
 When the judge let through, with nothing asked, an action ``done`` of that type and subject in the
@@ -15,8 +17,8 @@ complaint only (``learning.undone.let_through_for``, the one way the code finds 
 ``went_wrong_asked`` marks that he asks the person what was wrong, once per fact
 (``learning.record.mark_asked_why``): the result says ``asked`` (he may ask, in his answer) or
 ``already_asked`` (he does not). He asks only for what matters, at a moment he judges right; the
-rule is in the description. Only a fact about the person, or one they made, can be marked, in a turn
-with no outside text: text a program brought must not use up the one question.
+rule is in the description. Only a fact about the person, or one they made, can be marked, in any
+turn: when to use up the one question is his judgement.
 
 Both are silent (``policy.catalog.SILENT_ACTIONS``): never judged, never shown.
 """
@@ -42,13 +44,10 @@ MAX_SUBJECT_LENGTH: Final = 200
 _CARD: Final[JsonObject] = {"key": "action.card.done", "params": {}}
 
 _NOT_IN_THIS_TURN: Final = (
-    "a complaint is noted only in your answer to the person who makes it, in a turn with nothing "
-    "from anyone else in it (a note, a document, a site, what a tool or a program gave): nothing "
-    "was noted"
-)
-_NOT_IN_A_TURN_WITH_OUTSIDE_TEXT: Final = (
-    "what went wrong is marked as asked only in a turn with nothing from anyone else in it (a "
-    "note, a document, a site, what a tool or a program gave): nothing was marked"
+    "a complaint is the person's own: this turn answers no message of theirs, so nothing was "
+    "noted. What someone else, a note or a tool tells you about how they feel is not their "
+    "complaint: keep it as what that source said if it matters (memory_keep), and ask them when "
+    "you talk with them"
 )
 _NO_FACT: Final = "no fact of what went wrong has this id for this person"
 
@@ -104,7 +103,8 @@ class _Note:
 
 
 def _noted_here(ctx: ToolContext) -> None:
-    if not ctx.answers_them or ctx.outside_text:
+    """A complaint says "this person said so": the turn answers a message of theirs."""
+    if ctx.reply_message_id is None:
         raise InvalidArguments("not_possible", _NOT_IN_THIS_TURN)
 
 
@@ -118,8 +118,9 @@ class WentWrongNote:
             "decided (what: complaint), or that you asked them for a yes that was not needed "
             "(what: asked_for_nothing). Give the type of the action it was about, and its "
             "subject when you have it, as a result or the list of what went wrong lately shows "
-            "it. words: a few words on what the complaint is about (they are not kept). Use it in "
-            "your answer to them only, never for what a note, a document, a site or a tool says. "
+            "it. words: a few words on what the complaint is about (they are not kept). A "
+            "complaint is theirs: use it only when they wrote to you in this turn, for what they "
+            "say themselves; never for what a note, a document, a site or a tool says they feel. "
             "Nobody is shown "
             "that you note it. Then make use of it: when the reason is plain, keep the lesson "
             "(memory_keep, kind lesson); when it is not plain and it matters, you may ask them "
@@ -259,8 +260,6 @@ class WentWrongAsked:
         self, arguments: JsonObject, actor: Actor, ctx: ToolContext
     ) -> DescribedAction:
         _Asked(arguments)
-        if ctx.outside_text:
-            raise InvalidArguments("not_possible", _NOT_IN_A_TURN_WITH_OUTSIDE_TEXT)
         return DescribedAction(
             connector="core",
             action_type=self.action_type,
@@ -271,8 +270,6 @@ class WentWrongAsked:
 
     async def execute(self, arguments: JsonObject, ctx: ToolContext) -> ToolOutcome:
         given = _Asked(arguments)
-        if ctx.outside_text:
-            raise InvalidArguments("not_possible", _NOT_IN_A_TURN_WITH_OUTSIDE_TEXT)
         async with ctx.session_factory() as session:
             fact = await session.get(WentWrong, given.id)
             # Only what is about the person, or what they made: another's fact is theirs.

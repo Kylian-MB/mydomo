@@ -107,7 +107,7 @@ async def test_what_was_kept_last_week_is_in_todays_context(owner_chat: ChatPilo
         "subject": "Paul",
         "content": "Paul is the owner's brother and visits on Sundays.",
         "kind": "fact",
-        "said_by": "you",
+        "said_by": "the person you are talking with",
         "when": (await stored(server, [kept]))[kept].created_at.astimezone(UTC).isoformat(),
         "private": False,
     }

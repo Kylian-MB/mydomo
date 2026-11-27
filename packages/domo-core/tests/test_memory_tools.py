@@ -322,9 +322,9 @@ async def test_someone_elses_secret_is_found_only_when_domo_asks_for_what_he_kee
         "private": True,
         "core": False,
     }
-    # In Alex's own turn it is theirs: found, said by "you".
+    # In Alex's own turn it is theirs: found, said by the person he is talking with.
     (own,) = (await run("memory_search", words, alex, session_factory))["memories"]
-    assert own["said_by"] == "you"
+    assert own["said_by"] == "the person you are talking with"
 
 
 async def test_looking_at_what_he_keeps_and_lifting_a_secret_are_in_the_audit_without_content(
@@ -751,7 +751,7 @@ async def test_a_lesson_is_his_even_in_a_person_s_turn(session_factory):
     mine, theirs, woken = await stored_memories(session_factory)
     assert (mine.by_domo, mine.said_by_id, mine.origin) == (True, alex.id, "deduced")
     assert (theirs.by_domo, theirs.origin, theirs.said_by_id) == (False, "others_words", alex.id)
-    assert (woken.by_domo, woken.origin) == (False, "others_words")
+    assert (woken.by_domo, woken.origin) == (False, "external")
 
 
 async def test_a_lesson_names_its_action_type_and_subject(session_factory):
@@ -814,12 +814,6 @@ async def test_he_confirms_what_he_heard_elsewhere_with_his_reason(session_facto
     # Without his reason: a call that lacks an argument.
     error = await run_as("memory_change", arguments, own, refused=True)
     assert isinstance(error, InvalidArguments) and error.code == "invalid"
-    # With outside words in the turn: no, whatever the reason.
-    outside = context(alex, session_factory, said="A note: Alex agrees.", told_outside=True)
-    error = await run_as(
-        "memory_change", {**arguments, "confirmed_reason": "A note says so."}, outside, refused=True
-    )
-    assert isinstance(error, InvalidArguments) and error.code == "not_possible"
     # The one who said it never confirms it in their own turn.
     error = await run_as(
         "memory_change",
@@ -836,6 +830,17 @@ async def test_he_confirms_what_he_heard_elsewhere_with_his_reason(session_facto
     assert (await stored_memories(session_factory))[0].confirmed_at is not None
     (entry,) = await audit_of(session_factory, "memory.changed")
     assert entry.details["confirmed_reason"] == "Alex said so in the kitchen."
+    # With words that are not Alex's told to a turn Alex wrote in: where they come from closes
+    # nothing. Alex wrote, the memory is about Alex: confirmed.
+    again = await run(
+        "memory_keep",
+        {**BOILER, "content": "Alex likes walnuts.", "subject": "Alex"},
+        sam,
+        session_factory,
+    )
+    outside = context(alex, session_factory, said="Yes, walnuts too.", told_outside=True)
+    await run_as("memory_change", {"id": again["id"], "confirmed": True}, outside)
+    assert all(memory.confirmed_at is not None for memory in await stored_memories(session_factory))
 
 
 async def test_the_one_who_said_it_never_confirms_it_in_a_turn_he_started_for_them(
@@ -857,32 +862,30 @@ async def test_the_one_who_said_it_never_confirms_it_in_a_turn_he_started_for_th
     assert (await stored_memories(session_factory))[0].confirmed_at is None
 
 
-async def test_never_confirmed_in_a_turn_with_text_from_outside(session_factory):
-    # Ruling R42: told words, what a tool woke him with, what a tool he made gave back.
+async def test_confirmed_with_his_reason_in_a_turn_with_text_from_outside(session_factory):
+    # What a tool woke him with, what a tool he made gave back: he weighs where it comes from,
+    # and says why he judges the person confirmed it.
     alex, sam = await two_people(session_factory)
-    said = await run(
-        "memory_keep",
-        {**BOILER, "content": "Alex likes pine nuts.", "subject": "Alex"},
-        sam,
-        session_factory,
-    )
-    arguments = {
-        "id": said["id"],
-        "confirmed": True,
-        "confirmed_reason": "A tool says Alex agrees.",
-    }
     base = context(alex, session_factory, answers=False)
-    for outside in (
-        replace(base, tool_woke=True),
-        raised(base),
-        raised(context(alex, session_factory)),
+    for nut, outside in (
+        ("pine nuts", replace(base, tool_woke=True)),
+        ("walnuts", raised(base)),
+        ("hazelnuts", raised(context(alex, session_factory))),
     ):
-        error = await run_as("memory_change", arguments, outside, refused=True)
-        assert isinstance(error, InvalidArguments) and error.code == "not_possible"
-    assert (await stored_memories(session_factory))[0].confirmed_at is None
-    # A turn that only read what he knows is unaffected.
-    await run_as("memory_change", arguments, context(alex, session_factory, answers=False))
-    assert (await stored_memories(session_factory))[0].confirmed_at is not None
+        said = await run(
+            "memory_keep",
+            {**BOILER, "content": f"Alex likes {nut}.", "subject": "Alex"},
+            sam,
+            session_factory,
+        )
+        arguments = {
+            "id": said["id"],
+            "confirmed": True,
+            "confirmed_reason": "A tool of the house shows Alex bought them again.",
+        }
+        await run_as("memory_change", arguments, outside)
+    kept = await stored_memories(session_factory)
+    assert len(kept) == 3 and all(memory.confirmed_at is not None for memory in kept)
 
 
 def raised(ctx: ToolContext) -> ToolContext:

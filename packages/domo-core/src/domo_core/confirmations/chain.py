@@ -1379,6 +1379,8 @@ async def just_decided(
         ),
         outcome=outcome,
         decided_by=who_decided(decider, requester_of(c)),
+        # Someone else decided it: their name as the household shows it, data.
+        decided_by_name=decider.display_name if by_someone_else else None,
         via=via,
         result=None if record is None or told_to_someone_else else dict(record.model_result),
         woken=woken,

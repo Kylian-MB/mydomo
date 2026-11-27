@@ -200,44 +200,42 @@ async def test_a_nickname_cannot_be_a_whole_name_or_an_open_invitation(session_f
     assert await _kept(session_factory, alex) == [("Juju", dana.id)]
 
 
-async def test_a_nickname_is_kept_only_in_a_turn_that_answers_them(session_factory):
-    alex, _ = await _household(session_factory)
+async def test_a_nickname_is_kept_whatever_the_turn(session_factory):
+    alex, dana = await _household(session_factory)
     asked = _context(alex, session_factory)
     keep = TOOLS["nickname_keep"]
-    arguments = {"nickname": "Juju", "person": "Dana Moreau"}
-    for turn in (
-        # A turn with a note someone left them: someone else's words.
-        replace(asked, told_outside=True),
-        # A turn Domo started himself (a wake, a plan): no message of theirs.
-        replace(asked, reply_message_id=None),
+    for nickname, turn in (
+        # A turn told words that are not theirs: he judges whose way of naming it is.
+        ("Juju", replace(asked, told_outside=True)),
+        # A turn he started himself (a wake, a plan): no message of theirs.
+        ("Dany", replace(asked, reply_message_id=None)),
     ):
-        for step in (keep.describe(arguments, turn.actor, turn), keep.execute(arguments, turn)):
-            with pytest.raises(InvalidArguments) as refusal:
-                await step
-            assert refusal.value.code == "invalid"
-            assert "ask them" in refusal.value.detail
-    assert await _kept(session_factory, alex) == []
+        arguments = {"nickname": nickname, "person": "Dana Moreau"}
+        await keep.describe(arguments, turn.actor, turn)
+        kept = await keep.execute(arguments, turn)
+        assert kept.model_result == {"nickname": nickname, "means": "Dana Moreau"}
+    assert sorted(await _kept(session_factory, alex)) == [("Dany", dana.id), ("Juju", dana.id)]
 
 
-async def test_a_nickname_is_forgotten_only_in_a_turn_that_answers_them(session_factory):
+async def test_a_nickname_is_forgotten_whatever_the_turn(session_factory):
     alex, dana = await _household(session_factory)
-    async with session_factory() as session:
-        await nicknames.keep(
-            session, person_id=alex.id, nickname="Juju", target_id=dana.id, now=datetime.now(UTC)
-        )
-        await session.commit()
     asked = _context(alex, session_factory)
     forget = TOOLS["nickname_forget"]
+    # Words told to the turn that are not theirs, then a turn he started himself.
     for turn in (replace(asked, told_outside=True), replace(asked, reply_message_id=None)):
-        for step in (
-            forget.describe({"nickname": "Juju"}, turn.actor, turn),
-            forget.execute({"nickname": "Juju"}, turn),
-        ):
-            with pytest.raises(InvalidArguments) as refusal:
-                await step
-            assert refusal.value.code == "invalid"
-            assert "ask them" in refusal.value.detail
-    assert await _kept(session_factory, alex) == [("Juju", dana.id)]
+        async with session_factory() as session:
+            await nicknames.keep(
+                session,
+                person_id=alex.id,
+                nickname="Juju",
+                target_id=dana.id,
+                now=datetime.now(UTC),
+            )
+            await session.commit()
+        await forget.describe({"nickname": "Juju"}, turn.actor, turn)
+        forgotten = await forget.execute({"nickname": "Juju"}, turn)
+        assert forgotten.model_result == {"forgotten": True}
+        assert await _kept(session_factory, alex) == []
 
 
 async def test_nickname_forget_forgets_their_own_only(session_factory):

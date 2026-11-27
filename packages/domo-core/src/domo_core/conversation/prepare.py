@@ -146,12 +146,13 @@ from domo_core.llm.spending import LimitNote, at_limit, limit_notes
 from domo_core.llm.types import ChatMessage, ErrorKind
 from domo_core.madetools.launch import LaunchDeps
 from domo_core.madetools.offered import being_built_for, offer_named, offers, set_aside_for
+from domo_core.madetools.risks import operations_of, reaches_told
 from domo_core.madetools.service import ready_tools
 from domo_core.madetools.settings import SETTINGS, value
 from domo_core.memory.embedder import NO_EMBEDDER, Embedder
 from domo_core.memory.models import Memory
 from domo_core.memory.search import recalled
-from domo_core.memory.service import core_of, unconfirmed, who_said
+from domo_core.memory.service import core_of, source_of, told_unconfirmed, who_said
 from domo_core.plans.models import Plan
 from domo_core.plans.schedule import as_local
 from domo_core.plans.service import builds_waited_on, waiting_of
@@ -379,6 +380,7 @@ async def memory_and_trust_shown(
     embedder: Embedder,
     now: datetime,
     with_speaker: bool,
+    by_name: bool = False,
 ) -> tuple[MemoryBlock, Trust | None]:
     """What the turn of ``person_id`` gives Domo of his memory (spec 6.4): his core, as much as
     ``choices.memory_core_size`` lets in, and what ``query`` (the person's last messages) finds
@@ -390,7 +392,9 @@ async def memory_and_trust_shown(
     With it, in one read (``trust.shown.trust_shown``), from the household's start
     (``choices.trust_start``): the trust of whoever said each unconfirmed memory of someone else,
     on its line, and, ``with_speaker``, what the person's own word has been worth so far (``None``
-    otherwise), for those who are in the household at ``now``; no figure when that read fails."""
+    otherwise), for those who are in the household at ``now``; no figure when that read fails.
+    ``by_name`` (a review: nobody talks there) gives what the person said under their name, as
+    ``who_said`` does then."""
     core: tuple[Memory, ...] = ()
     left_out = 0
     if choices.memory_core_size > 0:
@@ -408,7 +412,7 @@ async def memory_and_trust_shown(
             exclude={m.id for m in core},
         )
         remembered, by_meaning = found_now.memories, found_now.by_meaning
-    said_by = await who_said(session, (*core, *remembered), person_id)
+    said_by = await who_said(session, (*core, *remembered), person_id, by_name=by_name)
     trusts = await trust_shown(
         session,
         (*core, *remembered),
@@ -427,8 +431,9 @@ async def memory_and_trust_shown(
             said_by=said_by[memory.id],
             when=memory.created_at.astimezone(UTC).isoformat(),
             private=memory.kept_private,
-            unconfirmed=unconfirmed(memory),
+            unconfirmed=told_unconfirmed(memory),
             trust=trusts.of_memories.get(memory.id),
+            source=source_of(memory),
         )
 
     block = MemoryBlock(
@@ -450,9 +455,17 @@ async def memory_shown(
     now: datetime,
 ) -> MemoryBlock:
     """``memory_and_trust_shown`` without the speaker's own figure: what a review of what was said
-    with ``person_id`` is given of his memory (``memory.review``)."""
+    with ``person_id`` is given of his memory (``memory.review``). Nobody talks in a review: what
+    that person said is under their name."""
     block, _ = await memory_and_trust_shown(
-        session, person_id, query, choices=choices, embedder=embedder, now=now, with_speaker=False
+        session,
+        person_id,
+        query,
+        choices=choices,
+        embedder=embedder,
+        now=now,
+        with_speaker=False,
+        by_name=True,
     )
     return block
 
@@ -476,6 +489,7 @@ async def plans_shown(
             after_build=None
             if plan.after_build_id is None or plan.after_build_id not in builds
             else builds[plan.after_build_id][1],
+            asked=plan.their_words is not None,
         )
         for plan in plans
     )
@@ -562,7 +576,8 @@ async def _who_noted(
 ) -> dict[uuid.UUID, str]:
     """For each of ``requests`` that someone else than the one who asked decided with a note
     (``approver_note``: an approver's change, spec 5.1), who that approver is, as the line of the
-    history tells it (``the owner``, else ``the adult``), by request id. Reads only."""
+    history tells it (``the owner``, else ``the adult``, then the name the household shows for
+    them, as a quoted string: data), by request id. Reads only."""
     noted = {
         c.id: c.decided_by
         for c in requests
@@ -573,13 +588,18 @@ async def _who_noted(
     if not noted:
         return {}
     found = await session.execute(
-        select(Person.id, Person.role).where(Person.id.in_(set(noted.values())))
+        select(Person.id, Person.role, Person.display_name).where(
+            Person.id.in_(set(noted.values()))
+        )
     )
-    roles = {person_id: role for person_id, role in found.all()}
-    return {
-        request_id: "the owner" if roles.get(person_id) == "owner" else "the adult"
-        for request_id, person_id in noted.items()
-    }
+    people = {person_id: (role, name) for person_id, role, name in found.all()}
+
+    def told(person_id: uuid.UUID) -> str:
+        role, name = people.get(person_id, (None, None))
+        who = "the owner" if role == "owner" else "the adult"
+        return who if name is None else f"{who} {json.dumps(name, ensure_ascii=False)}"
+
+    return {request_id: told(person_id) for request_id, person_id in noted.items()}
 
 
 def _as_the_model_sees_it(
@@ -1148,8 +1168,11 @@ async def prepare_turn(
         # the context to say why one is gone. Built here: the rows are read before the session
         # ends.
         # The tool a plan due now is told is ready is always among them.
+        ready = await read_or_nothing(session, "tools made", lambda: ready_tools(session), [])
+        # What each is built to reach, as declared on its row: said with what one woke him with.
+        reaches = {tool.name: tuple(reaches_told(operations_of(tool.operations))) for tool in ready}
         made = offers(
-            await read_or_nothing(session, "tools made", lambda: ready_tools(session), []),
+            ready,
             made_tool_deps(deps),
             # How many a turn offers is Domo's setting (the others wait for ``tool_find``).
             most=await read_or_nothing(
@@ -1293,7 +1316,11 @@ async def prepare_turn(
             changes=changed,
             trust=trust,
             aside=aside,
-            tool_wakes=tuple(tool_wakes),
+            # A program run by hand, or a tool no longer ready, says nothing of what it reaches.
+            tool_wakes=tuple(
+                wake if wake.run is not None else replace(wake, reaches=reaches.get(wake.tool))
+                for wake in tool_wakes
+            ),
             building=building,
             agreements=agreements,
             expiring=expiring,

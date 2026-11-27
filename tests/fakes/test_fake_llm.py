@@ -1895,8 +1895,14 @@ def test_the_fake_knows_the_lines_of_a_tools_wake():
         can_act=True,
         tool_wakes=(ToolWake("greet", {"trouble": "set_aside"}),),
     )
-    line = f'{TOOL_WAKE_START}greet{TOOL_WAKE_END}{{"trouble": "set_aside"}}'
+    # What the tool says is under "result", the only key of the line.
+    line = f'{TOOL_WAKE_START}greet{TOOL_WAKE_END}{{"result": {{"trouble": "set_aside"}}}}'
     assert line in prompt.splitlines()
+    # A ready tool's heading also says what it is built to reach, between its name and its end.
+    for reaches in ((), ("doors.lan:8123 (in the house)",)):
+        heading = tool_wake_heading("greet", reaches=reaches)
+        assert heading.startswith(f'{TOOL_WAKE_START}greet", a program built to reach ')
+        assert heading.endswith(TOOL_WAKE_END[1:])
 
 
 def test_a_look_with_figures_is_answered_with_what_each_version_did(fake):
@@ -1918,13 +1924,20 @@ def test_a_look_with_figures_is_answered_with_what_each_version_did(fake):
     assert answered(fake, after_a_call(json.dumps(plain))) == ("Fake tool result: done", [])
 
 
-def woken_for(content: object, *, stream: bool, tools: list[dict[str, Any]]) -> dict[str, Any]:
-    """A turn the tool ``greet`` woke Domo for with ``content``."""
+def woken_for(
+    content: object,
+    *,
+    stream: bool,
+    tools: list[dict[str, Any]],
+    reaches: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    """A turn the tool ``greet`` woke Domo for with ``content``; ``reaches`` is what a ready tool
+    is built to reach, which its heading then says."""
     system = build_system_prompt(
         display_name="Alex",
         role="adult",
         can_act=True,
-        tool_wakes=(ToolWake("greet", content),),
+        tool_wakes=(ToolWake("greet", content, reaches=reaches),),
     )
     return dict(asking("fake-haiku", TOOL_MARKER, stream=stream, system=system, tools=tools))
 
@@ -1976,6 +1989,12 @@ def test_a_tool_in_trouble_with_no_version_before_is_left_as_it_is(fake):
         f"{TROUBLE_PREFIX}greet build_abandoned{LEFT_AS_IT_IS}",
         [],
     )
+
+
+@pytest.mark.parametrize("reaches", [(), ("doors.lan:8123 (in the house)",)])
+def test_a_ready_tool_in_trouble_is_looked_at_too(fake, reaches):
+    payload = woken_for(SET_ASIDE, stream=False, tools=KEY_ADD_OFFERED, reaches=reaches)
+    assert made_call(fake, payload) == (LOOK_TOOL, {"name": "greet", "figures": True})
 
 
 def test_a_wake_that_is_no_trouble_is_answered_as_before(fake):

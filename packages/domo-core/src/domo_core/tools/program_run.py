@@ -57,11 +57,17 @@ from domo_core.madetools.models import HandRun, LaunchStop
 from domo_core.madetools.offered import (
     carried_stop,
     outcome_of,
+    said_by,
     waits_for_its_yes,
     yes_facts,
     yes_taken,
 )
-from domo_core.madetools.risks import OperationsNotRight, kept_operations, operations_of
+from domo_core.madetools.risks import (
+    OperationsNotRight,
+    kept_operations,
+    operations_of,
+    reaches_told,
+)
 from domo_core.madetools.risks import read_operations as read_declared
 from domo_core.madetools.service import fingerprint
 from domo_core.madetools.settings import held, told, value
@@ -332,6 +338,9 @@ class ProgramRun:
             # The stop's own program and arguments, for whom it stopped, with the yes taken once.
             run_id = found.hand_run_id
             for_person = None if found.for_person_id is None else ctx.person
+            # What it is built to reach is read before the yes is taken and the program runs: a
+            # read that fails then fails the call while nothing has happened yet.
+            reaches = await _reaches(ctx, run_id)
             yes = await yes_taken(found, ctx, tool_id=None, missing=_NO_SUCH_YES)
         else:
             given = _Given(arguments, await _code_chars(ctx))
@@ -352,11 +361,24 @@ class ProgramRun:
             # For the person of the turn; for the house in a turn Domo acts in on his own.
             for_person = None if ctx.on_his_own else ctx.person
             run_id = await _kept(ctx, given, None if for_person is None else for_person.id)
+            reaches = await _reaches(ctx, run_id)
         launched = await launch_in_a_turn(
             deps, AskingTool.of_run(run_id), arguments={}, for_person=for_person, yes=yes
         )
-        outcome = outcome_of(launched)
+        outcome = said_by(outcome_of(launched), launched, RUN_BY_HAND, reaches)
         return replace(outcome, model_result={**outcome.model_result, "run": str(run_id)})
+
+
+# How a program run by hand is named with what it gave back (``offered.said_by``).
+RUN_BY_HAND: Final = "run by hand"
+
+
+async def _reaches(ctx: ToolContext, run_id: uuid.UUID) -> list[str]:
+    """What the program kept as ``run_id`` is built to reach, from the operations its call
+    declared (``risks.reaches_told``); nothing when it cannot be read."""
+    async with ctx.session_factory() as session:
+        run = await session.get(HandRun, run_id)
+    return [] if run is None else reaches_told(operations_of(run.operations))
 
 
 async def _kept(ctx: ToolContext, given: _Given, for_person_id: uuid.UUID | None) -> uuid.UUID:

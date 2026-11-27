@@ -23,6 +23,7 @@ from chat_support import ChatPilot
 from domo_core.accounts.models import Person
 from domo_core.llm.choices import HOUSEHOLD_SCOPE, Choices, save_choices
 from domo_core.memory.review import _known_of  # pyright: ignore[reportPrivateUsage]
+from domo_core.memory.service import SAID_BY_YOU
 from domo_core.prompts import NOW_LINE
 from domo_core.trust import shown
 from domo_core.trust.models import Outcome
@@ -154,7 +155,7 @@ async def test_a_confirmed_memory_and_ones_own_memory_carry_no_trust(
     await facts_about(child_chat, child_chat.person, "held")
     # In Sam's own turn, what she said is hers: no figure of her own word next to it.
     line = line_of(await context_of(child_chat), sams)
-    assert line["unconfirmed"] is True and line["said_by"] == "you" and "trust" not in line
+    assert line["unconfirmed"] is True and line["said_by"] == SAID_BY_YOU and "trust" not in line
     # Alex's own memory has none.
     assert "trust" not in line_of(await context_of(adult_chat), boiler)
     # Once Alex confirmed Sam's word, it is no longer a word to weigh.

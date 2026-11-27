@@ -203,6 +203,20 @@ def addresses_named(operations: Mapping[str, Operation]) -> dict[tuple[str, int]
     return dict(sorted(named.items()))
 
 
+def reaches_told(operations: Mapping[str, Operation]) -> list[str]:
+    """What a program is built to reach, as Domo is told with what it says: each address its
+    ``operations`` declare, once, by host and port in order, as ``"<host>:<port> (in the
+    house)"``, or ``"... (outside the house)"`` when the address is the internet's by its literal
+    (``outward.literal.literal_zone``, the one place that says it). ``[]`` when they name none.
+    It is what he declared when he built it and the reviewer checked, never what the program
+    says of itself; what a request really reaches is judged as it runs."""
+    return [
+        f"{host}:{port} "
+        f"({'outside the house' if literal_zone(host) == 'internet' else 'in the house'})"
+        for host, port in addresses_named(operations)
+    ]
+
+
 def operations_of(raw: object) -> dict[str, Operation]:
     """The operations kept on a tool: none when it declares none (``{}``, a tool built before
     tools declared them) or when what is kept does not read back (never guessed)."""

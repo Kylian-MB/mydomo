@@ -1,10 +1,10 @@
 """The trust figures Domo is shown where he weighs what he is told (spec 6.4).
 
 Next to each memory that is someone's word about another person, not confirmed by them
-(``memory.service.unconfirmed``), said by someone else than the person of the turn: the trust of
-whoever said it. And, for a turn, the trust of the person who speaks. Only for someone who is in
-the household now (``accounts.sessions.active_at``): a person who left, or whose row is gone, has
-no figure shown.
+(``memory.service.told_unconfirmed``: never what he wrote himself), said by someone else than the
+person of the turn: the trust of whoever said it. And, for a turn, the trust of the person who
+speaks. Only for someone who is in the household now (``accounts.sessions.active_at``): a person
+who left, or whose row is gone, has no figure shown.
 
 ``trust_shown`` reads them all at once: one savepoint, one query on the people, one grouped query
 on the facts (``trust.service.trust_of_many``), and the household's start when the caller does
@@ -26,7 +26,7 @@ from domo_core.accounts.sessions import active_at
 from domo_core.db import read_or_nothing
 from domo_core.llm.choices import load_choices
 from domo_core.memory.models import Memory
-from domo_core.memory.service import unconfirmed
+from domo_core.memory.service import told_unconfirmed
 from domo_core.trust.service import Trust, trust_of_many
 
 
@@ -60,7 +60,9 @@ async def trust_shown(
     sayers = {
         memory.id: memory.said_by_id
         for memory in memories
-        if unconfirmed(memory) and memory.said_by_id is not None and memory.said_by_id != speaker
+        if told_unconfirmed(memory)
+        and memory.said_by_id is not None
+        and memory.said_by_id != speaker
     }
     wanted: set[uuid.UUID] = set(sayers.values())
     if with_speaker:

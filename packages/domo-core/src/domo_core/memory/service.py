@@ -32,10 +32,22 @@ from domo_core.setup_flow.code import SETUP_CODE_ALPHABET
 
 MAX_SUBJECT: Final = 120
 MAX_CONTENT: Final = 600
-# Who said a memory, as Domo is told: the person of the turn, or someone no longer in the
-# database.
-SAID_BY_YOU: Final = "you"
+# Who said a memory, as Domo is told: the person of the turn, Domo himself (what he wrote on his
+# own, ``Memory.by_domo``), or someone no longer in the database. The person of the turn is never
+# told as "you": the context says "you" to Domo, and a live model took such a line for his own.
+SAID_BY_YOU: Final = "the person you are talking with"
+SAID_BY_YOURSELF: Final = "yourself"
 SAID_BY_SOMEONE_WHO_LEFT: Final = "someone who left"
+# No person said it: kept in a turn nobody wrote in that held what a tool or a program gave
+# (origin ``external``, ``tools.memory_tools.origin_for``). ``A_PROGRAM_OR_A_TOOL`` is its source,
+# and how the yes-judge's case names it.
+SAID_BY_NOBODY: Final = "nobody"
+A_PROGRAM_OR_A_TOOL: Final = "a program or a tool"
+# Where a memory comes from, as Domo is told, when it is not surely the words of who said it
+# (``source_of``).
+SOURCE_RELAYED: Final = "relayed"
+SOURCE_HIS_CONCLUSION: Final = "your conclusion"
+SOURCE_TOLD_BY_HIM: Final = "what you told them"
 
 _LONG_TOKEN: Final = re.compile(r"[A-Za-z0-9_-]{20,}")
 _URL_SECRET: Final = re.compile(r"https?://\S*[?&](?:token|code|key)=", re.IGNORECASE)
@@ -91,6 +103,15 @@ def unconfirmed(memory: Memory) -> bool:
         and memory.said_by_id != memory.about_id
         and memory.confirmed_at is None
     )
+
+
+def told_unconfirmed(memory: Memory) -> bool:
+    """Whether ``memory`` is told to Domo as someone's unconfirmed word, with what their word
+    has been worth beside it: ``unconfirmed``, and a person's words. What he wrote himself
+    (``by_domo``) is nobody's word, though ``said_by_id`` keeps whose conversation it was written
+    in: it carries neither the mark nor that person's figure, and may still be confirmed. The
+    same holds for what was kept from a program's text when nobody wrote (origin ``external``)."""
+    return unconfirmed(memory) and not memory.by_domo and memory.origin != "external"
 
 
 def visible_to(person_id: uuid.UUID, *, with_kept: bool = False) -> ColumnElement[bool]:
@@ -284,14 +305,41 @@ async def mark_served(session: AsyncSession, ids: Sequence[uuid.UUID], now: date
         await session.execute(update(Memory).where(Memory.id.in_(ids)).values(served_at=now))
 
 
+def source_of(memory: Memory) -> str | None:
+    """Where ``memory`` comes from, as Domo is told it on its line, from what the code stored
+    (``Memory.origin``, ``by_domo``): ``None`` for the own words of who said it; what he told the
+    person (``told_by_domo``); his conclusion (what he wrote himself, or deduced); relayed (kept
+    in a turn that held words or text that were not the person's own, ``others_words``); a
+    program or a tool (kept in a turn nobody wrote in that held what one gave, ``external``)."""
+    if memory.origin == "told_by_domo":
+        return SOURCE_TOLD_BY_HIM
+    if memory.by_domo or memory.origin == "deduced":
+        return SOURCE_HIS_CONCLUSION
+    if memory.origin == "external":
+        return A_PROGRAM_OR_A_TOOL
+    if memory.origin == "others_words":
+        return SOURCE_RELAYED
+    return None
+
+
 async def who_said(
-    session: AsyncSession, memories: Sequence[Memory], speaker: uuid.UUID
+    session: AsyncSession,
+    memories: Sequence[Memory],
+    speaker: uuid.UUID,
+    *,
+    by_name: bool = False,
 ) -> dict[uuid.UUID, str]:
     """Who said each of ``memories``, by the memory's id, as Domo is told it in ``speaker``'s
-    turn: ``"you"`` for the speaker, else their display name now; ``"someone who left"`` once their
-    row is gone."""
+    turn: ``"yourself"`` for what he wrote himself (``Memory.by_domo``), in anyone's turn;
+    ``"nobody"`` for what was kept from a program's text when nobody wrote (origin
+    ``external``: never the person whose conversation it was); ``SAID_BY_YOU`` for the speaker, else
+    their display name now; ``"someone who left"`` once their row is gone. ``by_name`` is for
+    where nobody talks (a review of what was said with ``speaker``): the speaker too is given
+    by their display name, never as ``SAID_BY_YOU``."""
     others = {
-        m.said_by_id for m in memories if m.said_by_id is not None and m.said_by_id != speaker
+        m.said_by_id
+        for m in memories
+        if m.said_by_id is not None and (by_name or m.said_by_id != speaker)
     }
     names: dict[uuid.UUID, str] = {}
     if others:
@@ -301,9 +349,13 @@ async def who_said(
         names = {person_id: name for person_id, name in found.all()}
 
     def label(memory: Memory) -> str:
+        if memory.by_domo:
+            return SAID_BY_YOURSELF
+        if memory.origin == "external":
+            return SAID_BY_NOBODY
         if memory.said_by_id is None:
             return SAID_BY_SOMEONE_WHO_LEFT
-        if memory.said_by_id == speaker:
+        if memory.said_by_id == speaker and not by_name:
             return SAID_BY_YOU
         return names.get(memory.said_by_id, SAID_BY_SOMEONE_WHO_LEFT)
 

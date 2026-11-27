@@ -1853,18 +1853,19 @@ async def test_agreed_asking_without_a_warning_before_is_not_found(session, add_
     with pytest.raises(InvalidArguments) as refused:
         await TOOLS[AGREE].execute(arguments, agreeing(alex, session))
     assert refused.value.code == "not_found"
-    # Only in a turn that answers them: never on his own, nor in a turn nobody spoke in.
+    # Tied to a passage of a message of theirs of this turn (ruling R68): never on his own, nor
+    # in a turn nobody wrote in, which hold none.
     await warned(session, alex, "household.remove")
-    for ctx in (
-        agreeing(alex, session, answers_them=False),
-        replace(agreeing(alex, session), on_his_own=True),
-        # A turn with words from outside in it is not their own words (ruling R68).
-        replace(agreeing(alex, session), told_outside=True),
-    ):
+    nobody = agreeing(alex, session, answers_them=False, said=())
+    for ctx in (nobody, replace(nobody, on_his_own=True)):
         with pytest.raises(InvalidArguments) as refused:
             await TOOLS[AGREE].execute(arguments, ctx)
         assert refused.value.code == "not_possible"
     assert await told_of(session, alex.id) == {"household.remove": None}
+    # Words that are not theirs told to the turn they wrote in close nothing: their passage is
+    # theirs.
+    await TOOLS[AGREE].execute(arguments, replace(agreeing(alex, session), told_outside=True))
+    assert await told_of(session, alex.id) == {"household.remove": False}
 
 
 @pytest.mark.parametrize(

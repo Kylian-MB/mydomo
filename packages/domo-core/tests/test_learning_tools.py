@@ -1,8 +1,8 @@
 """``went_wrong_note`` and ``went_wrong_asked``: the assistant notes a complaint about what he did,
 may ask once what was wrong, and sees the last things that went wrong in his turn (spec 9.1, 9.3).
 
-Only a turn that answers the person, with nothing from outside in it, notes a complaint: text a tool
-brought never becomes "a complaint by Dana". Asking why is marked once per fact, by the code.
+A complaint is the person's own: it is noted only in a turn they wrote in, and its reason is their
+own message. Asking why is marked once per fact, by the code.
 """
 
 import json
@@ -157,24 +157,28 @@ async def test_a_complaint_about_what_the_judge_did_not_let_through_is_no_wrong_
     assert [fact.kind for fact in await facts(session_factory)] == ["complaint"]
 
 
-async def test_a_complaint_is_noted_only_in_a_turn_that_answers_them(session_factory):
+async def test_a_complaint_is_noted_only_in_a_turn_they_wrote_in(session_factory):
     alex = (await _people(session_factory, ("Alex", "owner"), grants=False))["Alex"]
-    cases = {
-        "a turn he began": {"reply_message_id": None},
+    # A turn he began: nobody wrote, so no complaint is theirs.
+    ctx, reply_id, _ = await _turn(session_factory, alex, reply_message_id=None)
+    record = await handle_tool_call(note(), ctx=ctx, reply_id=reply_id)
+    assert record.status == "invalid"
+    assert record.model_result.get("reason") == "not_possible"
+    assert await facts(session_factory) == []
+    # Where the other texts of a turn they wrote in come from closes nothing: he judges.
+    cases: dict[str, dict[str, Any]] = {
         "words told to the turn": {"told_outside": True},
         "a turn a tool woke": {"tool_woke": True},
+        "what a made tool or a program said came into the turn": {},
     }
     for label, changes in cases.items():
         ctx, reply_id, _ = await _turn(session_factory, alex, said="That was wrong!", **changes)
+        if not changes:
+            ctx.raise_outside_text()
         record = await handle_tool_call(note(), ctx=ctx, reply_id=reply_id)
-        assert record.status == "invalid", label
-        assert record.model_result.get("reason") == "not_possible", label
-    # What a made tool or a program said came into the turn: raised on the shared mark.
-    ctx, reply_id, _ = await _turn(session_factory, alex, said="That was wrong!")
-    ctx.raise_outside_text()
-    record = await handle_tool_call(note(), ctx=ctx, reply_id=reply_id)
-    assert record.model_result.get("reason") == "not_possible"
-    assert await facts(session_factory) == []
+        assert record.status == "done", label
+    noted = await facts(session_factory)
+    assert [fact.reason for fact in noted] == ["That was wrong!"] * 3
 
 
 async def test_a_complaint_names_a_known_type_and_a_plain_subject(session_factory):
@@ -224,9 +228,7 @@ async def test_asking_why_is_allowed_once(session_factory):
         assert kept is not None and kept.asked_why_at is not None
 
 
-async def test_asking_why_is_only_about_what_is_theirs_and_in_a_turn_without_outside_text(
-    session_factory,
-):
+async def test_asking_why_is_only_about_what_is_theirs_whatever_the_turn(session_factory):
     people = await _people(session_factory, ("Alex", "owner"), ("Dana", "adult"), grants=False)
     alex, dana = people["Alex"], people["Dana"]
     theirs = await a_fact(session_factory, by=dana.id, about=dana.id, of_domo=True)
@@ -238,12 +240,13 @@ async def test_asking_why_is_only_about_what_is_theirs_and_in_a_turn_without_out
     )
     assert unknown.model_result.get("reason") == "not_found"
     mine = await a_fact(session_factory, by=alex.id, about=alex.id, of_domo=True)
+    # Words that are not theirs told to the turn close nothing.
     ctx, reply_id, _ = await _turn(session_factory, alex, said="x", told_outside=True)
     outside = await handle_tool_call(call(ASKED, {"id": str(mine.id)}), ctx=ctx, reply_id=reply_id)
-    assert outside.model_result.get("reason") == "not_possible"
+    assert outside.model_result.get("asked") is True
     async with session_factory() as reader:
         rows = (await reader.scalars(select(WentWrong))).all()
-    assert all(row.asked_why_at is None for row in rows)
+    assert [row.id for row in rows if row.asked_why_at is not None] == [mine.id]
 
 
 async def test_the_tool_descriptions_carry_the_rule_and_the_registry_holds_them():

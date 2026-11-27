@@ -46,7 +46,7 @@ from domo_core.llm.types import JsonObject
 from domo_core.memory.embedder import Embedder
 from domo_core.memory.models import Memory
 from domo_core.memory.search import search_for_case
-from domo_core.memory.service import of_domo, unconfirmed, visible_to
+from domo_core.memory.service import A_PROGRAM_OR_A_TOOL, of_domo, unconfirmed, visible_to
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.asks import NeverAsk
 from domo_core.policy.facts import (
@@ -184,7 +184,8 @@ class KnownLine:
     the day it was last written (``when``, ``YYYY-MM-DD`` in the household's time zone) and its
     author (``by``): the person who asks (``them``), the owner of now (``owner``), anyone else
     (``other``), or the assistant himself (``domo``). ``who`` is the display name of the one who
-    said it, for ``other`` and ``owner`` only (``None`` when that person is gone);
+    said it, for ``other`` and ``owner`` only (``None`` when that person is gone; ``"a program or a
+    tool"`` for what was kept from a program's text when nobody wrote, origin ``external``);
     ``unconfirmed`` that it is someone's word about another person of the household that this
     person has not confirmed (``memory.service.unconfirmed``). ``answer`` and ``keep_asking``
     are, for what he told them before an action (``told_by_domo``), the answer they gave and
@@ -829,7 +830,11 @@ def _known_line(
         when=_day(memory.changed_at, zone),
         by=by,
         who=(
-            names.get(memory.said_by_id)
+            # Kept from a program's text when nobody wrote: never the name of the person whose
+            # conversation it was.
+            A_PROGRAM_OR_A_TOOL
+            if by == "other" and memory.origin == "external"
+            else names.get(memory.said_by_id)
             if by in ("other", "owner") and memory.said_by_id is not None
             else None
         ),
@@ -956,7 +961,8 @@ async def _trust(
     session: AsyncSession, person_id: UUID, start: int, zone: ZoneInfo | None
 ) -> JsonObject:
     """The person's trust: the figure, how many facts it rests on, and their ``TRUST_FACTS``
-    newest facts, the newest first."""
+    newest facts, the newest first, each with how it was established (``how``: confirmed, seen or
+    reported, ``TrustFact.established``)."""
     figure = await trust_of(session, person_id, start=start)
     facts = await facts_of(session, person_id, limit=TRUST_FACTS)
     return {
@@ -964,6 +970,7 @@ async def _trust(
         "lately": [
             {
                 "outcome": fact.outcome,
+                "how": fact.established,
                 "about": _cut(fact.about),
                 "when": _day(fact.created_at, zone),
             }

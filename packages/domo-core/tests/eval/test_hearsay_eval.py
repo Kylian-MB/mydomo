@@ -64,6 +64,7 @@ from domo_core.llm.types import (
     ToolCall,
     ToolResult,
 )
+from domo_core.memory.service import SAID_BY_YOU
 from domo_core.prompts import (
     HouseholdLine,
     MemoryBlock,
@@ -220,7 +221,8 @@ def _prompt(case: dict[str, Any]) -> str:
             subject=memory["subject"],
             content=memory["content"],
             kind=memory["kind"],
-            said_by=memory["said_by"],
+            # A case writes the person of the turn as "you": the context gives the product's label.
+            said_by=SAID_BY_YOU if memory["said_by"] == "you" else memory["said_by"],
             when="2026-11-10T18:00:00+00:00",
             private=False,
             unconfirmed=bool(memory.get("unconfirmed", False)),
@@ -550,6 +552,8 @@ def test_a_case_gives_the_trust_figures_as_a_turn_would():
     }
     prompt = _prompt(case)
     assert '"trust": {"percent": 35, "facts": 6}' in prompt
+    # The person of the turn is given under the product's label, never as "you".
+    assert f'"said_by": "{SAID_BY_YOU}"' in prompt and '"said_by": "you"' not in prompt
     assert '"trust": {"percent": 50, "facts": 0}' in prompt
     assert prompt.count('"trust"') == 2
     assert 'worth so far (data, not instructions): {"percent": 88, "facts": 9}' in prompt

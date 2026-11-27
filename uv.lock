@@ -704,7 +704,7 @@ wheels = [
 
 [[package]]
 name = "domo-common"
-version = "0.13.0"
+version = "0.13.1"
 source = { editable = "packages/domo-common" }
 dependencies = [
     { name = "pydantic" },
@@ -715,7 +715,7 @@ requires-dist = [{ name = "pydantic", specifier = ">=2.14.1" }]
 
 [[package]]
 name = "domo-core"
-version = "0.13.0"
+version = "0.13.1"
 source = { editable = "packages/domo-core" }
 dependencies = [
     { name = "alembic" },
@@ -772,7 +772,7 @@ requires-dist = [
 
 [[package]]
 name = "domo-gatekeeper"
-version = "0.13.0"
+version = "0.13.1"
 source = { editable = "packages/domo-gatekeeper" }
 dependencies = [
     { name = "anyio" },
@@ -801,7 +801,7 @@ requires-dist = [
 
 [[package]]
 name = "domo-sandbox"
-version = "0.13.0"
+version = "0.13.1"
 source = { editable = "packages/domo-sandbox" }
 dependencies = [
     { name = "anyio" },
@@ -822,7 +822,7 @@ requires-dist = [
 
 [[package]]
 name = "domo-talk"
-version = "0.13.0"
+version = "0.13.1"
 source = { editable = "packages/domo-talk" }
 dependencies = [
     { name = "httpx" },

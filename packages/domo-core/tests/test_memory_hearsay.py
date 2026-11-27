@@ -18,6 +18,7 @@ from domo_core.audit.models import AuditEntry
 from domo_core.confirmations.case import gather
 from domo_core.memory.embedder import NO_EMBEDDER
 from domo_core.memory.models import Memory
+from domo_core.memory.service import SAID_BY_YOU
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.catalog import DEFAULT_POLICY
 from domo_core.policy.roles import Actor
@@ -204,7 +205,7 @@ async def test_alexs_correction_with_his_own_words_makes_it_his(
     assert memory.said_by_id == adult_chat.person.id and memory.origin == "own_words"
     assert memory.confirmed_at is not None
     line = line_of(await context_of(adult_chat), memory_id)
-    assert line["said_by"] == "you" and "unconfirmed" not in line
+    assert line["said_by"] == SAID_BY_YOU and "unconfirmed" not in line
     assert "Alex loves pine nuts." in await judge_reads(adult_chat)
 
 
