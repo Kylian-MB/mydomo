@@ -254,18 +254,67 @@ async def test_a_plan_set_on_his_own_is_marked_his(session_factory):
     assert kept == [(alex.id, True), (alex.id, False)]
 
 
-async def test_a_turn_with_someone_elses_words_keeps_none_of_theirs(session_factory):
-    # Final review I4: why may come from the note; the plan must not count as asked when due.
+async def test_a_plan_he_sets_on_his_own_keeps_nobodys_words(session_factory):
+    # An idea of his is by definition not asked: even when the context still holds a message of
+    # theirs, a plan he sets in a turn he acts in on his own keeps no words, and neither does a
+    # new why he gives there.
+    alex, _ = await two_people(session_factory)
+    said = "Remind me to ask Sam how the exam went!"
+    words = "Remind me to ask Sam how the exam went"
+    theirs = await run(
+        "plan_set",
+        {"why": "Ask about the exam.", "on_return": True, "their_words": words},
+        alex,
+        session_factory,
+        said=said,
+    )
+    ctx = replace(context(alex, session_factory, said=said), on_his_own=True)
+    set_ = {"why": "Check the bins myself.", "on_return": True, "their_words": words}
+    result = dict((await TOOLS["plan_set"].execute(set_, ctx)).model_result)
+    assert result["their_words"] == "not_kept"
+    change = {"id": theirs["id"], "why": "Check the exam myself.", "their_words": words}
+    changed = dict((await TOOLS["plan_change"].execute(change, ctx)).model_result)
+    assert changed["their_words"] == "not_kept"
+    kept = {
+        plan.why: (plan.their_words, plan.made_by_domo) for plan in await stored(session_factory)
+    }
+    assert kept == {
+        "Check the exam myself.": (None, False),
+        "Check the bins myself.": (None, True),
+    }
+
+
+async def test_a_passage_of_one_token_is_kept_as_any_other(session_factory):
+    # What the code checks is that the passage is theirs, never that it carries the plan: a plain
+    # "oui" to what he offered is a valid passage, and so is a lone "." (an accepted cost, told
+    # to the owner: the judge reads those words when the plan is due).
+    alex, _ = await two_people(session_factory)
+    base = {"why": "Turn the heating off.", "on_return": True}
+    for said, passage in (("oui", "oui"), ("Thanks.", "."), ("At 8, please", "8")):
+        result = await run(
+            "plan_set", {**base, "their_words": passage}, alex, session_factory, said=said
+        )
+        assert "their_words" not in result
+    assert [plan.their_words for plan in await stored(session_factory)] == ["oui", ".", "8"]
+
+
+async def test_a_turn_with_someone_elses_words_keeps_their_passage(session_factory):
+    # The owner, 2026-11-27: what they ask beside a note someone left them is their request. A
+    # passage of their own message, checked word for word, is theirs.
     alex, _ = await two_people(session_factory)
     said = "Sam left a note. Remind me to ask Sam how the exam went!"
     base = {"why": "Ask Alex whether Sam told about the exam.", "on_return": True}
     words = {**base, "their_words": "Remind me to ask Sam how the exam went"}
     outside = await run("plan_set", words, alex, session_factory, said=said, told_outside=True)
-    # Even a passage of their message is not kept then, and the result says so. Nothing is
-    # refused: the plan is set, and it is theirs (they wrote in the turn).
-    assert outside["their_words"] == "not_kept"
+    assert "their_words" not in outside
     (plan,) = await stored(session_factory)
-    assert (plan.their_words, plan.made_by_domo) == (None, False)
+    assert (plan.their_words, plan.made_by_domo) == (words["their_words"], False)
+    # Words that are only in the note (no passage of their own message) are never kept as
+    # theirs, and the result says so.
+    other = {**base, "their_words": "Ask Alex how my exam went"}
+    not_theirs = await run("plan_set", other, alex, session_factory, said=said, told_outside=True)
+    assert not_theirs["their_words"] == "not_kept"
+    assert (await stored(session_factory))[1].their_words is None
 
 
 async def test_a_new_why_outside_their_own_answer_forgets_their_words(session_factory):
@@ -273,7 +322,7 @@ async def test_a_new_why_outside_their_own_answer_forgets_their_words(session_fa
     said = "Remind me to ask Sam how the exam went!"
     words = "Remind me to ask Sam how the exam went"
 
-    async def kept_by(**turn: Any) -> str | None:
+    async def kept_by(passage: str | None = None, **turn: Any) -> str | None:
         set_ = await run(
             "plan_set",
             {"why": "Ask Sam about the exam.", "on_return": True, "their_words": words},
@@ -281,24 +330,38 @@ async def test_a_new_why_outside_their_own_answer_forgets_their_words(session_fa
             session_factory,
             said=said,
         )
-        await run(
-            "plan_change",
-            {"id": set_["id"], "why": "Ask about the trip."},
-            alex,
-            session_factory,
-            **turn,
-        )
+        change = {"id": set_["id"], "why": "Ask about the trip."}
+        if passage is not None:
+            change["their_words"] = passage
+        result = await run("plan_change", change, alex, session_factory, **turn)
         async with session_factory() as session:
             plan = await session.get(Plan, uuid.UUID(set_["id"]))
             assert plan is not None
+            # The result says so when a passage given was not kept, and only then.
+            assert (result.get("their_words") == "not_kept") == (
+                passage is not None and plan.their_words != passage
+            )
             return plan.their_words
 
+    trip, passage = "Actually, ask about the trip.", "ask about the trip"
     # A new why in a turn with someone else's words, or in a turn that answers no message of
     # theirs (a plan's turn): the words go.
-    assert await kept_by(said=said, told_outside=True) is None
+    assert await kept_by(said=trip, told_outside=True) is None
     assert await kept_by(answers=False) is None
-    # In their own answer, they stay; and a change of time alone keeps them anywhere.
-    assert await kept_by(said="Actually, ask about the trip.") == words
+    # With someone else's words in the turn, the passage of their own message the new why comes
+    # from is kept in their place (the owner, 2026-11-27); words that are not in their own
+    # message never are, and nothing is in a turn nobody wrote in.
+    assert await kept_by(passage, said=trip, told_outside=True) == passage
+    assert await kept_by("ask about the journey", said=trip, told_outside=True) is None
+    assert await kept_by(passage, answers=False) is None
+    # In their own answer, they stay, or the new passage takes their place; and a change of time
+    # alone keeps them anywhere.
+    assert await kept_by(said=trip) == words
+    assert await kept_by(passage, said=trip) == passage
+    # A passage given that is not theirs: the result says "not_kept", and it is true, the old
+    # words go too (he said himself that the words changed, and the old ones do not cover the
+    # new why).
+    assert await kept_by("ask about the journey", said=trip) is None
     set_ = await run(
         "plan_set",
         {"why": "Ask Sam about the exam.", "on_return": True, "their_words": words},
@@ -316,6 +379,64 @@ async def test_a_new_why_outside_their_own_answer_forgets_their_words(session_fa
     async with session_factory() as session:
         plan = await session.get(Plan, uuid.UUID(set_["id"]))
         assert plan is not None and plan.their_words == words
+
+
+async def test_a_passage_goes_with_a_new_why_only(session_factory):
+    alex, _ = await two_people(session_factory)
+    base = {"why": "Ask about the exam.", "on_return": True}
+    set_ = await run("plan_set", base, alex, session_factory)
+    said = "Remind me about the exam, rather at nine."
+    kept = await run(
+        "plan_set",
+        {**base, "their_words": "Remind me about the exam"},
+        alex,
+        session_factory,
+        said=said,
+    )
+    # Without a new why the passage is not read: the change is made, nothing is refused, the
+    # result says it was not kept, and the plan keeps the words it had.
+    late = {"id": kept["id"], "when": "2030-01-08T09:00:00+00:00", "their_words": "rather at nine"}
+    result = await run("plan_change", late, alex, session_factory, said=said)
+    assert (result["when"], result["their_words"]) == ("2030-01-08T09:00:00+00:00", "not_kept")
+    async with session_factory() as session:
+        plan = await session.get(Plan, uuid.UUID(kept["id"]))
+        assert plan is not None and plan.their_words == "Remind me about the exam"
+    # Still refused: a passage alone changes nothing, and a passage is a text.
+    for change in (
+        {"id": set_["id"], "their_words": "rather at nine"},
+        {"id": set_["id"], "why": "Ask about the trip.", "their_words": 3},
+    ):
+        error = await refused("plan_change", change, alex, session_factory, said=said)
+        assert error.code == "invalid", change
+
+
+async def test_a_plan_of_his_given_their_words_is_no_longer_his(session_factory):
+    alex, _ = await two_people(session_factory)
+    his = await run(
+        "plan_set",
+        {"why": "Check the bins.", "on_return": True},
+        alex,
+        session_factory,
+        answers=False,
+    )
+    said = "Yes, remind me about the bins."
+    change = {"id": his["id"], "why": "Remind Alex.", "their_words": "remind me about the bins"}
+    await run("plan_change", change, alex, session_factory, said=said)
+    (plan,) = await stored(session_factory)
+    assert (plan.their_words, plan.made_by_domo) == ("remind me about the bins", False)
+
+
+async def test_a_secret_is_never_kept_in_the_passage_of_a_new_why(session_factory):
+    alex, _ = await two_people(session_factory)
+    set_ = await run(
+        "plan_set", {"why": "Give Sam the key.", "on_return": True}, alex, session_factory
+    )
+    said = "Tell Sam the alarm key is sk-abc123def456ghi789jkl0 when he is back."
+    change = {"id": set_["id"], "why": "Give Sam the alarm key.", "their_words": said}
+    error = await refused("plan_change", change, alex, session_factory, said=said)
+    assert (error.code, error.detail) == ("invalid", SECRET_REFUSED)
+    (plan,) = await stored(session_factory)
+    assert (plan.why, plan.their_words) == ("Give Sam the key.", None)
 
 
 # --- what a plan needs ---------------------------------------------------------------------------

@@ -18,10 +18,16 @@ a tool (spec 5.5, the id ``tool_build`` returned): it is due when that build end
 if that comes first; only a build the person opened, one for them or one of the house may be
 waited for, and never one that was abandoned. The exact words of the person it comes from
 (``their_words``) are kept only when they are a passage of their message, word for word
-(``tools.notes.exact_text_from``; otherwise the result says they were ``not_kept``), and never
-in a turn that carried someone else's words (``ToolContext.told_outside``: why may come from
-them); a new ``why`` set in a turn that is not their own answer (``ToolContext.answers_them``)
-empties the words a plan kept. Neither refuses anything: the plan is set or changed all the same.
+(``tools.notes.exact_text_in``; otherwise the result says they were ``not_kept``), whatever
+else the turn holds: what they ask beside a note someone left them is their request (the owner,
+2026-11-27), and words that are only in the note, or in what a tool gave, are in no message of
+theirs, so never kept as theirs. A new ``why`` takes the passage of their message it comes from
+in the same way (``plan_change``'s ``their_words``, in place of the words the plan kept); given
+without one in a turn that is not their own answer (``ToolContext.answers_them``: nobody wrote, or
+text that is not theirs is in it), or with one that is not theirs, it empties the words the plan
+kept, since it no longer comes from them. A passage given without a new ``why`` is not read. None
+are kept by what he does as his own (``acts_alone``). Neither refuses anything: the plan is set
+or changed all the same.
 A plan due counts as asked only by the words it keeps (``conversation.prepare``). Without them,
 in a turn that answers no message of theirs (a plan's turn included), the plan is Domo's own
 (``made_by_domo``), unless someone spoke or words or text from outside are in it (``_his_alone``).
@@ -195,6 +201,21 @@ async def _build_to_wait_for(session: AsyncSession, build_id: uuid.UUID) -> uuid
     return build.id
 
 
+def _their_passage(ctx: ToolContext, given: str | None) -> str | None:
+    """``given`` as it stands in one of the person's own messages of this turn, copied by the
+    code (``tools.notes.exact_text_in``); ``None`` when there is none, it is too long, or it is no
+    passage of a message of theirs: words of a note someone left them, of a request that waits or
+    of a tool are in none of their messages, and nobody's are in a turn nobody wrote in. What
+    else the turn holds changes nothing to words that are theirs (the owner, 2026-11-27). None
+    are kept by what he does as his own (``acts_alone``, or a call judged as his: an idea of his
+    is not asked), whatever the context still holds."""
+    if given is None or len(given) > MAX_NOTE_LENGTH:
+        return None
+    if acts_alone(ctx) or (ctx.judged_as is not None and ctx.judged_as.subject == "domo"):
+        return None
+    return exact_text_in(ctx.said_messages, given)
+
+
 def _result(plan: Plan, zone: ZoneInfo) -> JsonObject:
     result: JsonObject = {
         "id": str(plan.id),
@@ -325,16 +346,11 @@ class PlanSet:
 
     async def execute(self, arguments: JsonObject, ctx: ToolContext) -> ToolOutcome:
         given = _Set(arguments)
-        # In a turn that carried someone else's words (a note, a request of another), why the plan
-        # is set may come from them: their exact words are not kept, and the plan will not count as
-        # asked when it is due (final review I4). Nothing is refused: the plan is set.
-        words = (
-            None
-            if given.their_words is None
-            or len(given.their_words) > MAX_NOTE_LENGTH
-            or ctx.told_outside
-            else exact_text_in(ctx.said_messages, given.their_words)
-        )
+        # Their exact words are a passage of one of their own messages of this turn, copied by
+        # the code: a note someone left them, in the same turn, takes nothing from what they asked
+        # themselves (the owner, 2026-11-27), and gives nothing either (its words are in no
+        # message of theirs).
+        words = _their_passage(ctx, given.their_words)
         if words is not None and refuses_secret_shapes(words):
             raise InvalidArguments("invalid", SECRET_REFUSED)
         now = ctx.clock()
@@ -371,8 +387,8 @@ class PlanSet:
                 raise InvalidArguments("invalid", _NO_TIME_TO_COME) from None
             result = _result(plan, zone)
             if given.their_words is not None and words is None:
-                # Not a passage of their message, or a turn with someone else's words: Domo is
-                # told they were not kept.
+                # Not a passage of a message of theirs (words of a note, of a tool, or a turn
+                # nobody wrote in): Domo is told they were not kept.
                 result["their_words"] = NOT_KEPT
             # Last, just before the commit. Never why, nor their words.
             await append_audit(
@@ -391,7 +407,7 @@ class _Change:
     _CHANGES: Final = frozenset({"why", "when", "repeat", "on_return", "after_build"})
 
     def __init__(self, arguments: JsonObject) -> None:
-        _only(arguments, frozenset({"id"}), self._CHANGES | {"id"})
+        _only(arguments, frozenset({"id"}), self._CHANGES | {"id", "their_words"})
         if all(arguments.get(name) is None for name in self._CHANGES):
             raise InvalidArguments(
                 "invalid", "say what changes: why, when, repeat, on_return or after_build"
@@ -420,6 +436,11 @@ class _Change:
             if isinstance(after_build, str) and not after_build.strip()
             else _build_id(after_build)
         )
+        words = arguments.get("their_words")
+        if words is not None and not isinstance(words, str):
+            raise InvalidArguments("invalid", "their_words is a text")
+        # Read with a new why only (``PlanChange.execute``): without one it is not kept.
+        self.their_words: str | None = words
 
 
 class PlanChange:
@@ -432,7 +453,9 @@ class PlanChange:
             "(a new time), repeat (a new rule, or an empty text to stop it repeating), on_return "
             "(whether it is due when they come back), after_build (the build of a tool it waits "
             "for, or an empty text to stop waiting for one). Put a plan off by giving it a new "
-            "time."
+            "time. When a new why comes from their message, give in their_words the passage it "
+            "comes from, copied word for word: it replaces the words the plan kept (without a "
+            "new why it is not kept)."
         ),
         parameters={
             "type": "object",
@@ -455,6 +478,13 @@ class PlanChange:
                     "description": "The id of the build of a tool it "
                     "waits for, or an empty text to stop waiting for one.",
                 },
+                "their_words": {
+                    "type": "string",
+                    "description": "With a new why: the passage of the person's own message it "
+                    "comes from, copied character for character.",
+                    "minLength": 1,
+                    "maxLength": MAX_NOTE_LENGTH,
+                },
             },
             "required": ["id"],
             "additionalProperties": False,
@@ -476,6 +506,11 @@ class PlanChange:
 
     async def execute(self, arguments: JsonObject, ctx: ToolContext) -> ToolOutcome:
         given = _Change(arguments)
+        # The passage of their own message a new why comes from, as for a plan that is set;
+        # without a new why a passage is not read (nothing is refused: the result says so).
+        words = None if given.why is None else _their_passage(ctx, given.their_words)
+        if words is not None and refuses_secret_shapes(words):
+            raise InvalidArguments("invalid", SECRET_REFUSED)
         now = ctx.clock()
         async with ctx.session_factory() as session:
             plan = await waiting_plan_of(session, ctx.person.id, given.id)
@@ -499,13 +534,22 @@ class PlanChange:
                     repeat=given.repeat,
                     on_return=given.on_return,
                     after_build_id=after_build,
-                    # A new why written in a turn that is not their own answer (a plan's turn, a
-                    # wake, or one with text that is not theirs) no longer comes from their words
-                    # alone: the words it kept go, and it will not count as asked (final review
-                    # I4). The change itself is made.
-                    forget_their_words=given.why is not None and not ctx.answers_them,
-                    # A new why where someone spoke is no longer his alone (Task 27).
-                    no_longer_his=given.why is not None and not _his_alone(ctx),
+                    # A new why that comes with a passage of their own message keeps it, in
+                    # place of the old words, whatever else the turn holds (the owner,
+                    # 2026-11-27). Without one, in a turn that is not their own answer (a plan's
+                    # turn, a wake, or one with text that is not theirs), it no longer comes from
+                    # their words alone: the words it kept go, and it will not count as asked
+                    # (final review I4). A passage given with it that is not theirs empties
+                    # them anywhere: he said himself that the words changed, and the result
+                    # ("not_kept") must be true of the plan. The change itself is made.
+                    their_words=words,
+                    forget_their_words=given.why is not None
+                    and words is None
+                    and (given.their_words is not None or not ctx.answers_them),
+                    # A new why where someone spoke is no longer his alone (Task 27), nor is
+                    # a plan that now keeps a person's words.
+                    no_longer_his=given.why is not None
+                    and (words is not None or not _his_alone(ctx)),
                 )
             except SecretRefused:
                 raise InvalidArguments("invalid", SECRET_REFUSED) from None
@@ -514,7 +558,9 @@ class PlanChange:
                     "invalid", f"{_NO_TIME_TO_COME}, or the plan would be left with none"
                 ) from None
             result = _result(plan, zone)
-            # Last, just before the commit. Never why.
+            if given.their_words is not None and words is None:
+                result["their_words"] = NOT_KEPT
+            # Last, just before the commit. Never why, nor their words.
             await append_audit(
                 session,
                 actor=f"person:{ctx.person.id}",
