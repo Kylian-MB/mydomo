@@ -26,8 +26,8 @@ history, from the file ``EVAL_API_KEY_FILE`` (``KEY=value`` or the key alone), r
 and never printed. ``EVAL_RUNS`` is how many times each case is asked (3) and ``EVAL_ONLY`` a part
 of the id of the cases to ask (all by default; the twin of a case is asked too, when it is needed).
 
-It costs real money: one short call per case and run, so about three calls per case, and 21
-cases make 63 calls of one short answer each (at most 500 tokens out, a few thousand in).
+It costs real money: one short call per case and run, so about three calls per case, and 22
+cases make 66 calls of one short answer each (at most 500 tokens out, a few thousand in).
 """
 
 import hashlib
