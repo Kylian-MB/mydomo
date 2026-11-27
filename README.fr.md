@@ -1639,7 +1639,7 @@ Prérequis : [uv](https://docs.astral.sh/uv/) et Docker 28 ou plus avec Compose.
 
 ```bash
 uv sync                           # crée l'environnement et installe tout
-uv run pre-commit install         # active les hooks de commit
+uv run pre-commit install         # active les hooks de commit et d'envoi
 uv run pytest -m "not stack"      # tests unitaires
 uv run playwright install chromium  # une fois : le navigateur des tests de bout en bout
 uv run pytest -m stack            # la pile Docker et les tests de bout en bout (lents)
