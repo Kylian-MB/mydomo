@@ -67,6 +67,7 @@ from domo_core.madetools.launch import (
     Launched,
     action_type_of,
     described,
+    reach_of,
 )
 from domo_core.madetools.models import (
     NAME_PATTERN,
@@ -90,6 +91,7 @@ from domo_core.plans.models import Plan
 from domo_core.plans.schedule import as_local
 from domo_core.policy.actions import DescribedAction, FactValue
 from domo_core.policy.asks import Asked, AskedBy
+from domo_core.policy.catalog import Risks
 from domo_core.policy.facts import STOPPED_FOR_A_YES
 from domo_core.policy.rights import Approver
 from domo_core.policy.roles import Actor
@@ -183,6 +185,17 @@ class MadeToolOffer:
         }
         # What it is built to reach, as declared: said with what it gives back.
         self._reaches: tuple[str, ...] = tuple(reaches_told(declared))
+        # What its operations that act in the house without being declared harmless say: told to
+        # the judge who weighs a launch asked by a voice the code is not sure of.
+        self._risky_acts: tuple[str, ...] = tuple(
+            operation.says for operation in declared.values() if operation.risks.risky_physical
+        )
+
+    def risky_acts(self) -> tuple[str, ...]:
+        """What each operation of the tool that acts in the house and was not declared harmless
+        says (Domo's own words when he built it, data), for the judge
+        (``conversation.execution.TellsRiskyActs``)."""
+        return self._risky_acts
 
     @property
     def definition(self) -> ToolDefinition:
@@ -196,6 +209,15 @@ class MadeToolOffer:
     def tool_id(self) -> uuid.UUID:
         """The id of the tool's row."""
         return self._id
+
+    async def reach(self) -> Risks | None:
+        """Every risk a launch of the tool may reach (``launch.reach_of``,
+        ``conversation.execution.DeclaresRisks``): what the barrier reads to tell whether a launch
+        is ordinary when it is not sure of who asks; ``None`` when it may go beyond what its
+        operations declare, or that cannot be known now (the tool gone included)."""
+        async with self._deps.session_factory() as session:
+            tool = await session.get(MadeTool, self._id)
+            return None if tool is None else await reach_of(session, tool)
 
     def _checked(self, arguments: JsonObject) -> None:
         if unsupported(self._parameters):
@@ -250,6 +272,8 @@ class MadeToolOffer:
             yes=yes,
             # A turn of his own judged it as his; a yes the owner gave was judged as theirs.
             judged_as_domo=ctx.on_his_own and for_person is None,
+            # How sure the code was of who asked it goes with it, to what it launches in turn.
+            asked_by=ctx.actor,
         )
         return said_by(outcome_of(launched), launched, self._name, self._reaches)
 

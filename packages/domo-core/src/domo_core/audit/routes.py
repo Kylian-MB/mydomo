@@ -130,6 +130,8 @@ LINE_FACTS: Final[Mapping[str, Mapping[str, tuple[str, FactKind]]]] = {
     # About whom, and how many facts: never what a fact says.
     "trust.looked": {"name": ("about", "person"), "count": ("count", "count")},
     "trust.corrected": {"name": ("about", "person")},
+    # Which microphone, and for how long: never a word of the voice.
+    "voice.stranger_paused": {"name": ("microphone", "text"), "count": ("minutes", "count")},
 }
 
 # A kind of line said otherwise when one of its details is a text: that detail, and the line said

@@ -4,10 +4,12 @@ from decimal import Decimal
 from typing import Final
 
 from domo_core.llm.catalog import Prices
+from domo_core.llm.speech.catalog import SpeechPrices
 from domo_core.llm.types import ChatUsage
 
 CHARS_PER_TOKEN: Final = 3
 _PER_MILLION: Final = Decimal(1_000_000)
+_SECONDS_PER_MINUTE: Final = Decimal(60)
 
 
 def estimate_tokens(chars: int) -> int:
@@ -36,3 +38,11 @@ def max_cost_usd(prices: Prices, *, input_tokens: int, max_output_tokens: int) -
     and the largest output it may produce."""
     input_price = max(prices.input, prices.cache_write)
     return (input_price * input_tokens + prices.output * max_output_tokens) / _PER_MILLION
+
+
+def speech_cost_usd(prices: SpeechPrices, *, heard_seconds: float, said_chars: int) -> Decimal:
+    """The cost of a call of sound: the minutes heard at the price per minute, the characters said
+    at the price per million characters."""
+    heard = Decimal(str(heard_seconds)) / _SECONDS_PER_MINUTE * prices.per_minute_heard
+    said = Decimal(said_chars) * prices.per_million_chars_said / _PER_MILLION
+    return heard + said

@@ -325,6 +325,15 @@ _KNOWN: Final[tuple[str, ...]] = (
     # owner); and withdrawing one. Everyone's, a guest's too, for themselves; judged and shown.
     "agreement.keep",
     "agreement.drop",
+    # The voice (spec 6.2, 6.5, 6.9): agreeing, changing and removing the spoken phrase, stopping
+    # the listening, and "that was not me". Everyone's, for themselves; only stopping is silent.
+    "proof.phrase_agree",
+    "proof.phrase_change",
+    "proof.phrase_remove",
+    "voice.stop_listening",
+    "voice.unlearn",
+    # Domo's own reading of how someone speaks (Task 23): a weak clue of his, never shown.
+    "voice.manner_note",
     # Setting something for the whole house: a timed launch, a standing agreement (Task 27,
     # ruling R17). It changes nothing by itself: the tools read it (``HOUSE_SET``).
     "house.set",
@@ -417,6 +426,21 @@ PROGRAM_ACTIONS: Final[frozenset[str]] = frozenset({"tool.launch_when"})
 # The agreements that last: everyone keeps and withdraws their own (the tools' own guard says
 # whose; one for the house is set by whom the rights allow ``HOUSE_SET``).
 AGREEMENT_ACTIONS: Final = frozenset({"agreement.keep", "agreement.drop"})
+# The voice (spec 6.2, 6.5, 6.9), in anyone's turn, a guest's too, for themselves: agreeing,
+# changing and removing the spoken phrase (``proof.phrase_*``, the tools' own guard says who and
+# when), stopping the listening (never shown) and "that was not me" (``voice.unlearn``).
+VOICE_ACTIONS: Final = frozenset(
+    {
+        "proof.phrase_agree",
+        "proof.phrase_change",
+        "proof.phrase_remove",
+        "voice.stop_listening",
+        "voice.unlearn",
+    }
+)
+# Domo's own reading of how someone speaks (Task 23), in anyone's turn: a weak clue of his that
+# changes nothing anyone has nor how sure the code is; never judged nor shown.
+MANNER_NOTE: Final = "voice.manner_note"
 # Setting something for the whole house, a timed launch or a standing agreement (Task 27, ruling
 # R17): the owner's by default, and a right may give it to anyone like any type. The tools read it
 # (``tools.context.ToolContext.may_set_for_the_house``): asked by someone who may not, the call
@@ -469,6 +493,8 @@ _EVERYONES_ACTIONS: Final = (
     | PROGRAM_TYPES
     | {PROGRAM_OUT}
     | AGREEMENT_ACTIONS
+    | VOICE_ACTIONS
+    | {MANNER_NOTE}
     | {"confirmation.own_idea", ASKING_AGREED}
 )
 
@@ -625,6 +651,14 @@ _FACTS: dict[str, dict[str, FactType]] = {
     "texts.language": {"house_follows": "boolean"},
     # Whose device is taken back, and whether it is the one's who asks: never its name.
     "device.remove": {"person": "person", "is_self": "boolean"},
+    # Whose spoken phrase is removed, their role, whether it is the one's who asks, and whether
+    # the one who asks invited them (the owner, or an adult for a child: 2026-11-27).
+    "proof.phrase_remove": {
+        "person": "person",
+        "person_role": "role",
+        "is_self": "boolean",
+        "invited_them": "boolean",
+    },
     # The operation a program begins: the tool's name and the operation's, the amount it says it
     # spends, in cents (``None`` when it spends nothing), and its four risks.
     "program.begin": {
@@ -769,6 +803,7 @@ CHANGES_NOTHING: frozenset[str] = frozenset(
         *LEARNING_ACTIONS,
         *TOOL_READ_ACTIONS,
         *OUTWARD_READ_ACTIONS,
+        MANNER_NOTE,
     }
 )
 
@@ -787,6 +822,7 @@ SILENT_ACTIONS: Final[frozenset[str]] = (
     | PROGRAM_TYPES
     | SILENT_OUTWARD_ACTIONS
     | {PROGRAM_OUT, ASKING_AGREED, "house.name_domo"}
+    | {"voice.stop_listening", MANNER_NOTE}
 )
 
 
@@ -1015,20 +1051,41 @@ class Risks:
     (``irreversible``), it acts on the physical world (``physical``), or it reaches outside the
     household (``outward``). They are data for whoever weighs the action (the reviewer of a tool,
     the judge, the owner's limits): the code refuses nothing to Domo because of one. Two sets of
-    risks together are each risk of either (``|``)."""
+    risks together are each risk of either (``|``).
+
+    ``harmless``: its acting in the house was declared harmless (an operation of a tool Domo made,
+    ``madetools.risks``, checked by the reviewer): done by mistake, it can hurt nobody, lock nobody
+    out, expose nothing and cost nothing (a light, a speaker's volume); only with ``physical``
+    (``ValueError`` otherwise). Not declared, acting in the house is taken as risky (the owner,
+    2026-11-27: "the physical that carries risks is judged"). Together, it stays harmless only when
+    every side that acts in the house was declared so."""
 
     costs: bool = False
     irreversible: bool = False
     physical: bool = False
     outward: bool = False
+    harmless: bool = False
+
+    def __post_init__(self) -> None:
+        if self.harmless and not self.physical:
+            raise ValueError("harmless is only said of acting in the house")
 
     def __or__(self, other: "Risks") -> "Risks":
+        physical = self.physical or other.physical
         return Risks(
             costs=self.costs or other.costs,
             irreversible=self.irreversible or other.irreversible,
-            physical=self.physical or other.physical,
+            physical=physical,
             outward=self.outward or other.outward,
+            harmless=physical
+            and (self.harmless or not self.physical)
+            and (other.harmless or not other.physical),
         )
+
+    @property
+    def risky_physical(self) -> bool:
+        """Whether it acts in the house without being declared harmless."""
+        return self.physical and not self.harmless
 
 
 # No risk at all.
@@ -1045,6 +1102,10 @@ _IRREVERSIBLE: Final = frozenset(
         "memory.forget",
         "note.withdraw",
         "successors.note_death",
+        # The spoken phrase is gone for good (two new sayings agree another), and so is what
+        # was learnt of a voice.
+        "proof.phrase_remove",
+        "voice.unlearn",
     }
 )
 # What costs among the code's types: a step up to a stronger model for the rest of a request.
@@ -1170,7 +1231,9 @@ DOMO_ACTIONS: Final[frozenset[str]] = KNOWN_ACTIONS - OWNER_ONLY_ACTIONS - DOMO_
 # owner, 2026-11-21), and so are the notes he finds, takes back and keeps there: his own, never
 # theirs (``tools.notes``). So are the requests he drops or changes there (spec 12.5): his own
 # that wait in that conversation; theirs only by a right the owner gives him
-# (``ON_THEIR_REQUESTS``, ruling R30).
+# (``ON_THEIR_REQUESTS``, ruling R30). Of the voice, the spoken phrase and the listening are
+# theirs; what was learnt of a voice is his own recording (the owner, Task 27: ``voice.unlearn``
+# is his, of anyone's voice, as his idea too; the tool's own guard says whose).
 NOT_ON_HIS_OWN: Final[frozenset[str]] = frozenset(
     {
         "profile.rename",
@@ -1186,6 +1249,7 @@ NOT_ON_HIS_OWN: Final[frozenset[str]] = frozenset(
         "people.nickname_keep",
         "people.nickname_forget",
         "spending.show",
+        *(VOICE_ACTIONS - {"voice.unlearn"}),
     }
 )
 
@@ -1261,3 +1325,73 @@ def on_his_own_tables(policy: PolicyTables) -> PolicyTables:
     conversation it is (``NOT_ON_HIS_OWN``) is not his by default there; a right the owner gives
     him opens it, as any of his rights."""
     return replace(policy, domo=policy.domo - NOT_ON_HIS_OWN)
+
+
+# --- What someone the code is not sure of may do (spec 6.5 of the voice) --------------------------
+# A stand-in for "Domo crée les personnes" (its Task 24), under the same names, replaced when that
+# branch is merged. ``NOT_WEAKLY``: what is sensitive, default-deny (the yes-judge weighs it when
+# the code is not sure of who asks, ``barrier.decide``); ``WEAKLY_FINE``: the ordinary things,
+# written out by hand, and every type of the code is in exactly one of the two or follows its
+# declared risks (``PROGRAM_REQUESTS``). A launch of a tool Domo made follows the risks of its
+# operations (``barrier.may_act_weakly``).
+_RISKY_CODE_TYPES: Final = frozenset(
+    action_type
+    for action_type, risks in CODE_RISKS.items()
+    if risks.costs or risks.outward or risks.irreversible
+)
+NOT_WEAKLY: Final[frozenset[str]] = (
+    # The owner's own, who may do what, keys and accounts and their secrets, going out.
+    OWNER_ONLY_ACTIONS
+    | PERMISSION_TYPES
+    | {HOUSE_SET, NET_OPEN_HOST, "texts.language_version"}
+    | _SECRET_TYPES
+    | _ACCOUNT_SECRET_TYPES
+    | OUTWARD_ACTIONS
+    # Spending, and what costs, leaves the house or cannot be undone.
+    | {"spending.limit", "spending.show"}
+    | _RISKY_CODE_TYPES
+    | {"note.leave", "note.withdraw", "note.keep"}
+    # Devices; memory searched, changed or forgotten; what is private to the person; trust.
+    | _OWN_DEVICE_ACTIONS
+    | {"memory.forget", "memory.change", "memory.search"}
+    | TRUST_ACTIONS
+    | DELIVERY_ACTIONS
+    | _RECEIVED_NOTE_ACTIONS
+    | {"note.list_sent", "texts.find"}
+    | _NOBODYS_ACTIONS
+    # A yes, an agreement that lasts, and what carries other actions.
+    | frozenset(t for t in _KNOWN if t.startswith("confirmation.")) - {"confirmation.own_idea"}
+    | AGREEMENT_ACTIONS
+    | {"chain.run", "chain.continue"}
+    # A plan (it runs later as the person, sure); writing, changing, removing or timing a tool;
+    # a program by hand.
+    | {"plan.set", "plan.change", "plan.cancel"}
+    | TOOL_ACTIONS
+    | PROGRAM_ACTIONS
+    | {PROGRAM_RUN}
+    # The spoken phrase (a proof) and what was learnt of a voice.
+    | {"proof.phrase_agree", "proof.phrase_change", "proof.phrase_remove", "voice.unlearn"}
+)
+WEAKLY_FINE: Final[frozenset[str]] = frozenset(
+    {
+        "household.list",
+        "policy.show",
+        "profile.rename",
+        "profile.name_domo",
+        "texts.rewrite",
+        "texts.restore",
+        "texts.language",
+        "texts.note",
+        "writing.choose",
+        "models.choose",
+        "models.refresh",
+        "memory.keep",
+        "people.nickname_keep",
+        "people.nickname_forget",
+        "confirmation.own_idea",
+        "learning.note",
+        "learning.asked",
+        "voice.stop_listening",
+        MANNER_NOTE,
+    }
+)

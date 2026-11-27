@@ -299,6 +299,14 @@ class ProviderRoute(_Model):
 # machine that hosts Domo, or nowhere a program may go.
 Zone = Literal["house", "internet", "host", "never"]
 
+
+class ProviderZone(_Model):
+    """Where a declared provider's base URL leads (``GET /internal/providers/{id}/zone``): the
+    zone of its address as the gatekeeper resolves it, ``never`` when the name gives none."""
+
+    zone: Zone
+
+
 # Why the gatekeeper did not relay a program's request: the only thing said of a refusal or of a
 # failure, never the text of an error.
 OutRefusalCode = Literal[
@@ -376,3 +384,27 @@ class OutResponse(_Model):
     body_b64: str
     zone: Zone
     hops: int
+
+
+# --- The spoken phrase (``/internal/phrases/{ref}``) ----------------------------------------------
+
+# How a heard text compares with a person's phrase: it is the phrase, nearly (a failed try), or
+# nothing like it (an ordinary sentence, not a try at all).
+PhraseResult = Literal["it_is", "almost", "nothing_like"]
+
+
+class PhraseSaid(_Model):
+    """What was heard, sent to be kept or compared. Never logged, never echoed back."""
+
+    heard: str = Field(min_length=1, max_length=400)
+
+
+class PhraseEnrolled(_Model):
+    """Where agreeing on a phrase stands: the first saying kept, both agreed (the phrase is now
+    this one), the second not the same as the first (both forgotten), or too short to be one."""
+
+    step: Literal["first_kept", "agreed", "not_the_same", "too_short"]
+
+
+class PhraseCompared(_Model):
+    result: PhraseResult

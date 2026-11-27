@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import is_active
 from domo_core.conversation.channel import NOBODY_LISTENS, Abilities
-from domo_core.conversation.speaker import Speaker
+from domo_core.conversation.speaker import Speaker, heard_unsure
 from domo_core.db import SessionFactory
 from domo_core.gatekeeper_client import GatekeeperClient
 from domo_core.llm.listing import ModelLister
@@ -156,10 +156,29 @@ class ToolOutcome:
     recorded_as: str | None = None
 
 
+# Which kind of text nobody of the house said came into a turn, as far as the code knows it: what a
+# tool Domo made gave (it may carry a site's text: the code cannot tell), what a program he ran by
+# hand gave, or what a tool's or a program's launch gave, which started the turn
+# (``ToolContext.tool_woke``).
+OutsideKind = Literal["tool", "program", "wake"]
+
+
 @dataclass
 class OutsideText:
-    """The one mutable mark of a turn that text of a program came into it (``raised``), shared by
-    its ``ToolContext`` and every copy of it (``ToolContext.outside_text``)."""
+    """The one mutable mark of a turn that text of a program came into it (``raised``), and of
+    which kinds (``kinds``), shared by its ``ToolContext`` and every copy of it
+    (``ToolContext.outside_text``)."""
+
+    raised: bool = False
+    kinds: set[OutsideKind] = field(default_factory=lambda: set[OutsideKind]())
+
+
+@dataclass
+class HeardMeanwhile:
+    """The one mutable mark of a turn that someone's words came into it while it ran (``raised``:
+    what they wrote or said, kept and read between two rounds, ``conversation.turn``), shared by
+    its ``ToolContext`` and every copy of it: in a turn Domo started himself, someone spoke after
+    all (the voice's gate, ``tools.voice_tools``)."""
 
     raised: bool = False
 
@@ -226,7 +245,11 @@ class ToolContext:
 
     ``request_id`` is, when a stored request runs after a yes (``confirmations.service``), that
     request: a chain of actions (``tools.chain``) reads its steps there, and the rows of its steps
-    are marked as they run. It is ``None`` when a call runs without one.
+    are marked as they run. It is ``None`` when a call runs without one. ``checked_first`` is set
+    while a call whose target was described when it was first asked is described again or run
+    after a yes (``confirmations``: a stored request; a step of a chain that had its action when
+    the chain was asked for): what was checked of the turn it was first asked in is not checked
+    again in the turn of the yes. A step checked in its turn never has it.
 
     ``wake`` wakes Domo in the conversation of the one who asked for a request that this
     person, as its approver, decided in their own words (``confirmation_amend``: a yes with a
@@ -260,6 +283,19 @@ class ToolContext:
     not known to be what the person asked for (``they_asked``). They close no act of his: he
     judges, weighing where each text comes from (the owner, 2026-11-26); an act that says "this
     person said so" reads ``reply_message_id``, or checks their passage (``said_messages``).
+
+    ``told_unknown``: among those words, some are of a source nobody of the household is known
+    for: a note the assistant left himself born of a voice nobody knows, or of a program's, a
+    site's or a tool's text (``Note.from_unknown``). They keep their source: they are never a
+    member's words. His other notes, and a member's, are only ``told_outside`` (the judge weighs
+    them).
+
+    ``told_unsure``: the turn was given sentences of the person heard from a voice the house was
+    not sure was theirs (``Message.heard_unsure``), shown apart from their own messages (a review
+    of what was said, ``memory.review``): probably theirs, never their own words, so what is kept
+    from them keeps that source (``tools.memory_tools.origin_for``: ``unsure_voice``). In a turn
+    that answers such a sentence, the same holds of their messages of the turn
+    (``said_unsure``).
 
     ``ask_more`` is what Domo asked for the next action he calls in this answer
     (``ask_before_acting``): the ask and his reason. The next call the judge is consulted about
@@ -327,8 +363,12 @@ class ToolContext:
     abilities: Abilities = NOBODY_LISTENS
     speaker: Speaker | None = None
     told_outside: bool = False
+    told_unknown: bool = False
+    told_unsure: bool = False
     tool_woke: bool = False
     outside: OutsideText = field(default_factory=lambda: OutsideText(), repr=False)
+    heard_meanwhile: HeardMeanwhile = field(default_factory=lambda: HeardMeanwhile(), repr=False)
+    checked_first: bool = False
     due_plans: tuple[DuePlan, ...] = ()
     asked_before: bool = False
     embedder: Embedder = NO_EMBEDDER
@@ -348,6 +388,23 @@ class ToolContext:
         """The person's messages of this turn, each on its own: ``said``, then ``said_later``
         (none without ``said``)."""
         return () if self.said is None else (self.said, *self.said_later)
+
+    @property
+    def said_unsure(self) -> bool:
+        """Whether the person's messages this turn answers were heard from a voice the house was
+        not sure was theirs (``conversation.speaker.heard_unsure``, as their messages are marked
+        where they are stored): no passage of them makes a memory their own words."""
+        return (
+            self.reply_message_id is not None
+            and self.speaker is not None
+            and heard_unsure(self.speaker)
+        )
+
+    @property
+    def unsure_words(self) -> bool:
+        """Whether a sentence of a voice not sure to be the person's is in this turn: told to it
+        (``told_unsure``) or answered by it (``said_unsure``)."""
+        return self.told_unsure or self.said_unsure
 
     @property
     def said_in_turn(self) -> str | None:
@@ -442,10 +499,20 @@ class ToolContext:
         text comes from."""
         return self.told_outside or self.tool_woke or self.outside.raised
 
-    def raise_outside_text(self) -> None:
-        """Say that text of a program came into this turn, for good: in this context and in every
-        copy of it (``dataclasses.replace`` keeps the same ``outside``)."""
+    def raise_outside_text(self, kind: OutsideKind = "tool") -> None:
+        """Say that text of a program came into this turn, for good, and of which kind (a tool
+        he made, by default): in this context and in every copy of it (``dataclasses.replace``
+        keeps the same ``outside``)."""
         self.outside.raised = True
+        self.outside.kinds.add(kind)
+
+    @property
+    def outside_kinds(self) -> tuple[OutsideKind, ...]:
+        """The kinds of a program's, a site's or a tool's text in this turn, in a fixed order:
+        what the judge is told (``confirmations.case.outside_words``)."""
+        found = {*self.outside.kinds, *(("wake",) if self.tool_woke else ())}
+        order: tuple[OutsideKind, ...] = ("tool", "program", "wake")
+        return tuple(kind for kind in order if kind in found)
 
     @property
     def someone_else_said_yes(self) -> bool:
@@ -582,6 +649,20 @@ def acts_alone(ctx: ToolContext) -> bool:
     person and in which no plan due keeps their words (a review, a turn he started, a wake):
     nobody asked for what he does there (``not they_asked and reply_message_id is None``)."""
     return ctx.on_his_own or (not ctx.they_asked and ctx.reply_message_id is None)
+
+
+def nobody_spoke_in(ctx: ToolContext) -> bool:
+    """Whether nobody spoke in this turn and no words from outside are in it: a turn he acts in
+    on his own or began himself (``acts_alone``), with no sentence heard (``speaker``), nothing
+    told from outside (``outside_text``) and no words that came while it ran
+    (``heard_meanwhile``). What it does is his alone."""
+    speaker = ctx.speaker
+    return (
+        acts_alone(ctx)
+        and not ctx.outside_text
+        and not ctx.heard_meanwhile.raised
+        and (speaker is None or speaker.nobody_spoke)
+    )
 
 
 def idea_of(ctx: ToolContext, taken: OwnIdea | None) -> OwnIdea | None:

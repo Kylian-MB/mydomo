@@ -98,7 +98,6 @@ import uuid
 from contextlib import aclosing
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 from functools import cache
 from importlib import resources
 from typing import Final, cast
@@ -111,12 +110,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import is_active
 from domo_core.conversation.prepare import TurnDeps, made_tool_deps
-from domo_core.llm.catalog_store import current_catalog
 from domo_core.llm.costs import estimate_tokens
-from domo_core.llm.models import Provider
+from domo_core.llm.person_picker import person_picker
 from domo_core.llm.picker import ModelPicker
-from domo_core.llm.router import Route, choose_key, usable_keys
-from domo_core.llm.spending import at_limit
 from domo_core.llm.types import (
     ChatMessage,
     ChatModel,
@@ -254,7 +250,9 @@ SUBMIT: Final = ToolDefinition(
                 "description": (
                     "What the tool does, by operation name (1 to 30 of a-z, 0-9 and _): "
                     '{"<name>": {"says": "<one plain line>", "risks": [<among costs, '
-                    "irreversible, physical, outward>]}}, 1 to 10 of them. One that goes out "
+                    'irreversible, physical, outward>]}}, 1 to 10 of them; "harmless": true '
+                    "on one whose only risk is physical and that can hurt or open nothing (a "
+                    "light, never a lock). One that goes out "
                     'also names its accounts ("accounts": [<name>]) and the addresses it sends '
                     'to ("addresses": [{"host", "port"}]), 10 of each at most.'
                 ),
@@ -426,34 +424,14 @@ async def _picker(
     the key ``choose_key`` takes among the keys they may use (a key past one of its limits is
     passed over), its calls naming the build and its tool, once there is one (what the tool cost
     to make, ``madetools.launches.figures``); ``None`` without one."""
-    keys = await usable_keys(session, person)
-    if not keys:
-        return None
-    catalog = await current_catalog(session)
-    zone = (await load_policy_settings(session)).time_zone
-
-    async def at_its_limit(key: Provider, route: Route) -> bool:
-        return await at_limit(
-            session,
-            provider=key,
-            person_id=person.id,
-            need=Decimal(0),
-            now=now,
-            catalog=catalog,
-            zone=zone,
-        )
-
-    choice = await choose_key(session, person, keys, catalog=catalog, at_limit=at_its_limit)
-    if choice.key is None:
-        return None
-    return ModelPicker(
+    return await person_picker(
+        session,
+        person,
         session_factory=deps.session_factory,
         model_factory=deps.model_factory,
-        provider=choice.key,
-        person_id=person.id,
         clock=deps.clock,
+        now=now,
         main_task="toolmaking",
-        catalog=catalog,
         tool_id=build.tool_id,
         build_id=build.id,
     )

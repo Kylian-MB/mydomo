@@ -10,27 +10,56 @@ answers the ceremonies with real signatures (``passkey_support.py``).
 
 import inspect
 import json
+import logging
 import re
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from importlib import resources
-from typing import Any
+from typing import Any, cast
 
 import fakes
 import httpx
 import pytest
 from chat_support import MEMBER_PASSWORD, ChatServer, Member, confirmation_cards, dump, status_of
+from domo_common.gatekeeper_api import PhraseResult
 from domo_common.i18n import t
 from domo_core.accounts.models import Account
 from domo_core.accounts.passkey_models import PasskeyChallenge, PasskeyCredential
+from domo_core.accounts.passkeys import PasskeySite
+from domo_core.accounts.throttle import LoginThrottle
+from domo_core.channels.api.render import API_PLACE
+from domo_core.channels.page.abilities import PAGE
 from domo_core.confirmations.models import Confirmation
+from domo_core.confirmations.service import requester_context
 from domo_core.confirmations.store import ANSWER_WITH_A_PROOF
+from domo_core.conversation.channel import Abilities
+from domo_core.conversation.speaker import Speaker
+from domo_core.gatekeeper_client import PHRASE_COMPARE_OPERATION, GatekeeperError, PhraseHeldBack
 from domo_core.identity.models import IdentityClue
-from domo_core.proofs.kinds import PROOF_KINDS, PasskeyProof, PasswordProof, ProofKind
+from domo_core.policy.catalog import DEFAULT_POLICY
+from domo_core.policy.roles import Actor, as_role
+from domo_core.proofs.kinds import (
+    PROOF_KINDS,
+    PasskeyProof,
+    PasswordProof,
+    PhraseCheck,
+    ProofKind,
+    ProofPlace,
+    SpokenPhraseProof,
+    Weighs,
+    phrase_ref,
+)
+from domo_core.proofs.service import NotAnAnswer, NotWeighed, agree, offers
+from domo_core.proofs.service import prove as prove_by_service
+from domo_core.proofs.service import remove as remove_means
+from domo_core.tools.context import ToolContext
+from domo_core.tools.registry import TOOLS
 from fakes import FakeChatModel
 from passkey_support import SoftAuthenticator, b64url
 from sqlalchemy import select
+from sqlalchemy import text as sql_text
 from web_support import audit_entries, log_in
 
 BY_NAME_URL = "https://localhost:8443"
@@ -472,6 +501,366 @@ async def test_words_never_prove_anything(
     assert await confirmation_status(rid) == "pending"
 
 
+# --- the spoken phrase (spec 6.9) ---------------------------------------------------------------
+
+# What the fake gatekeeper takes for the phrase, and a near miss of it. A fake, in this file only.
+SAID_RIGHT = "the heron sleeps under the copper bridge"
+SAID_NEAR = "the heron sleeps under the copper fridge"
+ORDINARY = "no, send me a text message instead"
+PHRASE_KIND = cast(SpokenPhraseProof, PROOF_KINDS["spoken_phrase"])
+
+
+class FakePhraseCheck:
+    """The gatekeeper's comparison, faked: ``answers`` maps a heard text to its result (anything
+    else is ``nothing_like``); ``held`` makes every comparison held back for that many seconds,
+    ``down`` makes the gatekeeper unreachable. ``heard`` keeps what it was asked, to see it was
+    asked once and by whom. One is made per test: nothing of it is shared."""
+
+    def __init__(
+        self, answers: dict[str, PhraseResult], held: float | None = None, down: bool = False
+    ) -> None:
+        self.answers = answers
+        self.held = held
+        self.down = down
+        self.heard: list[tuple[uuid.UUID, str]] = []
+
+    async def __call__(self, person_id: uuid.UUID, heard: str) -> PhraseResult:
+        self.heard.append((person_id, heard))
+        if self.down:
+            raise GatekeeperError(PHRASE_COMPARE_OPERATION)
+        if self.held is not None:
+            raise PhraseHeldBack(self.held)
+        return self.answers.get(heard, "nothing_like")
+
+
+@pytest.fixture(autouse=True)
+def no_phrase_waits() -> Iterator[None]:
+    """The phrase's remembered waits live in the process: each test starts and ends without
+    any."""
+    PHRASE_KIND.forget_waits()
+    yield
+    PHRASE_KIND.forget_waits()
+
+
+def phrase_check() -> FakePhraseCheck:
+    """A fresh fake: the phrase is ``SAID_RIGHT``, ``SAID_NEAR`` is a near miss."""
+    return FakePhraseCheck({SAID_RIGHT: "it_is", SAID_NEAR: "almost"})
+
+
+def voice_place(check: PhraseCheck | None) -> ProofPlace:
+    """A place that hears: it carries the password and the phrase (the voice channel is not built
+    yet; its abilities are what matters here)."""
+    return ProofPlace(
+        Abilities(
+            buttons=False,
+            shows_once=False,
+            safe_screen=False,
+            hears_unasked=True,
+            proof_kinds=frozenset({"password", "spoken_phrase"}),
+        ),
+        phrase_check=check,
+    )
+
+
+async def agree_phrase(server: ChatServer, person: Any) -> None:
+    async with server.session_factory() as writer:
+        await agree(writer, person.id, "spoken_phrase", proposed_by="person", now=server.clock())
+        await writer.commit()
+
+
+async def said(
+    pilot: Any,
+    rid: uuid.UUID,
+    heard: str,
+    check: FakePhraseCheck | None,
+    place: ProofPlace | None = None,
+) -> Any:
+    """``heard``, given as the proof of ``rid`` by the phrase, through the service itself (the
+    voice channel calls it so): where a phrase can be heard, or in ``place``."""
+    person = pilot.person
+    base = ToolContext(
+        session_factory=pilot.server.session_factory,
+        actor=Actor(person.id, as_role(person.role)),
+        person=person,
+        conversation_id=rid,
+        origin=pilot.server.base_url,
+        gatekeeper=None,  # type: ignore[arg-type]
+        clock=pilot.clock,
+        registry=TOOLS,
+        policy=DEFAULT_POLICY,
+        reply_message_id=None,
+    )
+    return await prove_by_service(
+        session_factory=pilot.server.session_factory,
+        confirmation_id=rid,
+        person=person,
+        means="spoken_phrase",
+        answer=heard,
+        place=voice_place(check) if place is None else place,
+        throttle=LoginThrottle(),
+        now=pilot.clock(),
+        ctx_factory=requester_context(base),
+        registry=TOOLS,
+        policy=DEFAULT_POLICY,
+        speaker=Speaker(person.id, "voice"),
+    )
+
+
+async def everything_written(server: ChatServer) -> str:
+    """The audit and the messages, as one text: what a near phrase must never be found in."""
+    async with server.session_factory() as reader:
+        audit = [(entry.action, entry.details) for entry in await audit_entries(reader)]
+        rows = (await reader.execute(sql_text("SELECT * FROM messages"))).all()
+    return json.dumps(audit, default=str) + repr([tuple(row) for row in rows])
+
+
+async def test_the_phrase_said_right_is_the_persons_yes(
+    adult_chat, chat_server, display_name_of, caplog
+):
+    caplog.set_level(logging.DEBUG)
+    rid = await proof_request(adult_chat)
+    await agree_phrase(chat_server, adult_chat.person)
+    check = FakePhraseCheck({SAID_RIGHT: "it_is"})
+    outcome, _ = await said(adult_chat, rid, SAID_RIGHT, check)
+    # As a password's: the action ran, the request was answered by a proof that names its means.
+    assert outcome == "executed"
+    assert check.heard == [(adult_chat.person.id, SAID_RIGHT)]
+    assert await display_name_of(adult_chat.person) == "Alex B"
+    assert await decided_via(chat_server, rid) == "proof"
+    [decided] = await entries(chat_server, "confirmation.decided")
+    assert (decided.details["via"], decided.details["means"]) == ("proof", "spoken_phrase")
+    assert await entries(chat_server, "confirmation.proof_failed") == []
+    assert ("proof", "voice", "spoken_phrase") in await clues_kept(chat_server)
+    # What was heard is written nowhere, and no model saw it.
+    assert SAID_RIGHT not in await everything_written(chat_server)
+    assert SAID_RIGHT not in caplog.text
+    for call in chat_server.calls:
+        assert SAID_RIGHT not in call.system + json.dumps([dump(m) for m in call.messages])
+
+
+async def test_a_near_phrase_is_a_failed_proof_and_is_never_written(
+    adult_chat, chat_server, display_name_of, confirmation_status, caplog
+):
+    caplog.set_level(logging.DEBUG)
+    rid = await proof_request(adult_chat)
+    await agree_phrase(chat_server, adult_chat.person)
+    outcome, record = await said(adult_chat, rid, SAID_NEAR, phrase_check())
+    assert (outcome, record) == ("proof_failed", None)
+    assert await confirmation_status(rid) == "pending"
+    assert await display_name_of(adult_chat.person) == "Alex"
+    [failed] = await entries(chat_server, "confirmation.proof_failed")
+    assert failed.details == {"confirmation_id": str(rid), "means": "spoken_phrase"}
+    assert failed.actor == f"person:{adult_chat.person.id}"
+    # None of its words is kept: not in the audit, the messages, the logs or a model's input.
+    written = await everything_written(chat_server)
+    for word in ("heron", "copper", "fridge"):
+        assert word not in written
+        assert word not in caplog.text
+        for call in chat_server.calls:
+            assert word not in call.system + json.dumps([dump(m) for m in call.messages])
+
+
+async def test_an_ordinary_sentence_is_not_an_answer_and_leaves_no_trace(
+    adult_chat, chat_server, confirmation_status
+):
+    rid = await proof_request(adult_chat)
+    await agree_phrase(chat_server, adult_chat.person)
+    before = await everything_written(chat_server)
+    check = FakePhraseCheck({SAID_RIGHT: "it_is"})
+    with pytest.raises(NotAnAnswer):
+        await said(adult_chat, rid, ORDINARY, check)
+    # A sentence longer than any phrase is not one: the gatekeeper is not even asked.
+    with pytest.raises(NotAnAnswer):
+        await said(adult_chat, rid, "word " * 100, check)
+    assert check.heard == [(adult_chat.person.id, ORDINARY)]
+    # No audit line, no message: it goes its usual way, as any sentence.
+    assert await everything_written(chat_server) == before
+    assert await confirmation_status(rid) == "pending"
+    # The proof can still be given after it.
+    outcome, _ = await said(adult_chat, rid, SAID_RIGHT, check)
+    assert outcome == "executed"
+
+
+async def offered_by_voice(server: ChatServer, person: Any) -> tuple[str, ...]:
+    async with server.session_factory() as reader:
+        return await offers(reader, person, voice_place(phrase_check()), server.clock())
+
+
+async def test_held_back_by_the_gatekeeper_an_ordinary_sentence_is_not_taken(
+    adult_chat, chat_server, confirmation_status
+):
+    """While the gatekeeper holds the phrase back it answers nothing of any text: an ordinary
+    sentence is then not taken as a proof either, and goes its usual way (``NotWeighed`` is a
+    ``NotAnAnswer``)."""
+    rid = await proof_request(adult_chat)
+    await agree_phrase(chat_server, adult_chat.person)
+    before = await everything_written(chat_server)
+    with pytest.raises(NotWeighed) as held:
+        await said(adult_chat, rid, ORDINARY, FakePhraseCheck({}, held=60.0))
+    assert isinstance(held.value, NotAnAnswer)
+    assert held.value.wait == 60.0
+    assert ORDINARY not in str(held.value)
+    assert await everything_written(chat_server) == before
+    assert await confirmation_status(rid) == "pending"
+
+
+async def test_held_back_the_phrase_is_not_weighed_nor_offered_until_the_wait_is_over(
+    adult_chat, chat_server, confirmation_status
+):
+    rid = await proof_request(adult_chat)
+    await agree_phrase(chat_server, adult_chat.person)
+    check = FakePhraseCheck({SAID_RIGHT: "it_is"}, held=60.0)
+    with pytest.raises(NotWeighed):
+        await said(adult_chat, rid, SAID_RIGHT, check)
+    # Meanwhile no sentence is sent to the gatekeeper: no more of its comparisons are spent.
+    chat_server.clock.advance(timedelta(seconds=30))
+    with pytest.raises(NotWeighed) as again:
+        await said(adult_chat, rid, ORDINARY, check)
+    assert again.value.wait == 30.0
+    assert len(check.heard) == 1
+    # The other means stay offered; the phrase is not.
+    assert await offered_by_voice(chat_server, adult_chat.person) == ("password",)
+    assert await confirmation_status(rid) == "pending"
+    # Once the wait is over, the phrase is offered and weighed again.
+    chat_server.clock.advance(timedelta(seconds=31))
+    assert await offered_by_voice(chat_server, adult_chat.person) == ("password", "spoken_phrase")
+    outcome, _ = await said(adult_chat, rid, SAID_RIGHT, FakePhraseCheck({SAID_RIGHT: "it_is"}))
+    assert outcome == "executed"
+
+
+async def test_a_blank_text_is_not_an_answer_and_asks_nothing(
+    adult_chat, chat_server, confirmation_status
+):
+    rid = await proof_request(adult_chat)
+    await agree_phrase(chat_server, adult_chat.person)
+    before = await everything_written(chat_server)
+    check = phrase_check()
+    for blank in ("", "   \n"):
+        with pytest.raises(NotAnAnswer):
+            await said(adult_chat, rid, blank, check)
+    assert check.heard == []
+    assert await everything_written(chat_server) == before
+    assert await confirmation_status(rid) == "pending"
+
+
+async def test_a_gatekeeper_that_does_not_answer_proves_nothing_and_writes_nothing(
+    adult_chat, chat_server, confirmation_status, caplog
+):
+    caplog.set_level(logging.DEBUG)
+    rid = await proof_request(adult_chat)
+    await agree_phrase(chat_server, adult_chat.person)
+    before = await everything_written(chat_server)
+    with pytest.raises(GatekeeperError) as down:
+        await said(adult_chat, rid, SAID_RIGHT, FakePhraseCheck({}, down=True))
+    # Nothing was verified: the channel says it cannot check now; no failed proof is written.
+    assert not isinstance(down.value, NotAnAnswer)
+    assert SAID_RIGHT not in str(down.value)
+    assert SAID_RIGHT not in caplog.text
+    assert await everything_written(chat_server) == before
+    assert await confirmation_status(rid) == "pending"
+    # Nor is the phrase held back for it.
+    assert await offered_by_voice(chat_server, adult_chat.person) == ("password", "spoken_phrase")
+
+
+async def held_back(pilot: Any, rid: uuid.UUID) -> None:
+    """The gatekeeper holds ``pilot``'s phrase back, and the core has learnt it."""
+    with pytest.raises(NotWeighed):
+        await said(pilot, rid, ORDINARY, FakePhraseCheck({}, held=60.0))
+
+
+async def test_held_back_a_place_that_cannot_weigh_the_phrase_answers_as_before(
+    adult_chat, chat_server, confirmation_status
+):
+    """The wait changes only what a place that hears the phrase does: elsewhere the phrase is
+    refused as it always was (``not_yours``), never with an error."""
+    rid = await proof_request(adult_chat)
+    await agree_phrase(chat_server, adult_chat.person)
+    await held_back(adult_chat, rid)
+    page = ProofPlace(PAGE, PasskeySite("localhost", "https://localhost:8443"))
+    for place in (page, API_PLACE, voice_place(None)):
+        outcome, record = await said(adult_chat, rid, SAID_RIGHT, None, place=place)
+        assert (outcome, record) == ("not_yours", None)
+    # The page's own route, posted with the phrase as the means.
+    r = await prove(adult_chat.client, rid, means="spoken_phrase", password=SAID_RIGHT)
+    assert status_of(r) == "not_yours"
+    assert await confirmation_status(rid) == "pending"
+    # A place that hears it says it is not weighed for now.
+    check = phrase_check()
+    with pytest.raises(NotWeighed):
+        await said(adult_chat, rid, SAID_RIGHT, check)
+    assert check.heard == []
+
+
+async def test_a_phrase_not_agreed_is_refused_as_before_even_during_a_wait(adult_chat, chat_server):
+    rid = await proof_request(adult_chat)
+    await agree_phrase(chat_server, adult_chat.person)
+    await held_back(adult_chat, rid)
+    async with chat_server.session_factory() as writer:
+        await remove_means(writer, adult_chat.person.id, "spoken_phrase", chat_server.clock())
+        await writer.commit()
+    outcome, _ = await said(adult_chat, rid, SAID_RIGHT, phrase_check())
+    assert outcome == "not_yours"
+
+
+async def test_agreeing_the_phrase_afresh_forgets_the_wait(adult_chat, chat_server):
+    rid = await proof_request(adult_chat)
+    await agree_phrase(chat_server, adult_chat.person)
+    await held_back(adult_chat, rid)
+    assert await offered_by_voice(chat_server, adult_chat.person) == ("password",)
+    # Agreed again (a new phrase): it is offered and weighed at once.
+    await agree_phrase(chat_server, adult_chat.person)
+    assert await offered_by_voice(chat_server, adult_chat.person) == ("password", "spoken_phrase")
+    outcome, _ = await said(adult_chat, rid, SAID_RIGHT, phrase_check())
+    assert outcome == "executed"
+
+
+async def test_removing_the_phrase_forgets_the_wait(adult_chat, chat_server):
+    rid = await proof_request(adult_chat)
+    await agree_phrase(chat_server, adult_chat.person)
+    await held_back(adult_chat, rid)
+    async with chat_server.session_factory() as writer:
+        await remove_means(writer, adult_chat.person.id, "spoken_phrase", chat_server.clock())
+        await writer.commit()
+    assert PHRASE_KIND.held_back_for(adult_chat.person.id, chat_server.clock()) is None
+    # Agreed later, it starts with no wait.
+    await agree_phrase(chat_server, adult_chat.person)
+    assert await offered_by_voice(chat_server, adult_chat.person) == ("password", "spoken_phrase")
+
+
+async def test_the_phrase_is_not_offered_where_the_place_cannot_carry_it(
+    session, add_person, add_account
+):
+    person = await add_person("Alex", "adult")
+    await add_account(person, "alex")
+    now = datetime(2030, 1, 1, 12, 0, tzinfo=UTC)
+    await agree(session, person.id, "spoken_phrase", proposed_by="person", now=now)
+    # The page cannot hear: agreed or not, the phrase is not asked there.
+    page = ProofPlace(PAGE, PasskeySite("localhost", "https://localhost:8443"))
+    assert await offers(session, person, page, now) == ("password",)
+    # A place that lists the kind but has no way to compare it, neither.
+    assert await offers(session, person, voice_place(None), now) == ("password",)
+    # A place that hears, with the gatekeeper's comparison: the phrase comes last.
+    assert await offers(session, person, voice_place(phrase_check()), now) == (
+        "password",
+        "spoken_phrase",
+    )
+
+
+async def test_the_button_and_words_still_never_give_a_proof(
+    owner_chat, chat_server, confirmation_status
+):
+    rid = await proof_request(owner_chat, name="Owner B", reason="x")
+    await agree_phrase(chat_server, owner_chat.person)
+    # The phrase typed in the conversation is words, and words prove nothing.
+    owner_chat.use_model(FakeChatModel(["Il faut une preuve."]))
+    await owner_chat.say(SAID_RIGHT)
+    assert await confirmation_status(rid) == "pending"
+    # Nor does the button.
+    r = await owner_chat.post(f"/confirmations/{rid}/approve")
+    assert status_of(r) == "needs_proof"
+    assert await confirmation_status(rid) == "pending"
+
+
 # --- the frame ----------------------------------------------------------------------------------
 
 
@@ -490,6 +879,16 @@ async def test_a_means_reads_only_the_person_and_the_database():
         assert _parameters(kind.offered_to) == ["session", "person", "place", "now"]
         assert _parameters(kind.begin) == ["session", "person", "place", "now"]
         assert _parameters(kind.check) == ["session", "person", "place", "answer", "now"]
-    assert list(PROOF_KINDS) == ["passkey", "password"]
-    # A password can be guessed: ``prove`` counts and holds back its attempts.
+    # The phrase comes last: a place offers the passkey, the password, then the phrase.
+    assert list(PROOF_KINDS) == ["passkey", "password", "spoken_phrase"]
+    # A password can be guessed: ``prove`` counts and holds back its attempts. The phrase is
+    # counted by the gatekeeper, which compares it.
     assert PasswordProof.throttled is True and PasskeyProof.throttled is False
+    assert SpokenPhraseProof.throttled is False
+    # A kind that tells "not an attempt at all" from a wrong answer is weighed, with the same
+    # inputs as a check.
+    assert [name for name, kind in PROOF_KINDS.items() if isinstance(kind, Weighs)] == [
+        "spoken_phrase"
+    ]
+    assert _parameters(SpokenPhraseProof.weigh) == ["session", "person", "place", "answer", "now"]
+    assert phrase_ref(uuid.UUID(int=1)) == f"phrase.{uuid.UUID(int=1)}"

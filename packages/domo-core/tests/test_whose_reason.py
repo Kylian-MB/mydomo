@@ -206,7 +206,11 @@ async def test_an_idea_in_a_turn_with_outside_text_says_so_to_the_judge(
     ctx = replace(ctx, tool_woke=True)
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
     await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
-    assert judged.cases[0].as_json()["idea"]["after_outside_words"] is True
+    # Told which kind: what a launch gave, which started the turn (no more is known of it).
+    from domo_core.confirmations.case import PROGRAM_TEXT_WORDS
+
+    told = judged.cases[0].as_json()["idea"]["after_outside_words"]
+    assert isinstance(told, str) and PROGRAM_TEXT_WORDS["wake"] in told
 
 
 async def test_an_idea_in_their_own_turn_is_not_said_to_follow_outside_words(

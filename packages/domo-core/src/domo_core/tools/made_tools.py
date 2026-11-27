@@ -792,8 +792,9 @@ class MadeToolLook:
             await self._add_the_rest(session, tool, result, look, zone, ctx.clock())
         launches = cast(list[JsonValue], result.get("launches", []))
         if any(isinstance(line, dict) and line.get("error") for line in launches):
-            # The error text a program said enters the turn: it is nobody of the house's.
-            ctx.raise_outside_text()
+            # The error text a program said enters the turn: it is nobody of the house's (a tool
+            # he made).
+            ctx.raise_outside_text("tool")
         return ToolOutcome(status="done", model_result=result, card=_CARD)
 
     async def _add_the_rest(
@@ -1259,8 +1260,9 @@ class MadeToolCheck:
             "examples": told,
             "all_same": all(run.passed for run in runs),
         }
-        # What the program gave and said enters the turn: it is nobody of the house's.
-        ctx.raise_outside_text()
+        # What the program gave and said enters the turn: it is nobody of the house's (a tool he
+        # makes).
+        ctx.raise_outside_text("tool")
         return ToolOutcome(status="done", model_result=result, card=_CARD)
 
 

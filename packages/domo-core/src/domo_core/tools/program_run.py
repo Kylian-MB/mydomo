@@ -363,7 +363,13 @@ class ProgramRun:
             run_id = await _kept(ctx, given, None if for_person is None else for_person.id)
             reaches = await _reaches(ctx, run_id)
         launched = await launch_in_a_turn(
-            deps, AskingTool.of_run(run_id), arguments={}, for_person=for_person, yes=yes
+            deps,
+            AskingTool.of_run(run_id),
+            arguments={},
+            for_person=for_person,
+            yes=yes,
+            # How sure the code was of who asked it goes with it, to what it launches in turn.
+            asked_by=ctx.actor,
         )
         outcome = said_by(outcome_of(launched), launched, RUN_BY_HAND, reaches)
         return replace(outcome, model_result={**outcome.model_result, "run": str(run_id)})

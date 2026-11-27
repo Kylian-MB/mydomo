@@ -14,6 +14,7 @@ live server, with rights written by the ``grant`` fixture (see ``chat_support.py
 """
 
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -206,15 +207,19 @@ def test_a_limit_without_the_facts_of_the_moment_refuses():
     )
 
 
-def test_an_identity_that_cannot_be_trusted_is_never_sent_to_the_owner():
-    claimed = Actor(uuid4(), "guest", trusted=False)
+def test_nobody_known_is_never_sent_to_the_owner_and_someone_unsure_is_as_anyone():
+    claimed = Actor(uuid4(), "guest", standing="unknown")
     rename = DescribedAction("core", "profile.rename", None, "self_profile", "household")
     rights = with_limit(claimed, "profile.rename", '"ask_owner"')
     assert decide(claimed, rename, DEFAULT_POLICY, rights, moment(claimed, rename)) == Refuse(
         "untrusted_identity"
     )
-    rights = with_limit(claimed, "profile.rename", '"allow"')
-    assert decide(claimed, rename, DEFAULT_POLICY, rights, moment(claimed, rename)) == Allow()
+    # Someone unsure: the owner's limit applies as for anyone (renaming oneself is ordinary).
+    unsure = replace(claimed, standing="unsure")
+    asked = decide(unsure, rename, DEFAULT_POLICY, rights, moment(unsure, rename))
+    assert isinstance(asked, NeedsApproval) and asked.approver == "owner"
+    rights = with_limit(unsure, "profile.rename", '"allow"')
+    assert decide(unsure, rename, DEFAULT_POLICY, rights, moment(unsure, rename)) == Allow()
 
 
 # --- writing a limit -----------------------------------------------------------------------------

@@ -474,6 +474,36 @@ async def test_only_the_own_words_of_who_may_agree_for_them_are_marked(session, 
     assert not any(line.may_agree for line in every_line(await case_of(session, None, sam.id)))
 
 
+async def test_what_an_unsure_voice_said_is_never_the_words_of_who_it_seemed(session, add_person):
+    # The owner, 2026-11-27 ("Domo juge quoi garder"): kept from a voice the house was not sure
+    # was theirs, it is read as someone else's word, never as the owner's nor the person's own,
+    # with where it comes from in "who", and never as an agreement for a child.
+    alex, sam, dana = await household(add_person)
+    paul = await add_person("Paul", "child")
+    await _keep(session, alex.id, "Alex says the TV may stay on", origin="unsure_voice")
+    await _keep(session, sam.id, "Sam says the TV is fine at night", origin="unsure_voice")
+    await _keep(
+        session,
+        dana.id,
+        "Paul may put the TV on, Dana says",
+        origin="unsure_voice",
+        about_id=paul.id,
+        words_checked=True,
+    )
+    case = await case_of(session, sam.id, sam.id)
+    assert case.owner_said == ()
+    assert "Sam says the TV is fine at night" not in contents(case.remembered)
+    by_content = {line.content: line for line in case.others_said}
+    owners = by_content["Alex says the TV may stay on"]
+    assert owners.by == "other"
+    assert owners.who == "probably Alex: a voice the house was not sure was theirs"
+    assert by_content["Sam says the TV is fine at night"].who == (
+        "probably Sam: a voice the house was not sure was theirs"
+    )
+    paul_case = await case_of(session, paul.id, paul.id)
+    assert not any(line.may_agree for line in every_line(paul_case))
+
+
 async def test_words_never_checked_in_the_adult_s_message_are_never_marked(session, add_person):
     # Ruling R73: own words the model wrote, with no passage of theirs checked, are no agreement.
     _, _, dana = await household(add_person)

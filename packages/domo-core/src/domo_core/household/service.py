@@ -1121,6 +1121,11 @@ async def accept_return(
     from domo_core.proofs.service import remove
 
     await remove(session, person.id, "passkey", now)
+    # Nor does the phrase they said aloud outlive the old access (ruling T11): the means goes. Its
+    # stored copy at the vault is removed by the caller once this is committed (the vault is not
+    # in this transaction); it can prove nothing without the means, and agreeing a phrase again
+    # removes it first.
+    await remove(session, person.id, "spoken_phrase", now)
     await revoke_sessions_of(session, person.id)
     # A guest whose stay ended, and whom the upkeep has not swept yet, still has their devices.
     await forget_devices_of(session, person.id, now)

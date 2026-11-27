@@ -147,6 +147,7 @@ async def change(
     on_return: bool | None = None,
     after_build_id: uuid.UUID | None | EllipsisType = ...,
     forget_their_words: bool = False,
+    no_longer_his: bool = False,
 ) -> Plan:
     """Change what is given of a waiting ``plan``: ``None`` leaves ``why``, ``due_at`` and
     ``on_return`` as they are, and ``...`` leaves ``repeat`` (``None`` stops it repeating: it is
@@ -175,6 +176,8 @@ async def change(
         plan.why = why
     if forget_their_words:
         plan.their_words = None
+    if no_longer_his:
+        plan.made_by_domo = False
     plan.due_at = new_due
     plan.repeat = new_repeat
     plan.on_return = new_return

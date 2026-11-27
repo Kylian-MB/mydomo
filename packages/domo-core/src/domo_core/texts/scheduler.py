@@ -89,7 +89,7 @@ from domo_core.llm.catalog_store import current_catalog
 from domo_core.llm.factory import ModelFactory
 from domo_core.llm.models import Provider
 from domo_core.llm.picker import ModelPicker
-from domo_core.llm.router import Route, choose_key, usable_keys
+from domo_core.llm.router import Route, choose_key, text_keys
 from domo_core.llm.spending import at_limit
 from domo_core.policy.settings import load_policy_settings
 from domo_core.texts import cards
@@ -704,7 +704,7 @@ async def _person_models(
         person = await session.get(Person, person_id)
         if person is None:
             return None
-        keys = await usable_keys(session, person)
+        keys = await text_keys(session, person)
         if not keys:
             return None
         catalog = await current_catalog(session)

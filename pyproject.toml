@@ -5,6 +5,9 @@
 # Dependency cooldown: resolve only releases published before this date, at least 14 days
 # before the lock file was last updated (see "Updating dependencies" in CONTRIBUTING.md).
 exclude-newer = "2026-10-14T00:00:00Z"
+# faster-whisper (the speech service's hearing) requires PyAV, whose wheels bundle FFmpeg (LGPL):
+# never installed here, and never imported (the service gives it sound already decoded).
+override-dependencies = ["av; sys_platform == 'never'"]
 
 [tool.uv.workspace]
 members = ["packages/*"]
@@ -22,6 +25,7 @@ dev = [
     "pre-commit",
     "httpx>=0.28.1",
     "pytest-xdist>=3.8.0",
+    "pyyaml>=6",
 ]
 # Only what the license check needs: it runs in an environment without the dev tools
 # (see scripts/check_licenses.py).
@@ -33,6 +37,7 @@ asyncio_default_fixture_loop_scope = "function"
 markers = [
     "stack: needs the Docker Compose stack",
     "live: asks a real model (EVAL_BASE_URL, EVAL_MODEL); skipped without them",
+    "speech_models: loads real speech models; opt-in",
 ]
 testpaths = ["tests", "packages"]
 # Makes the top-level `scripts` package importable from the tests.

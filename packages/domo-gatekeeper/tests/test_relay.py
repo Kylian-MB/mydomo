@@ -2,6 +2,7 @@ import asyncio
 import base64
 import gzip
 import logging
+import random
 import sqlite3
 import zlib
 from collections.abc import AsyncIterator, Mapping
@@ -714,6 +715,107 @@ async def test_a_secret_split_across_upstream_chunks_is_scrubbed(vault, route_p1
     async with streaming_client(stream) as client:
         resp = await call(route_p1, vault, client)
         assert await read(resp) == b"your key is [REDACTED], bye"
+
+
+async def test_sound_is_relayed_byte_for_byte(vault, route_p1):
+    # Samples are never masked: masking would break the sound. Not even "[REDACTED]" is touched.
+    chunks = [b"\x00\x01real", b"\xff\xfe[REDACTED]" * 50, b"\x7f-key" * 3, b"\x00" * 4096]
+    stream = TrackingStream(chunks)
+    async with streaming_client(stream, headers={"content-type": "audio/pcm"}) as client:
+        resp = await call(route_p1, vault, client)
+        assert await read(resp) == b"".join(chunks)
+    assert stream.closed
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        [b"\x00\x01real-key\xff" + b"\x00" * 64],
+        [b"\x00" * 64 + b"\x01real-", b"key\xff\xfe" + b"\x00" * 64],
+        [b"\x00" * 64, base64.b64encode(b"real-key"), b"\x00" * 64],
+    ],
+    ids=["whole", "split", "base64"],
+)
+async def test_sound_that_holds_a_secret_is_cut_before_the_secret(vault, route_p1, chunks):
+    # The bytes are not changed, but a key never goes through: the sound stops instead.
+    stream = TrackingStream(chunks)
+    received = bytearray()
+    async with streaming_client(stream, headers={"content-type": "audio/pcm"}) as client:
+        resp = await call(route_p1, vault, client)
+        with pytest.raises(UpstreamError) as failed:
+            async for chunk in resp.body:
+                received += chunk
+    assert b"real-key" not in received and b"real" not in received
+    assert base64.b64encode(b"real-key")[:4] not in received
+    assert "real" not in str(failed.value)
+    assert stream.closed
+
+
+async def test_short_codes_of_the_vault_do_not_cut_a_long_sound(vault, route_p1):
+    # A 2- or 4-character code turns up by chance in any long sound: it is not looked for there.
+    vault.put("device:door:code", "k7", purpose="p", bindings=[OTHER_HOST])
+    vault.put("device:alarm:code", "4711", purpose="p", bindings=[OTHER_HOST])
+    noise = random.Random(5).randbytes(1_000_000)
+    assert b"k7" in noise and b"4711" not in noise
+    chunks = [noise[i : i + 4096] for i in range(0, len(noise), 4096)] + [b"\x00k74711\x00"]
+    stream = TrackingStream(chunks)
+    async with streaming_client(stream, headers={"content-type": "audio/pcm"}) as client:
+        resp = await call(route_p1, vault, client)
+        assert await read(resp) == b"".join(chunks)
+    # The provider's key, eight characters, still cuts it.
+    stream = TrackingStream([*chunks, b"\x00real-key\x00"])
+    async with streaming_client(stream, headers={"content-type": "audio/pcm"}) as client:
+        resp = await call(route_p1, vault, client)
+        with pytest.raises(UpstreamError):
+            await read(resp)
+
+
+@pytest.mark.parametrize("status", [400, 404, 500])
+async def test_a_sound_that_is_not_a_success_is_scrubbed(vault, route_p1, status):
+    stream = TrackingStream([b"the key is real-key"])
+    async with streaming_client(
+        stream, status=status, headers={"content-type": "audio/pcm"}
+    ) as client:
+        resp = await call(route_p1, vault, client)
+        assert await read(resp) == b"the key is [REDACTED]"
+
+
+async def test_the_headers_of_a_sound_answer_are_still_scrubbed(vault, route_p1):
+    stream = TrackingStream([b"\x00\x01"])
+    headers = {"content-type": "Audio/Wav; rate=16000", "x-debug": "auth was real-key"}
+    async with streaming_client(stream, headers=headers) as client:
+        resp = await call(route_p1, vault, client)
+        assert header_map(resp)["x-debug"] == "auth was [REDACTED]"
+        assert await read(resp) == b"\x00\x01"
+
+
+async def test_a_json_answer_is_scrubbed_as_before(vault, route_p1):
+    stream = TrackingStream([b'{"text": "real-', b'key"}'])
+    async with streaming_client(stream, headers={"content-type": "application/json"}) as client:
+        resp = await call(route_p1, vault, client)
+        assert await read(resp) == b'{"text": "[REDACTED]"}'
+
+
+@pytest.mark.parametrize("content_type", ["text/plain; x=audio/", "application/audio/pcm"])
+async def test_an_answer_that_only_claims_sound_in_a_parameter_is_scrubbed(
+    vault, route_p1, content_type
+):
+    stream = TrackingStream([b"the key is real-key"])
+    async with streaming_client(stream, headers={"content-type": content_type}) as client:
+        resp = await call(route_p1, vault, client)
+        assert await read(resp) == b"the key is [REDACTED]"
+
+
+async def test_an_answer_with_two_content_types_is_scrubbed(vault, route_p1):
+    stream = TrackingStream([b"the key is real-key"])
+    headers = [("content-type", "audio/pcm"), ("content-type", "text/plain")]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers=headers, stream=stream)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        resp = await call(route_p1, vault, client)
+        assert await read(resp) == b"the key is [REDACTED]"
 
 
 async def test_the_response_is_streamed_not_buffered(vault, route_p1):

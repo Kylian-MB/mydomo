@@ -32,6 +32,12 @@ async def signed_in_at_of(session: AsyncSession, request: Request) -> datetime |
     raw_token = request.cookies.get(SESSION_COOKIE)
     if not raw_token:
         return None
+    return await signed_in_at_of_token(session, raw_token)
+
+
+async def signed_in_at_of_token(session: AsyncSession, raw_token: str) -> datetime | None:
+    """When the session of ``raw_token`` was opened, or ``None`` when it is not known. Reads
+    only."""
     session_id = await session_id_of(session, raw_token)
     if session_id is None:
         return None

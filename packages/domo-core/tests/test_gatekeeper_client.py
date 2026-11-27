@@ -23,6 +23,7 @@ from domo_core.gatekeeper_client import (
     GatekeeperClient,
     GatekeeperError,
     OutRefused,
+    PhraseHeldBack,
     load_core_token,
 )
 from domo_core.llm.factory import ModelFactory
@@ -525,3 +526,118 @@ async def test_an_unreachable_gatekeeper_names_the_operation_not_the_path(respx_
     with pytest.raises(GatekeeperError) as excinfo:
         await gk_client.register_provider(ROUTE)
     assert excinfo.value.operation == "PUT /internal/providers/{id}"
+
+
+# --- the spoken phrase --------------------------------------------------------------------------
+
+PHRASE_REF = "phrase.00000000-0000-0000-0000-000000000001"
+PHRASE_URL = f"http://gatekeeper.test/internal/phrases/{PHRASE_REF}"
+PHRASE = "le chat bleu dort sur le toit"
+
+
+async def test_phrase_enrol_sends_what_was_heard_and_reads_the_step(respx_mock, gk_client):
+    route = respx_mock.post(f"{PHRASE_URL}/enrol").respond(200, json={"step": "first_kept"})
+    enrolled = await gk_client.phrase_enrol(PHRASE_REF, PHRASE)
+    assert enrolled.step == "first_kept"
+    sent = route.calls.last.request
+    assert json.loads(sent.content) == {"heard": PHRASE}
+    assert sent.headers["authorization"] == f"Bearer {CORE_TOKEN}"
+
+
+@pytest.mark.parametrize("result", ["it_is", "almost", "nothing_like"])
+async def test_phrase_compare_gives_the_result(respx_mock, gk_client, result):
+    route = respx_mock.post(f"{PHRASE_URL}/compare").respond(200, json={"result": result})
+    assert await gk_client.phrase_compare(PHRASE_REF, PHRASE) == result
+    assert json.loads(route.calls.last.request.content) == {"heard": PHRASE}
+
+
+async def test_a_held_back_phrase_says_how_long_to_wait(respx_mock, gk_client):
+    respx_mock.post(f"{PHRASE_URL}/compare").respond(
+        429, json={"error": "held_back"}, headers={"retry-after": "120"}
+    )
+    with pytest.raises(PhraseHeldBack) as held:
+        await gk_client.phrase_compare(PHRASE_REF, PHRASE)
+    assert held.value.wait == 120.0
+    assert isinstance(held.value, GatekeeperError) and held.value.code == "held_back"
+
+
+async def test_an_unknown_phrase_is_nothing_like_it(respx_mock, gk_client):
+    """The gatekeeper answers ``nothing_like`` for a ref with no phrase; should a 404 of it come
+    back all the same, it means the same: no error tells whether a phrase exists (T5 / T10)."""
+    respx_mock.post(f"{PHRASE_URL}/compare").respond(404, json={"error": "unknown_phrase"})
+    assert await gk_client.phrase_compare(PHRASE_REF, PHRASE) == "nothing_like"
+
+
+async def test_another_404_of_a_comparison_is_still_an_error(respx_mock, gk_client):
+    respx_mock.post(f"{PHRASE_URL}/compare").respond(404, json={"error": "not_found"})
+    with pytest.raises(GatekeeperError) as failed:
+        await gk_client.phrase_compare(PHRASE_REF, PHRASE)
+    assert not isinstance(failed.value, PhraseHeldBack)
+
+
+async def test_phrase_remove_says_whether_there_was_one(respx_mock, gk_client):
+    route = respx_mock.delete(PHRASE_URL)
+    route.side_effect = [httpx.Response(204), httpx.Response(404, json={"error": "unknown_phrase"})]
+    assert await gk_client.phrase_remove(PHRASE_REF) is True
+    assert await gk_client.phrase_remove(PHRASE_REF) is False
+
+
+async def test_phrase_exists_asks_without_saying_anything(respx_mock, gk_client):
+    route = respx_mock.get(PHRASE_URL)
+    route.side_effect = [httpx.Response(204), httpx.Response(404, json={"error": "unknown_phrase"})]
+    assert await gk_client.phrase_exists(PHRASE_REF) is True
+    assert await gk_client.phrase_exists(PHRASE_REF) is False
+    assert route.calls.last.request.content == b""
+
+
+async def test_another_404_is_not_taken_for_no_phrase(respx_mock, gk_client):
+    respx_mock.get(PHRASE_URL).respond(404, json={"error": "not_found"})
+    with pytest.raises(GatekeeperError):
+        await gk_client.phrase_exists(PHRASE_REF)
+
+
+async def test_the_phrase_ref_cannot_change_the_path(respx_mock, gk_client):
+    route = respx_mock.get("http://gatekeeper.test/internal/phrases/a%2F..%2Fsecrets").respond(204)
+    assert await gk_client.phrase_exists("a/../secrets") is True
+    assert route.called
+
+
+@pytest.mark.parametrize(
+    ("call", "method", "url", "answer"),
+    [
+        ("enrol", "POST", f"{PHRASE_URL}/enrol", httpx.Response(500, text=PHRASE)),
+        ("compare", "POST", f"{PHRASE_URL}/compare", httpx.Response(422, json={"heard": PHRASE})),
+        ("compare", "POST", f"{PHRASE_URL}/compare", httpx.Response(200, text=PHRASE)),
+        ("compare", "POST", f"{PHRASE_URL}/compare", httpx.ConnectError(PHRASE)),
+    ],
+    ids=["enrol 500", "compare 422", "compare bad answer", "compare unreachable"],
+)
+async def test_a_refused_phrase_call_logs_no_body(
+    respx_mock, gk_client, caplog, call, method, url, answer
+):
+    route = respx_mock.request(method, url)
+    if isinstance(answer, httpx.Response):
+        route.mock(return_value=answer)
+    else:
+        route.mock(side_effect=answer)
+    with caplog.at_level("DEBUG"), pytest.raises(GatekeeperError) as failed:
+        await getattr(gk_client, f"phrase_{call}")(PHRASE_REF, PHRASE)
+    assert caplog.messages, "the failure is logged"
+    for word in ("chat", "bleu", "toit"):
+        assert word not in caplog.text and word not in str(failed.value)
+    # The operation is named, not the path. (httpx's own line, at INFO, names the URL: the core
+    # keeps httpx at WARNING, see __main__.)
+    mine = [r.getMessage() for r in caplog.records if r.name == "domo_core.gatekeeper_client"]
+    assert mine and not any(PHRASE_REF in message for message in mine)
+
+
+@pytest.mark.parametrize("heard", ["", "x" * 401, "le chat bleu " * 40])
+async def test_a_heard_text_the_api_would_refuse_is_refused_without_echoing_it(
+    respx_mock, gk_client, caplog, heard
+):
+    with caplog.at_level("DEBUG"), pytest.raises(GatekeeperError) as failed:
+        await gk_client.phrase_compare(PHRASE_REF, heard)
+    assert failed.value.code == "invalid_request"
+    assert failed.value.__cause__ is None and failed.value.__context__ is None
+    assert "chat" not in caplog.text and "xxxx" not in caplog.text
+    assert not respx_mock.calls

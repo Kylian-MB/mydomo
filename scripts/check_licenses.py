@@ -50,6 +50,17 @@ EXCEPTIONS: dict[str, str] = {
     "py_rust_stemmers": "UNKNOWN",
 }
 
+# The extra `gpu` of domo-speech: the CUDA libraries of the card's maker, proprietary software.
+# Installed only in the GPU image a person builds for his own card, never redistributed by the
+# project; named here, with the exact license each states, so that the check is not blind to them
+# (run it with that extra installed to see them). cuDNN states none in its metadata.
+EXCEPTIONS.update(
+    {
+        "nvidia-cublas-cu12": "LicenseRef-NVIDIA-Proprietary",
+        "nvidia-cudnn-cu12": "UNKNOWN",
+    }
+)
+
 # The workspace members are the project itself, not third-party dependencies.
 OWN_PACKAGES: frozenset[str] = frozenset(
     {"domo-common", "domo-gatekeeper", "domo-core", "domo-talk", "domo-sandbox"}

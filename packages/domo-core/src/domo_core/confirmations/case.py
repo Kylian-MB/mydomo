@@ -185,7 +185,9 @@ class KnownLine:
     author (``by``): the person who asks (``them``), the owner of now (``owner``), anyone else
     (``other``), or the assistant himself (``domo``). ``who`` is the display name of the one who
     said it, for ``other`` and ``owner`` only (``None`` when that person is gone; ``"a program or a
-    tool"`` for what was kept from a program's text when nobody wrote, origin ``external``);
+    tool"`` for what was kept from a program's text when nobody wrote, origin ``external``;
+    "probably <name>: a voice the house was not sure was theirs" for origin ``unsure_voice``,
+    ``unsure_voice_of``);
     ``unconfirmed`` that it is someone's word about another person of the household that this
     person has not confirmed (``memory.service.unconfirmed``). ``answer`` and ``keep_asking``
     are, for what he told them before an action (``told_by_domo``), the answer they gave and
@@ -249,19 +251,57 @@ class SubjectState:
     reason: str | None
 
 
+# What the judge reads in ``after_outside_words`` when a note born of a source nobody of the house
+# is known for is in the turn (``ToolContext.told_unknown``, ``Note.from_unknown``): where the
+# words not theirs come from, in plain words (the owner's rule, 2026-11-26: the judge is told the
+# source and weighs it like a person would).
+UNKNOWN_SOURCE_WORDS: Final = (
+    "a note born of an unknown source: a voice nobody knows, or the assistant's own note written "
+    "after reading a program's, a site's or a tool's text"
+)
+# What the judge reads in ``after_outside_words`` of each kind of a program's, a site's or a
+# tool's text in the turn (``ToolContext.outside_kinds``), as far as the code knows it (the owner,
+# 2026-11-26: the assistant tells each source apart, and the judge weighs it).
+PROGRAM_TEXT_WORDS: Final[Mapping[str, str]] = {
+    "tool": "what a tool the assistant made gave (it may carry a site's text)",
+    "program": "what a program the assistant ran by hand gave",
+    "wake": "what a tool or a program gave, which started this turn",
+}
+_THEIR_WORDS_TOO: Final = (
+    "; the person's own words, said in this turn or kept by a plan of theirs, are theirs"
+)
+
+
+def outside_words(*, unknown: bool, kinds: Sequence[str], their_words: bool) -> str | None:
+    """Where the words not theirs in the turn come from, for ``IdeaTold.after_outside_words``: a
+    note born of an unknown source (``unknown``: ``UNKNOWN_SOURCE_WORDS``), a program's, a site's
+    or a tool's text of each kind (``kinds``, ``PROGRAM_TEXT_WORDS``), with the person's own words
+    named as theirs when there are some (``their_words``); ``None`` when neither is in it."""
+    parts: list[str] = []
+    if unknown:
+        parts.append(UNKNOWN_SOURCE_WORDS)
+    if kinds:
+        text = "a program's, a site's or a tool's text, nobody's wish: " + "; ".join(
+            PROGRAM_TEXT_WORDS[kind] for kind in kinds
+        )
+        parts.append(text + (_THEIR_WORDS_TOO if their_words else ""))
+    return ". Also, ".join(parts) or None
+
+
 @dataclass(frozen=True)
 class IdeaTold:
     """Whose idea the action is (``of``: the person's, or the assistant's own), his ``reason``
     for it, whose words it was born of (``born_of_words_of``, a display name), whether the
     person concerned lacks the right to do it themselves (``they_lack_the_right``), and whether
     the turn carries text nobody of the house said (``after_outside_words``: a note, a tool's or a
-    program's output; ruling R77)."""
+    program's output; ruling R77): ``True``, or ``UNKNOWN_SOURCE_WORDS`` when those words hold a
+    note born of an unknown source."""
 
     of: Literal["person", "domo"]
     reason: str | None = None
     born_of_words_of: str | None = None
     they_lack_the_right: bool = False
-    after_outside_words: bool = False
+    after_outside_words: bool | str = False
 
 
 @dataclass(frozen=True)
@@ -752,7 +792,8 @@ def _author(
     """Who a memory is from, read from its columns only: the assistant's conclusion (he wrote it,
     or it is a deduction); the words of the person who asks (said in their turn, their own words
     or what he told them); someone else's words (another's, or relayed from someone or from
-    outside); the owner's; anyone else's."""
+    outside, or heard from a voice not sure to be theirs: never the words of whom it seemed, the
+    owner's included); the owner's; anyone else's."""
     if memory.by_domo or memory.origin == "deduced":
         return "domo"
     if memory.origin == "told_by_domo" and told_of is not None and memory.said_by_id == told_of:
@@ -764,11 +805,21 @@ def _author(
         and memory.origin in ("own_words", "told_by_domo")
     ):
         return "them"
-    if memory.origin in ("others_words", "external"):
+    if memory.origin in ("others_words", "external", "unsure_voice"):
         return "other"
     if owner is not None and memory.said_by_id == owner:
         return "owner"
     return "other"
+
+
+# How the judge's case names who said a memory kept from a voice the house was not sure was theirs
+# (origin ``unsure_voice``): whom it seemed, probably, and that it is not sure.
+UNSURE_VOICE_WHO: Final = "a voice the house was not sure was theirs"
+
+
+def unsure_voice_of(name: str | None) -> str:
+    """``who`` of a line kept from a voice not sure to be ``name``'s (``None``: they are gone)."""
+    return UNSURE_VOICE_WHO if name is None else f"probably {name}: {UNSURE_VOICE_WHO}"
 
 
 def _told_someone_else(memory: Memory, told_of: UUID | None) -> bool:
@@ -834,6 +885,11 @@ def _known_line(
             # conversation it was.
             A_PROGRAM_OR_A_TOOL
             if by == "other" and memory.origin == "external"
+            # Kept from a voice not sure to be theirs: whom it seemed, and that it is not sure.
+            else unsure_voice_of(
+                None if memory.said_by_id is None else names.get(memory.said_by_id)
+            )
+            if by == "other" and memory.origin == "unsure_voice"
             else names.get(memory.said_by_id)
             if by in ("other", "owner") and memory.said_by_id is not None
             else None

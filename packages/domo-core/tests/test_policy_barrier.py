@@ -8,6 +8,7 @@ own (a guest stays 30 days at most): the decisions here are made with facts made
 action (``decide`` below), for actions that limit lets through. The limits themselves are tried in
 ``test_policy_limits.py``."""
 
+from dataclasses import replace
 from uuid import uuid4
 
 import pytest
@@ -17,7 +18,6 @@ from domo_core.policy import barrier
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.asks import NeverAsk
 from domo_core.policy.barrier import (
-    UNTRUSTED_MAY,
     Allow,
     Decision,
     NeedsApproval,
@@ -237,14 +237,21 @@ def test_the_owners_rule_travels_with_the_decision():
     )
 
 
-def test_an_untrusted_identity_may_still_rename_and_nothing_else():  # F27
-    assert frozenset({"profile.rename"}) == UNTRUSTED_MAY
+def test_someone_unsure_does_the_ordinary_and_the_judge_weighs_the_sensitive():  # F27, POL-4
+    # Never refused out of hand: renaming oneself and the list are ordinary, done as anyone;
+    # inviting and a note are sensitive, the judge weighs who asks (spec 6.5 of the voice).
     for role in ROLES:
-        untrusted = Actor(uuid4(), role, trusted=False)
-        assert decide(untrusted, RENAME) == Allow()
-        assert decide(untrusted, INVITE) == Refuse("untrusted_identity")
-        assert decide(untrusted, LIST) == Refuse("untrusted_identity")
-        assert decide(untrusted, NOTE) == Refuse("untrusted_identity")
+        unsure = Actor(uuid4(), role, standing="unsure")
+        sure = Actor(unsure.person_id, role)
+        assert decide(unsure, RENAME) == decide(sure, RENAME) == Allow()
+        assert decide(unsure, LIST) == decide(sure, LIST)
+        for action in (INVITE, NOTE):
+            theirs = decide(sure, action)
+            judged = decide(unsure, action)
+            if isinstance(theirs, Refuse):
+                assert judged == theirs
+            else:
+                assert judged == replace(theirs, judge_identity=True)
 
 
 def test_a_right_that_opens_a_type_to_a_child_keeps_the_adult_unless_it_says_self():  # F1
@@ -330,28 +337,30 @@ def test_decision_for_every_role_and_action(role, action_type):
     assert decide(Actor(uuid4(), role), action) == expected
 
 
-# --- an identity that cannot be trusted ---------------------------------------------------
+# --- who asks, when the code is not sure of them ------------------------------------------
 
 
-def test_untrusted_identity_is_refused_before_the_action_is_looked_up():
+def test_nobody_known_is_refused_before_the_action_is_looked_up():
     odd = DescribedAction("core", "household.delete_everything", None, "permissions", "household")
-    assert decide(Actor(uuid4(), "owner", trusted=False), odd) == Refuse("untrusted_identity")
+    assert decide(Actor(uuid4(), "owner", standing="unknown"), odd) == Refuse("untrusted_identity")
+    # Someone unsure is not refused out of hand: an unknown type is refused as for anyone.
+    assert decide(Actor(uuid4(), "owner", standing="unsure"), odd) == Refuse("not_allowed")
 
 
-def test_what_an_untrusted_identity_may_do_is_not_a_guest_action_just_because_it_is_listed():
-    # What a guest may do comes from the table of the roles, not from the list alone.
+def test_what_someone_unsure_may_do_comes_from_the_tables():
+    # What a guest may do comes from the table of the roles: the unsure owner keeps the owner's.
     no_guest = PolicyTables(KNOWN_ACTIONS, {**ALLOWED_ACTIONS, "guest": frozenset()})
-    assert decide(Actor(uuid4(), "owner", trusted=False), RENAME, no_guest) == Refuse(
-        "untrusted_identity"
+    assert decide(Actor(uuid4(), "owner", standing="unsure"), RENAME, no_guest) == Allow()
+    assert decide(Actor(uuid4(), "guest", standing="unsure"), RENAME, no_guest) == Refuse(
+        "not_allowed"
     )
-    assert decide(Actor(uuid4(), "owner"), RENAME, no_guest) == Allow()
 
 
-def test_an_identity_that_cannot_be_trusted_gets_nothing_more_from_a_right():
-    """Whoever such an actor claims to be, a right cannot make them more than what
-    ``UNTRUSTED_MAY`` lets through: their personal rights unlock nothing, and nobody's accord
-    makes them more."""
-    claimed = Actor(uuid4(), "adult", trusted=False)
+def test_someone_unsure_acts_with_the_probable_persons_rights_and_the_judge_weighs_the_rest():
+    """The rights of the person who probably speaks apply as they are (POL-4): their own rights
+    open what they open, an agreement a right asks is still asked, a deny still refuses; what is
+    sensitive is marked for the judge, never refused out of hand."""
+    claimed = Actor(uuid4(), "adult", standing="unsure")
     rights = RightsTable(
         (
             right(person_id=claimed.person_id, action_type="household.invite", access="allow"),
@@ -359,10 +368,11 @@ def test_an_identity_that_cannot_be_trusted_gets_nothing_more_from_a_right():
             right(role="adult", action_type="profile.rename", approver="owner"),
         )
     )
-    assert decide(claimed, INVITE, DEFAULT_POLICY, rights) == Refuse("untrusted_identity")
-    assert decide(claimed, LIST, DEFAULT_POLICY, rights) == Refuse("untrusted_identity")
-    assert decide(claimed, RENAME, DEFAULT_POLICY, rights) == Refuse("untrusted_identity")
-    # A right may still take away what such an actor could do.
+    assert decide(claimed, INVITE, DEFAULT_POLICY, rights) == Allow(judge_identity=True)
+    assert decide(claimed, LIST, DEFAULT_POLICY, rights) == Allow()
+    renamed = decide(claimed, RENAME, DEFAULT_POLICY, rights)
+    assert isinstance(renamed, NeedsApproval) and renamed.approver == "owner"
+    assert not renamed.judge_identity
     denied = RightsTable(
         (right(person_id=claimed.person_id, action_type="profile.rename", access="deny"),)
     )
@@ -414,12 +424,18 @@ def test_the_owner_is_not_stopped_by_the_foundation(action_type):
 
 @pytest.mark.parametrize("action_type", sorted(OWNER_ONLY_ACTIONS))
 @pytest.mark.parametrize("role", ROLES)
-def test_an_identity_that_cannot_be_trusted_is_refused_first(action_type, role):
+def test_nobody_known_is_refused_first_and_the_owners_own_stay_his(action_type, role):
     everyone = PolicyTables(KNOWN_ACTIONS, {r: frozenset({action_type}) for r in ROLES})
     action = DescribedAction("core", action_type, None, "permissions", "household")
-    assert decide(Actor(uuid4(), role, trusted=False), action, everyone) == Refuse(
+    assert decide(Actor(uuid4(), role, standing="unknown"), action, everyone) == Refuse(
         "untrusted_identity"
     )
+    unsure = decide(Actor(uuid4(), role, standing="unsure"), action, everyone)
+    if role == "owner":
+        # The owner's own are sensitive: the judge weighs who asks.
+        assert isinstance(unsure, Allow | NeedsApproval) and unsure.judge_identity
+    else:
+        assert unsure == Refuse("not_allowed")
 
 
 @pytest.mark.parametrize("role", ["adult", "child", "guest"])
@@ -590,7 +606,7 @@ async def test_an_allowed_action_is_audited_without_a_reason(session, owner):
 async def test_a_refusal_is_audited_with_its_reason(session, owner):
     await record_decision(
         session,
-        Actor(owner.id, "adult", trusted=False),
+        Actor(owner.id, "adult", standing="unknown"),
         INVITE,
         Refuse("untrusted_identity"),
         tool_name="household_invite",

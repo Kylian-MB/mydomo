@@ -1,6 +1,6 @@
 [project]
 name = "domo-sandbox"
-version = "0.13.1"
+version = "0.14.0"
 description = "The assistant sandbox: a launcher that runs one tool of the assistant in its own process, with limits."
 requires-python = ">=3.12"
 license = "MIT"

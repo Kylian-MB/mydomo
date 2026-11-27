@@ -6,6 +6,8 @@
 data/
 # The catalog of models ships with the package
 !packages/domo-core/src/domo_core/llm/data/
+# The speech service's candidates ship with it
+!packages/domo-speech/src/domo_speech/data/
 secrets/
 
 # Python and tooling caches

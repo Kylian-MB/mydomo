@@ -7,6 +7,9 @@ the body. The test asserts that the key does not appear in any record captured a
 once the gatekeeper's logging setup (``pin_http_loggers``) is applied, and (as a control) that it
 does appear when the setup is not applied, which shows that the test would catch the leak.
 
+The spoken phrase is held to the same rule: what was heard reaches no log line and no answer,
+through an agreement, a comparison, a refused body and a store that fails.
+
 What is not covered: other libraries' loggers than those two, and a log sink other than pytest's
 (uvicorn's own formatting of its error log).
 """
@@ -15,12 +18,14 @@ import asyncio
 import logging
 import sqlite3
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 
 import httpx
 import pytest
 from domo_common.gatekeeper_api import Binding, HeaderLocation, ProviderRoute
 from domo_gatekeeper.__main__ import create_http_client, pin_http_loggers
 from domo_gatekeeper.internal_api import create_internal_app
+from domo_gatekeeper.phrases import PhraseStore
 from domo_gatekeeper.providers import ProviderRegistry
 from domo_gatekeeper.secret_requests import SecretRequestStore
 from domo_gatekeeper.vault import Vault
@@ -160,3 +165,54 @@ async def test_refusals_are_logged_without_credentials(
     assert any(r.name == "domo_gatekeeper.internal_api" for r in caplog.records)
     for sensitive in (KEY, CORE_TOKEN, "custom-header-value", "private prompt"):
         assert sensitive not in caplog.text
+
+
+PHRASE_REF = "phrase.00000000-0000-0000-0000-000000000001"
+PHRASE = "le chat bleu dort sur le toit"
+WORDS = ("chat", "bleu", "toit")
+
+
+async def test_a_phrase_never_reaches_a_log_or_an_error(
+    vault: Vault,
+    store: SecretRequestStore,
+    registry: ProviderRegistry,
+    vault_db_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    restore_http_loggers: None,
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    phrases = PhraseStore(vault_db_path, b"\x01" * 32)
+    path = f"/internal/phrases/{PHRASE_REF}"
+    answers: list[httpx.Response] = []
+    async with create_http_client() as http_client:
+        app = create_internal_app(
+            vault=vault,
+            requests=store,
+            providers=registry,
+            http_client=http_client,
+            core_token=CORE_TOKEN,
+            phrases=phrases,
+        )
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+        headers = {"authorization": f"Bearer {CORE_TOKEN}"}
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://gatekeeper.test", headers=headers
+        ) as client:
+            for _ in range(2):
+                answers.append(await client.post(f"{path}/enrol", json={"heard": PHRASE}))
+            answers.append(await client.post(f"{path}/compare", json={"heard": PHRASE}))
+            # Refused by validation: too long, and with a field too many.
+            answers.append(await client.post(f"{path}/compare", json={"heard": PHRASE * 20}))
+            answers.append(
+                await client.post(f"{path}/compare", json={"heard": PHRASE, "again": PHRASE})
+            )
+            # A broken store: the kept phrase no longer decrypts.
+            with sqlite3.connect(vault_db_path) as conn:
+                conn.execute("UPDATE spoken_phrases SET ciphertext = x'00'")
+            answers.append(await client.post(f"{path}/compare", json={"heard": PHRASE}))
+
+    assert [answer.status_code for answer in answers] == [200, 200, 200, 422, 422, 500]
+    seen = caplog.text + "".join(answer.text + str(answer.headers) for answer in answers)
+    seen += "".join(str(record.exc_info) for record in caplog.records)
+    for word in WORDS:
+        assert word not in seen

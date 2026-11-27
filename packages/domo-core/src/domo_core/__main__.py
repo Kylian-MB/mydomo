@@ -22,6 +22,7 @@ import uvicorn
 from domo_common.startup import describe_settings_error, pin_loggers_at_warning
 from pydantic import ValidationError
 
+from domo_core.channels.voice.protocol import MAX_FRAME_BYTES
 from domo_core.config import ConfigurationError, CoreSettings
 from domo_core.db import create_engine, make_session_factory
 from domo_core.gatekeeper_client import load_core_token
@@ -38,6 +39,10 @@ from domo_core.web.app import create_app
 
 HOST = "0.0.0.0"  # inside the container: only the edge proxy's network reaches it
 PORT = 8000
+# The biggest WebSocket message the server assembles: a little above the frame the voice socket
+# takes (``channels.voice.protocol.MAX_FRAME_BYTES``), so that a bigger one is refused before it
+# is held whole (the server's own default is 16 MiB).
+WS_MAX_SIZE = MAX_FRAME_BYTES + 4 * 1024
 
 # Not ``__main__``: the name shows in every line of the log.
 logger = logging.getLogger("domo_core.startup")
@@ -173,6 +178,7 @@ def main() -> None:
         proxy_headers=True,
         forwarded_allow_ips=settings.trusted_proxies,
         access_log=True,
+        ws_max_size=WS_MAX_SIZE,
         # The root logger's setup (see ``configure_logging``) applies to uvicorn's records.
         log_config=None,
         log_level="info",

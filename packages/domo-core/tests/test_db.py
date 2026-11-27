@@ -94,6 +94,9 @@ def test_every_table_is_declared_on_the_shared_base():
         "tool_trouble_days",
         "open_addresses",
         "service_accounts",
+        "voice_refs",
+        "voice_prints",
+        "voice_moments",
         # And what went wrong, kept for the judge to learn from (domo judges first).
         "went_wrong",
     }

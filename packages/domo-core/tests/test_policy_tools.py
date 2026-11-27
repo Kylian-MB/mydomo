@@ -311,6 +311,22 @@ def test_the_tools_say_which_rules_exist_and_that_the_yes_is_judged():
         assert gone not in description, gone
 
 
+def test_the_voice_settings_are_told_with_their_values():
+    description = TOOLS["policy_update"].definition.description
+    for word in ("speech.hear_outside", "voice.after_a_gesture", "held key"):
+        assert word in description, word
+
+
+async def test_only_the_owner_chooses_how_the_voice_listens(adult_chat, current_settings):
+    reply = await adult_chat.say_with_tool(
+        "policy_update", {"key": "voice.after_a_gesture", "value": "yes"}
+    )
+    assert reply.actions == [
+        {"tool": "policy_update", "status": "refused", "reason": "not_allowed"}
+    ]
+    assert (await current_settings()).owner_values == {}
+
+
 # --- through the chat ----------------------------------------------------------------------------
 
 

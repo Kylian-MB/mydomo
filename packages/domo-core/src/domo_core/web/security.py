@@ -20,6 +20,11 @@ with a device's secret (``Authorization: Bearer``), which no other site can make
 so its requests are not asked for an ``Origin``. A request there that carries the session cookie
 of the page is refused (403, ``{"error": "browser_session"}``), whatever its method: the channel
 knows no browser, and a page never reaches it with the person's cookie.
+
+This middleware looks at ``http`` scopes only: a WebSocket (``websocket`` scope) passes through
+it untouched. The one socket of the core, the page's voice (``/chat/voice``), makes its own check
+before it accepts anything (``channels.voice.routes``): exactly one ``Origin`` header, compared
+with ``is_same_origin`` (no ``Referer`` stands in for it), then the session cookie.
 """
 
 import re
@@ -34,12 +39,21 @@ from domo_core.accounts.sessions import SESSION_COOKIE
 from domo_core.channels.api import is_api_path
 from domo_core.web.texts_middleware import texts_for
 
+# ``script-src 'self' 'wasm-unsafe-eval'``: the page's speech detector is WebAssembly served from
+# our own address (``static/voice/``). ``'wasm-unsafe-eval'`` lets WebAssembly compile and nothing
+# else: it does not allow ``eval`` or ``new Function`` (that is ``'unsafe-eval'``). The detector
+# runs on one thread, in the page, with no worker of its own, and the capture worklet is a
+# same-origin script (``AudioWorklet.addModule`` follows ``script-src``), so no ``worker-src`` and
+# no ``blob:`` are needed; the socket is same-origin (``connect-src`` falls back to
+# ``default-src``, where ``'self'`` covers ``wss:`` on the same host).
 CONTENT_SECURITY_POLICY = (
-    "default-src 'self'; frame-src 'self'; frame-ancestors 'none'; form-action 'self'"
+    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; frame-src 'self'; "
+    "frame-ancestors 'none'; form-action 'self'"
 )
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": CONTENT_SECURITY_POLICY,
+    "Permissions-Policy": "microphone=(self)",
     "Referrer-Policy": "same-origin",
     "X-Content-Type-Options": "nosniff",
 }

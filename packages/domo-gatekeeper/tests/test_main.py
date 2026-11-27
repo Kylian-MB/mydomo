@@ -235,6 +235,11 @@ async def test_serve_runs_the_internal_and_the_public_servers(tmp_path, token_fi
                 f"{internal}/internal/secrets", headers={"authorization": f"Bearer {TOKEN}"}
             )
             assert r.status_code == 200 and r.json() == []
+            # The spoken phrases are served, behind the same token.
+            phrase = f"{internal}/internal/phrases/phrase.p1"
+            assert (await client.get(phrase)).status_code == 401
+            r = await client.get(phrase, headers={"authorization": f"Bearer {TOKEN}"})
+            assert r.status_code == 404 and r.json() == {"error": "unknown_phrase"}
             # Public: only the vault form, and none of the internal routes.
             r = await client.get(f"{public}/vault/r/unknown-token")
             assert r.status_code == 404 and r.headers["x-domo-component"] == "gatekeeper"

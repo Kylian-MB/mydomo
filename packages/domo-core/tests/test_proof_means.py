@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 
 import pytest
 from chat_support import MEMBER_PASSWORD, status_of
+from domo_common.gatekeeper_api import PhraseResult
 from domo_core.accounts.models import Account
 from domo_core.accounts.passkey_models import PasskeyCredential
 from domo_core.accounts.passkeys import PasskeySite
@@ -25,6 +26,7 @@ from test_proof import (
     WRONG_PASSWORD,
     added_passkey,
     by_name,
+    no_phrase_waits,  # noqa: F401 (autouse: the phrase's remembered waits, reset per test)
     proof_request,
     prove,
 )
@@ -72,10 +74,31 @@ async def add_passkey_row(session, account: Account) -> None:
 # --- the rows -----------------------------------------------------------------------------------
 
 
-def test_the_kinds_the_code_knows_are_the_two_proofs_of_before():
-    assert list(PROOF_KINDS) == ["passkey", "password"]
+def test_the_kinds_the_code_knows_are_the_two_proofs_of_before_and_the_phrase():
+    assert list(PROOF_KINDS) == ["passkey", "password", "spoken_phrase"]
     assert PROOF_KINDS["password"].throttled is True
     assert PROOF_KINDS["passkey"].throttled is False
+    # The gatekeeper counts the phrase's tries, where it compares them.
+    assert PROOF_KINDS["spoken_phrase"].throttled is False
+
+
+async def test_the_phrase_is_agreed_and_removed_like_any_means(session, add_person, add_account):
+    person = await add_person("Alex", "adult")
+    await add_account(person, "alex")
+
+    async def never_said(person_id: uuid.UUID, heard: str) -> PhraseResult:
+        raise AssertionError("offering a phrase compares nothing")
+
+    place = ProofPlace(abilities("password", "spoken_phrase"), phrase_check=never_said)
+    assert await offers(session, person, place, NOW) == ("password",)
+    await agree(session, person.id, "spoken_phrase", proposed_by="domo", now=NOW)
+    assert await kinds_of(session, person) == ["password", "spoken_phrase"]
+    assert await offers(session, person, place, NOW) == ("password", "spoken_phrase")
+    # Starting it asks nothing of the place: the next sentence heard is the answer.
+    assert await PROOF_KINDS["spoken_phrase"].begin(session, person, place, NOW) == {}
+    await remove(session, person.id, "spoken_phrase", LATER)
+    assert await kinds_of(session, person) == ["password"]
+    assert await offers(session, person, place, LATER) == ("password",)
 
 
 async def test_a_new_account_has_the_password_means(session, add_person, add_account):

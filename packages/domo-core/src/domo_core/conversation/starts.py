@@ -212,7 +212,7 @@ from domo_core.conversation.visits import (
     what_is_new,
 )
 from domo_core.llm.choices import load_choices
-from domo_core.llm.router import usable_keys
+from domo_core.llm.router import text_keys
 from domo_core.madetools.models import BuildState
 from domo_core.madetools.triggers import returns_seen
 from domo_core.plans.models import Plan
@@ -580,7 +580,7 @@ async def open_reply(
                 requester = await session.get(Person, requester_id)
                 if requester is None or not is_active(requester, deps.clock()):
                     return None
-                if not await usable_keys(session, requester) and not (
+                if not await text_keys(session, requester) and not (
                     upkeep and await upkeep_key(session) is not None
                 ):
                     return None
@@ -699,7 +699,7 @@ async def _welcome(
             )
             # Someone without a key, whom the general key does not serve to ask for theirs, is
             # offered no arrival turn.
-            keyed = bool(await usable_keys(session, person))
+            keyed = bool(await text_keys(session, person))
             if due and not keyed:
                 due = await upkeep_key(session) is not None
             # Their plans due at their return, when they come back after an absence (a plan goes
@@ -797,7 +797,7 @@ async def consider_news(
             last_visit = person.last_visit_at
             if (await load_choices(session, None)).arrival == "never":
                 return
-            if not await usable_keys(session, person):
+            if not await text_keys(session, person):
                 return
             if await reply_under_way(session, deps, person_id, now):
                 return

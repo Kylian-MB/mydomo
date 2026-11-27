@@ -71,6 +71,11 @@ class Message(Base):
     # (``conversation.visits``).
     failure: Mapped[str | None]
     own_answer: Mapped[bool] = mapped_column(server_default=text("false"))
+    # For a person's message: whether the code was not sure it was theirs when it was heard (an
+    # unsure voice, one too short to tell, or heard at a page signed in as someone else); written
+    # when it is stored (``Conversation.say``), null before (sure). A review of what was said never
+    # reads such a sentence as their own words (``memory.review``).
+    heard_unsure: Mapped[bool | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.clock_timestamp())
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.clock_timestamp(), onupdate=func.clock_timestamp()

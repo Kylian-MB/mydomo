@@ -1,0 +1,33 @@
+{#- The voice of the chat page: one button that turns it on or off and one line that always says
+    whether the microphone listens. Every text is the reader's own (the assistant writes them) and
+    is handed to static/voice.js in the data- attributes below, so the script holds no sentence; the
+    script changes the button's label and the line as the state changes. Before the script runs
+    (or without it) the page says the voice is off. -#}
+<div class="voice" data-voice="root" data-state="off"
+     data-text-turn-on="{{ t('voice.turn_on') }}"
+     data-text-turn-off="{{ t('voice.turn_off') }}"
+     data-text-listening="{{ t('voice.listening') }}"
+     data-text-on-gesture="{{ t('voice.on_gesture') }}"
+     data-text-off="{{ t('voice.off') }}"
+     data-text-preparing="{{ t('voice.preparing') }}"
+     data-text-unavailable="{{ t('voice.unavailable') }}"
+     data-text-no-microphone="{{ t('voice.no_microphone') }}"
+     data-text-refused-by-browser="{{ t('voice.refused_by_browser') }}"
+     data-text-moved="{{ t('voice.moved') }}"
+     data-text-reload="{{ t('voice.reload') }}"
+     data-text-not-taken-elsewhere="{{ t('voice.not_taken_elsewhere') }}"
+     data-text-not-taken-now="{{ t('voice.not_taken_now') }}"
+     data-text-failed="{{ t('voice.failed') }}"
+     data-text-not-told="{{ t('voice.not_told') }}"
+     data-text-speaking="{{ t('voice.speaking') }}"
+     data-text-cannot-speak="{{ t('voice.cannot_speak') }}"
+     data-text-cannot-speak-preparing="{{ t('voice.cannot_speak_preparing') }}"
+     data-text-cannot-speak-limit="{{ t('voice.cannot_speak_limit') }}"
+     data-text-cannot-speak-no-model="{{ t('voice.cannot_speak_no_model') }}"
+     data-text-cannot-play="{{ t('voice.cannot_play') }}"
+     data-text-no-key="{{ t('chat.error.no_key') }}">
+  <button type="button" data-voice="toggle" aria-pressed="false">{{ t("voice.turn_on") }}</button>
+  <button type="button" data-voice="talk" hidden>{{ t("voice.talk") }}</button>
+  <p data-voice="state" role="status" aria-live="polite">{{ t("voice.off") }}</p>
+  <p data-voice="notice" role="alert" hidden></p>
+</div>

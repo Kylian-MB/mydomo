@@ -27,7 +27,8 @@ from domo_core.llm.catalog import FREE, Catalog, Prices
 from domo_core.llm.levels import LEVELS, Level, level_rank, table_level
 from domo_core.llm.models import Provider
 from domo_core.llm.provider_kinds import PROVIDER_KINDS, ProviderKind
-from domo_core.llm.tasks import PROTECTED, TASKS, TaskKind
+from domo_core.llm.speech.catalog import does_of
+from domo_core.llm.tasks import PROTECTED, TASKS, Does, TaskKind
 
 _LOCAL_KIND: Final = "openai_compatible"
 
@@ -43,6 +44,7 @@ class Candidate:
     tools: bool
     context_tokens: int | None
     price_known: bool
+    does: Does = "chat"
 
 
 def is_local(provider: Provider) -> bool:
@@ -91,6 +93,7 @@ def candidates(
                 tools=True if info is None else info.tools,
                 context_tokens=None if info is None else info.context_tokens,
                 price_known=known,
+                does=does_of(kind, model_id),
             )
         )
     return described
@@ -107,13 +110,15 @@ def _cheapest(options: Sequence[Candidate]) -> Candidate | None:
 
 def fit_for(cands: Sequence[Candidate], task: TaskKind, *, min_context: int = 0) -> list[Candidate]:
     """The models of ``cands`` that may do ``task``: those that call tools when it needs them,
-    whose known context holds the request (``min_context``, in estimated tokens), and, for a
-    protected task, whose known level is at least its minimum."""
+    whose known context holds the request (``min_context``, in estimated tokens), that do what
+    the task is (a chat model never hears, a speech model never converses), and, for a protected
+    task, whose known level is at least its minimum."""
     spec = TASKS[task]
     fit = [
         c
         for c in cands
-        if (c.tools or not spec.needs_tools)
+        if c.does == spec.does
+        and (c.tools or not spec.needs_tools)
         and (c.context_tokens is None or c.context_tokens >= min_context)
     ]
     if task in PROTECTED and spec.minimum is not None:

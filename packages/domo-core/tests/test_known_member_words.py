@@ -895,11 +895,12 @@ async def test_a_plan_without_their_words_follows_who_began_the_turn(session_fac
     await mt.run_as("plan_set", EXAM_PLAN, turns.pop("after a tool he made returned"))
     (plan,) = await pt.stored(session_factory)
     assert (plan.their_words, plan.made_by_domo) == (None, False)
-    # Nobody wrote: it is his own.
+    # Nobody wrote, but a program's text is in the turn: never his own either (Task 27 of the
+    # voice: words from outside never become his idea, judged later with his own rights).
     for turn in turns.values():
         await mt.run_as("plan_set", EXAM_PLAN, replace(turn, said=None))
     his = [plan.made_by_domo for plan in await pt.stored(session_factory)]
-    assert sorted(his) == [False, True, True]
+    assert his == [False, False, False]
 
 
 async def test_a_new_why_outside_his_own_answer_empties_the_kept_words(session_factory):
@@ -920,12 +921,14 @@ async def test_a_new_why_outside_his_own_answer_empties_the_kept_words(session_f
     assert kept == dict.fromkeys(turns)
 
 
-async def test_a_plan_set_when_nobody_wrote_is_his_own_with_a_members_words(session_factory):
+async def test_a_plan_set_when_nobody_wrote_is_not_his_with_a_members_words(session_factory):
     alex, _ = await pt.two_people(session_factory)
     turn = members_words(pt.context(alex, session_factory, answers=False))
     await mt.run_as("plan_set", EXAM_PLAN, turn)
     (plan,) = await pt.stored(session_factory)
-    assert (plan.their_words, plan.made_by_domo) == (None, True)
+    # A member's words may have led to it: it is not his own idea (Task 27 of the voice), nor
+    # asked by the person (no words of theirs kept).
+    assert (plan.their_words, plan.made_by_domo) == (None, False)
 
 
 # --- a memory shows where it comes from ---------------------------------------------------------
@@ -1461,5 +1464,6 @@ def test_the_judge_is_told_of_how_and_its_prompt_keeps_its_size():
     prompt = judge_prompt()
     assert '"lately" ones ("outcome", "how", "about", "when")' in prompt
     assert '"of_domo" (the assistant\'s)' in prompt
-    # A trade of seven characters for seven: the file is as long as it was.
-    assert len(prompt) == 7994
+    # A trade of seven characters for seven: the file is as long as it was (the voice's speaker
+    # section included).
+    assert len(prompt) == 7995

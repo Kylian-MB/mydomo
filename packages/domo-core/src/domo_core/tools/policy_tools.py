@@ -33,11 +33,13 @@ from domo_core.policy.actions import DescribedAction
 from domo_core.policy.rights import Right, load_rights, paused_rights
 from domo_core.policy.roles import Actor
 from domo_core.policy.settings import (
+    HEAR_OUTSIDE_KEY,
     KEYS_SETTINGS,
     LIFETIME_KEY,
     NAME_SETTINGS,
     TIME_ZONE_KEY,
     TOOLS_BASE_KEY,
+    VOICE_GESTURE_KEY,
     WRITER_SECONDS_KEY,
     InvalidSetting,
     SettingValue,
@@ -188,7 +190,11 @@ class PolicyUpdate:
             "that speaks of the hour or the day needs it, and it is never guessed); "
             f"{TOOLS_BASE_KEY} (how big the base your tools keep their data in may grow, a whole "
             "number of MB from 16 to 1048576, 1024 unless they choose: beyond it a write of a "
-            "tool is refused)."
+            f"tool is refused); {HEAR_OUTSIDE_KEY} (yes or no, no unless they choose: whether what "
+            "the microphones hear may go to a model outside the house); "
+            f"{VOICE_GESTURE_KEY} (yes or no, no unless they choose: when no model at home can "
+            "tell whether a sentence is said to you, the voice hears only what is said while the "
+            "gesture is made, such as a held key)."
         ),
         parameters={
             "type": "object",
@@ -198,8 +204,8 @@ class PolicyUpdate:
                     "type": ["string", "integer", "null"],
                     "description": (
                         "A number of hours for the lifetime, a number of seconds for the writer, "
-                        "the name of a time zone, a number of MB for the tools' base, or null to "
-                        "clear their choice."
+                        "the name of a time zone, a number of MB for the tools' base, yes or no "
+                        "for the voice, or null to clear their choice."
                     ),
                 },
             },

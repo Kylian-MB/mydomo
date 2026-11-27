@@ -28,7 +28,12 @@ other way:
    the most demanding of the judge's verdict, the owner's rule and what Domo asks more
    (``judge.what_to_ask``; a judge that does not answer says ``do``: no type asks anything by
    default; but on a fact a judge must have weighed, ``catalog.WARNED_FACTS``, the last key, a
-   silent judge asks a plain yes). An agreement the barrier leaves to the judge first
+   silent judge asks a plain yes). When the code is not sure of who asks and the barrier says
+   so (``Allow.judge_identity``, ``NeedsApproval.judge_identity``: what is sensitive, or ordinary
+   too by the owner's word), the judge is consulted whatever the type, with the clues of who
+   speaks, and its silence asks a proof, never a silent ``do`` (``consult_the_judge``,
+   ``identity_doubted``); the barrier reads the risks a launch's operations declare
+   (``DeclaresRisks``). An agreement the barrier leaves to the judge first
    (``NeedsApproval.judge_first``: a limit that says "judge", the catalog's adult for a child, the
    latter only with a line of an adult's own words in the case) is spared by the judge's own
    ``do`` on a single action (``_judged_through``); any other verdict asks for it. When the barrier
@@ -126,7 +131,7 @@ import math
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Final, Literal, cast
+from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, runtime_checkable
 
 import anyio
 from sqlalchemy import select
@@ -143,6 +148,7 @@ from domo_core.confirmations.case import (
     gather,
     history_of,
     known_of_a_step,
+    outside_words,
 )
 from domo_core.confirmations.describe import describe_chain, describe_for_people
 from domo_core.confirmations.judge import (
@@ -175,13 +181,14 @@ from domo_core.learning.undone import note_undoing
 from domo_core.llm.choices import load_choices
 from domo_core.llm.types import JsonObject, ToolCall
 from domo_core.policy.actions import DescribedAction
-from domo_core.policy.asks import Asked, NeverAsk, most_demanding_asked
+from domo_core.policy.asks import Ask, Asked, NeverAsk, most_demanding, most_demanding_asked
 from domo_core.policy.barrier import (
     Allow,
     Decision,
     NeedsApproval,
     Refuse,
     given_for_an_idea,
+    may_act_weakly,
     record_decision,
     stricter,
     writes_for_domo,
@@ -189,14 +196,16 @@ from domo_core.policy.barrier import (
 from domo_core.policy.catalog import (
     CHANGES_NOTHING,
     JUDGED_WITHIN,
+    PROGRAM_RUN,
     SILENT_YET_HIS_IDEA,
     WARNED_FACTS,
+    Risks,
     is_made,
     is_silent,
     needs_the_judge,
     warned_since,
 )
-from domo_core.policy.decision import ChainBasis, decide_now
+from domo_core.policy.decision import ChainBasis, decide_now, doubted
 from domo_core.policy.rights import Approver, load_rights
 from domo_core.policy.roles import DOMO_SUBJECT_ID, Actor, as_role
 from domo_core.policy.settings import load_policy_settings
@@ -231,6 +240,52 @@ if TYPE_CHECKING:
     from domo_core.tools.chain import ChainPlan
 
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class DeclaresRisks(Protocol):
+    """A tool whose launch says every risk it may reach (a tool Domo made,
+    ``madetools.offered``, ``launch.reach_of``): the barrier reads them to tell whether its launch
+    is ordinary when the code is not sure of who asks (``barrier.may_act_weakly``). ``None`` when
+    it may go beyond what it declares, or that cannot be known."""
+
+    async def reach(self) -> Risks | None: ...
+
+
+@runtime_checkable
+class TellsRiskyActs(Protocol):
+    """A tool some of whose operations act in the house without being declared harmless (a tool
+    Domo made, ``madetools.offered``): what each says (his own words when he built it) is told to
+    the judge who weighs a call of it asked by someone the code is not sure of."""
+
+    def risky_acts(self) -> tuple[str, ...]: ...
+
+
+# How the judge is told what a launch may do in the house that was not declared harmless.
+RISKY_ACTS_TOLD: Final = (
+    "It acts in the house in a way not declared harmless (its own words, data): "
+)
+
+
+def _with_risky_acts(says: str, tool: InternalTool) -> str:
+    """``says``, followed by what the risky acts in the house of ``tool`` say, when it has any."""
+    if not isinstance(tool, TellsRiskyActs) or not (acts := tool.risky_acts()):
+        return says
+    return f"{says} {RISKY_ACTS_TOLD}" + " | ".join(acts)
+
+
+async def _risks_of(tool: InternalTool, actor: Actor) -> Risks | None:
+    """What a call of ``tool`` may reach (``DeclaresRisks``), read only when the code is not sure
+    of who asks (``actor``): someone it is sure of needs no such reading."""
+    if actor.trusted or not isinstance(tool, DeclaresRisks):
+        return None
+    try:
+        return await tool.reach()
+    except Exception as error:
+        # Not known: sensitive.
+        logger.warning("What a tool may reach could not be read (%s)", type(error).__name__)
+        return None
+
 
 # How long a tool may take to describe a call, and then to run it (see ``execute_allowed``).
 _TOOL_SECONDS: Final = 60.0
@@ -405,8 +460,9 @@ async def execute_allowed(
         # What a tool he made, or a program run by hand, gave back is text nobody of the house
         # said: from here the turn is marked (``ToolContext.outside_text``: no longer his own
         # answer, and what he keeps in it is not surely the person's words), on this context and
-        # on every copy of it (a request decided in the turn runs on one).
-        ctx.raise_outside_text()
+        # on every copy of it (a request decided in the turn runs on one); the judge is told which
+        # kind (``ToolContext.outside_kinds``).
+        ctx.raise_outside_text("program" if tool.action_type == PROGRAM_RUN else "tool")
     result: JsonObject = {"status": outcome.status}
     result.update((key, value) for key, value in outcome.model_result.items() if key != "status")
     return ActionRecord(
@@ -886,6 +942,39 @@ def judge_silent(tool_name: str, action_type: str) -> ActionRecord:
     )
 
 
+# What the model is told when only the judge's verdict could let a request go and it did not answer.
+NOT_WEIGHED_WHY: Final = (
+    "it could not be weighed now: nothing was done and nothing is asked; they may ask again later"
+)
+
+
+def not_weighed(tool_name: str, action_type: str) -> ActionRecord:
+    """A request only the judge's own verdict lets go (``DescribedAction.verdict_needed``, in a
+    chain any step's) that its judge did not weigh: nothing is done, no proof or yes of whoever
+    asks stands in for the verdict, and they may ask again later."""
+    return ActionRecord(
+        tool_name=tool_name,
+        action_type=action_type,
+        status="refused",
+        confirmation_id=None,
+        model_result={"status": "not_done", "reason": "not_weighed", "why": NOT_WEIGHED_WHY},
+        card={
+            "key": "action.card.refused.not_weighed",
+            "params": {},
+            "reason": "not_weighed",
+        },
+    )
+
+
+def _a_verdict_needed(action: DescribedAction, plan: "ChainPlan | None") -> bool:
+    """Whether only the judge's verdict lets ``action`` go: itself, or any step of its chain."""
+    if action.verdict_needed:
+        return True
+    return plan is not None and any(
+        step.action is not None and step.action.verdict_needed for step in plan.steps
+    )
+
+
 def rights_say(decision: Allow | NeedsApproval, *, judged_first: bool = False) -> RightsSay:
     """What the barrier said, as the judge reads it: allowed, and whose agreement is needed
     first, if anyone's, with the question a limit asked, and whether that agreement is left to
@@ -1157,8 +1246,17 @@ def _idea_told(ctx: ToolContext, idea: OwnIdea | None, born_of: str | None) -> I
     turn carries text nobody of the house said (``ToolContext.outside_text``: a note, a request of
     someone else, a tool's or a program's output, a tool's wake) is a fact of the code's
     (``after_outside_words``, ruling R77): what came of it may have been prompted by words that
-    are not the person's."""
-    outside = ctx.outside_text
+    are not the person's. Among them, a note born of a source nobody of the house is known for
+    (``ToolContext.told_unknown``) is told by name (``UNKNOWN_SOURCE_WORDS``), and so is each
+    kind of a program's, a site's or a tool's text in it (``ToolContext.outside_kinds``), the
+    person's own words named as theirs beside it (``outside_words``): the judge weighs the source
+    like a person would, and the code refuses nothing for it."""
+    told = outside_words(
+        unknown=ctx.told_unknown,
+        kinds=ctx.outside_kinds,
+        their_words=ctx.reply_message_id is not None or ctx.asked_before,
+    )
+    outside: bool | str = ctx.outside_text if told is None else told
     if idea is None:
         return IdeaTold("domo" if ctx.on_his_own else "person", after_outside_words=outside)
     return IdeaTold(
@@ -1183,6 +1281,7 @@ async def consult_the_judge(
     cost: JsonObject | None = None,
     idea: OwnIdea | None = None,
     told_to: uuid.UUID | None = None,
+    identity_doubted: bool = False,
 ) -> Judgement:
     """The yes-judge's verdict on ``action`` judged as ``actor`` (``judged_actor_of``), in the
     turn of ``ctx`` (spec 4). One case, built the same way for every judged action, a person's
@@ -1216,7 +1315,93 @@ async def consult_the_judge(
     ``store.judgement_told_to``): the person of the turn when they ask, the person concerned for
     an act of his own. Whoever it is told to (``told_to``, the person of the turn by default:
     whoever changes a request of someone else's) gets the code's own line when it is not theirs;
-    the journal keeps the judge's (``Judgement.noted``)."""
+    the journal keeps the judge's (``Judgement.noted``).
+
+    ``identity_doubted``: the code is not sure of who asks (``Allow.judge_identity``): the judge
+    weighs it with the clues of the speaker the case holds, and a judge that does not answer asks
+    a proof (``_proof_when_silent``), never a silent ``do``; but for someone heard at another
+    person's page asking something ordinary (``barrier.may_act_weakly``), whose silence is the
+    usual fallback (final fix wave, case 7) unless the owner said to judge ordinary things too.
+    """
+    judged = await _judged_by(
+        ctx,
+        actor=actor,
+        action=action,
+        says=says,
+        rights=rights,
+        steps=steps,
+        request=request,
+        owner_rule=owner_rule,
+        cost=cost,
+        idea=idea,
+        told_to=told_to,
+    )
+    if not identity_doubted or (
+        actor.page_person_id is not None
+        and not actor.voice_too_short
+        and may_act_weakly(action.action_type, ctx.policy)
+        and await _ordinary_done_when_unsure(ctx)
+    ):
+        return judged
+    return _proof_when_silent(judged)
+
+
+async def _ordinary_done_when_unsure(ctx: ToolContext) -> bool:
+    """Whether the owner leaves an ordinary thing asked by an unsure voice to be done
+    (``voice.ordinary_when_unsure`` ``"do"``); his "judge" is a rule of his, and so is a setting
+    that cannot be read: a silent judge then asks a proof (final fix wave B, I-5)."""
+    try:
+        async with ctx.session_factory() as session:
+            settings = await load_policy_settings(session)
+    except Exception as error:
+        logger.error(
+            "The owner's word on ordinary things could not be read (%s)", type(error).__name__
+        )
+        return False
+    return settings.ordinary_when_unsure == "do"
+
+
+def _before_the_doubt(
+    asked: Asked | None,
+    *,
+    rule: Ask | None,
+    raised: tuple[Ask, str] | None,
+    never_ask: NeverAsk | None,
+) -> Asked | None:
+    """``asked``, when the judge asked a proof of a requester the code is not sure of, with what
+    the rules and Domo's raise ask without the judge (at least a yes): a later yes the code is
+    sure of, of the real person, meets that (``before_doubt``, final fix wave, case 10). A proof
+    the rules or Domo ask stays a proof."""
+    if asked is None or asked.ask != "proof" or asked.by != "judge":
+        return asked
+    without = what_to_ask(None, rule=rule, raised=raised, never_ask=never_ask)
+    before = most_demanding("yes", None if without is None else without.ask)
+    if before == "proof":
+        return asked
+    return replace(asked, before_doubt=before)
+
+
+def _proof_when_silent(judgement: Judgement) -> Judgement:
+    """A judge that did not answer on who asks, when the code is not sure of them, asks a proof
+    (its fallback kept, so the record says it was not the judge's model)."""
+    return judgement if judgement.fallback is None else replace(judgement, verdict="proof")
+
+
+async def _judged_by(
+    ctx: ToolContext,
+    *,
+    actor: Actor,
+    action: DescribedAction,
+    says: str,
+    rights: RightsSay,
+    steps: Sequence[PlannedStep],
+    request: RequestTold | None,
+    owner_rule: JsonObject | None,
+    cost: JsonObject | None,
+    idea: OwnIdea | None,
+    told_to: uuid.UUID | None,
+) -> Judgement:
+    """``consult_the_judge``, before what a doubt on who asks changes of a silent judge."""
     they_asked = ctx.they_asked
     asks = None if ctx.on_his_own else ctx.person
     told = [planned_step_told(step) for step in steps]
@@ -1389,7 +1574,12 @@ async def read_the_person_again(ctx: ToolContext) -> Literal["active", "gone", "
 
 
 async def _decide_now(
-    ctx: ToolContext, action: DescribedAction, actor: Actor, *, for_the_person: bool = False
+    ctx: ToolContext,
+    action: DescribedAction,
+    actor: Actor,
+    *,
+    for_the_person: bool = False,
+    risks: Risks | None = None,
 ) -> Decision | Undecided:
     """The barrier's decision on ``action`` for ``actor``, who the call is judged as
     (``judged_actor_of``), with the owner's rights and the facts of the moment as they are now
@@ -1401,16 +1591,27 @@ async def _decide_now(
     for the person of the turn too (``ctx.actor``), a right merely not given counted as given
     (``barrier.given_for_an_idea``), and the stricter stands (``barrier.stricter``): who speaks
     must be trusted, and what the owner wrote for them or their role (an approver, "ask me
-    first", a limit) and an adult's agreement for a child still hold."""
+    first", a limit) and an adult's agreement for a child still hold. ``risks``: what the
+    operations of a launch declare (``_risks_of``). A call decided as the assistant's own act in
+    a person's turn keeps the doubt on who asked it (``decision.doubted``: ``judge_identity``)."""
     with anyio.move_on_after(_CHECK_SECONDS):
         try:
             async with ctx.session_factory() as session:
                 now = ctx.clock()
-                decision = await decide_now(session, actor, action, ctx.policy, now)
+                decision = await decide_now(session, actor, action, ctx.policy, now, risks=risks)
+                if (
+                    actor.subject == "domo"
+                    and not ctx.on_his_own
+                    and not isinstance(decision, Refuse)
+                    and await doubted(session, ctx.actor, action, ctx.policy, risks=risks)
+                ):
+                    # His own act, asked by someone the code is not sure of: the judge weighs
+                    # who asked it, never decided as a sure assistant alone.
+                    decision = replace(decision, judge_identity=True)
                 if not for_the_person:
                     return decision
                 theirs = given_for_an_idea(ctx.policy, ctx.actor.role, action.action_type)
-                person = await decide_now(session, ctx.actor, action, theirs, now)
+                person = await decide_now(session, ctx.actor, action, theirs, now, risks=risks)
                 return stricter(person, decision)
         except Exception as error:
             logger.error("The rights could not be read for a decision (%s)", type(error).__name__)
@@ -1449,6 +1650,7 @@ async def _decided_again(
         action,
         judged_actor_of(tool, ctx, taken),
         for_the_person=taken is not None and not ctx.on_his_own,
+        risks=await _risks_of(tool, ctx.actor),
     )
     if isinstance(decision, str):
         return undecided_record(tool_name, action.action_type, decision)
@@ -1556,7 +1758,9 @@ async def _described_and_decided(
             )
     if action is None:
         return failed_record(tool_name, tool.action_type)
-    decision = await _decide_now(ctx, action, actor, for_the_person=for_the_person)
+    decision = await _decide_now(
+        ctx, action, actor, for_the_person=for_the_person, risks=await _risks_of(tool, ctx.actor)
+    )
     if isinstance(decision, str):
         # Nothing was decided, so nothing ran: the action failed, and may be tried again.
         return undecided_record(tool_name, action.action_type, decision)
@@ -1834,8 +2038,10 @@ async def _their_cost_weighed(
         owner_rule=owner_rule_of(decision.never_ask),
         cost=waiting_for.cost,
         idea=idea,
+        identity_doubted=decision.judge_identity,
     )
-    weighed = judgement.fallback is None
+    # A judge silent on who asks, when the code is not sure of them, asked a proof: it counts.
+    weighed = judgement.fallback is None or decision.judge_identity
     if weighed and judgement.verdict == "do_not":
         record = refused_by_the_judge(tool_name, action.action_type, judgement.reason)
         return await _recorded(
@@ -2118,13 +2324,18 @@ async def handle_tool_call(
     judgement: Judgement | None = None
     asked: Asked | None = None
     owners_rule_on_him = False
-    if needs_the_judge(action.action_type):
+    if needs_the_judge(action.action_type) or decision.judge_identity:
+        # The code not sure of who asks (``judge_identity``): the judge weighs it whatever the
+        # type's usual judging, and its silence asks a proof.
         never_ask = decision.never_ask if plan is None else plan.never_ask
         says = (
             describe_for_people(action, arguments, REFERENCE)
             if plan is None
             else describe_chain(plan.arguments, REFERENCE)
         )
+        if plan is None and decision.judge_identity:
+            # Who asks is doubted: what it may do in the house with a risk is told (O1/O3).
+            says = _with_risky_acts(says, tool)
         # An idea of his is asked of his judge once more when it was silent; still silent, he
         # does nothing for now and asks nobody (spec part 7). So is a call of a turn that answers
         # the person but was told words from outside, before the fallback asks them a yes (audit
@@ -2139,12 +2350,26 @@ async def handle_tool_call(
                 steps=() if plan is None else plan.steps,
                 owner_rule=owner_rule_of(never_ask),
                 idea=idea,
+                identity_doubted=decision.judge_identity,
             )
             if judgement.fallback is None:
                 break
         assert judgement is not None
         if idea is not None and judgement.fallback is not None:
             record = judge_silent(tool_name, action.action_type)
+            return await _recorded(
+                ctx,
+                reply_id,
+                record,
+                action=action,
+                decision=decision,
+                judged=judgement,
+                actor=actor,
+                idea_reason=idea_reason,
+            )
+        if judgement.fallback is not None and _a_verdict_needed(action, plan):
+            # Only the judge's verdict lets it go: silent, nothing is done and nobody is asked.
+            record = not_weighed(tool_name, action.action_type)
             return await _recorded(
                 ctx,
                 reply_id,
@@ -2176,6 +2401,13 @@ async def handle_tool_call(
             raised=raised,
             never_ask=never_ask,
         )
+        if decision.judge_identity:
+            asked = _before_the_doubt(
+                asked,
+                rule=decision.rule if plan is None else plan.rule,
+                raised=raised,
+                never_ask=never_ask,
+            )
         if asked is None and warned_first(judgement, action, plan, never_ask):
             # What a judge must have weighed first (the last key) never runs on its silence, nor
             # on a do under the owner's "never ask me" with conditions: a plain yes is asked.

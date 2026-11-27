@@ -203,6 +203,7 @@ from domo_core.policy.actions import DescribedAction, FactValue
 from domo_core.policy.barrier import Refuse, record_decision
 from domo_core.policy.catalog import (
     NO_RISK,
+    PROGRAM_ACTIONS,
     PROGRAM_BEGIN,
     PROGRAM_LATER,
     PROGRAM_OUT,
@@ -395,6 +396,20 @@ class LaunchScope:
     def bound(self, key: str) -> int:
         """The value of the setting ``key`` for this launch."""
         return self.settings[key]
+
+
+# What a program running for someone the code is not sure of is told when a request out names an
+# account its operation does not declare (ruling T22, round 4): its launch was judged ordinary on
+# what it declares.
+ACCOUNT_NOT_DECLARED_WHEN_UNSURE: Final = (
+    "this operation declares no such account, and it is not sure who asked this launch; "
+    "ask the assistant"
+)
+# What a program running for someone the code is not sure of is told when it would launch a tool
+# later (ruling T22, round 3): that launch would be decided then as someone it is sure of.
+NOT_LATER_WHEN_UNSURE: Final = (
+    "a launch for later is not set while it is not sure who asked this one; ask the assistant"
+)
 
 
 def _refused(
@@ -1050,7 +1065,20 @@ class Means:
             return _refused("no_operation", NO_OPERATION)
         return handler, action
 
+    @property
+    def _doubted(self) -> bool:
+        """Whether the code is not sure of who asked this launch (``ForWhom.standing``)."""
+        return not self._scope.for_whom.trusted
+
+    def _declares(self, account: str) -> bool:
+        """Whether the operation begun last declares ``account``."""
+        return self._begun is not None and account in self._begun.accounts
+
     async def _act(self, ask: ActAsk) -> JsonObject:
+        if ask.action in PROGRAM_ACTIONS and self._doubted:
+            # Each of them sets a launch for later (``tool.launch_when``): refused, as a nested
+            # launch needing someone's word is (ruling T22, round 3).
+            return _refused("needs_agreement", NOT_LATER_WHEN_UNSURE)
         found = self._act_of(ask)
         if not isinstance(found, tuple):
             if ask.action not in PROGRAM_HANDLERS:
@@ -1148,6 +1176,9 @@ class Means:
         return out if out[1] > result[1] else result
 
     async def _later(self, ask: LaterAsk) -> JsonObject:
+        if self._doubted:
+            # Launching itself again later: the same as timing another tool (ruling T22, round 3).
+            return _refused("needs_agreement", NOT_LATER_WHEN_UNSURE)
         refused = await self._judged(_program_action(PROGRAM_LATER), ask, audited=True)
         if refused is not None:
             return refused
@@ -1352,8 +1383,12 @@ class Means:
     async def _sent_out(self, ask: OutAsk, literal: str, trace: _OutTrace) -> JsonObject:
         """The request out: its address checked open, its zone found (a name is looked up first,
         ruling R14), judged with that zone, its account checked, then sent held to that zone:
-        what the program reads (``trace`` notes what came of it, for the audit)."""
+        what the program reads (``trace`` notes what came of it, for the audit). For a launch
+        the code is not sure of who asked, an account the operation begun does not declare is
+        refused first, nothing sent (ruling T22, round 4)."""
         trace.audited = True
+        if ask.account is not None and self._doubted and not self._declares(ask.account):
+            return trace.refuse("needs_agreement", ACCOUNT_NOT_DECLARED_WHEN_UNSURE)
         gatekeeper = self._deps.gatekeeper
         if gatekeeper is None:
             return trace.refuse("unreachable")
