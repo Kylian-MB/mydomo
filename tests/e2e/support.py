@@ -180,9 +180,11 @@ def assistant_replies(page: Page) -> Locator:
     Such a bubble is no reply yet and may never be one: when that turn says nothing, its reply is
     taken away and the page removes the bubble at its next asking (``chat.js``). A count that
     held it would go down again, and a wait for one bubble more would be answered by a bubble
-    that goes. Counted without it, the replies of a page only grow, and each one is counted once
-    it is there to stay: the reply the page streams itself from the moment it opens (its bubble
-    is never marked so, unless its stream stops short), any other once it is over."""
+    that goes. Counted without it, each reply is counted once it is there to stay: the reply the
+    page streams itself from the moment it opens, any other once it is over. A passing bubble
+    never makes the count go up and down again. One case does: a reply the page streams itself
+    whose stream stops short gets the mark and leaves the count, then comes back when the stored
+    reply takes its place."""
     return page.locator(f".message.assistant{_NOT_BEING_WRITTEN}")
 
 
@@ -276,10 +278,15 @@ def wait_for_a_new_reply(page: Page, before: int, timeout_ms: int = EXPECT_TIMEO
     server writes it with no page asking for it; an open page finds it by asking every few seconds
     (``chat.js``), so this takes up to a few seconds after a button, and up to the upkeep's pass
     more after an arrival (``DOMO_UPKEEP_SECONDS`` of ``shared.env``): ``timeout_ms`` says how
-    long to wait in all. A bubble that only shows Domo writing is not waited for
+    long its bubble may take to appear. A bubble that only shows Domo writing is not waited for
     (``assistant_replies``): it may be a turn that says nothing, whose bubble goes. Returns the
     reply's bubble, once it is over."""
-    expect(assistant_replies(page)).to_have_count(before + 1, timeout=timeout_ms)
+    # The reply is counted when it is over, so this one wait holds the time its bubble had to
+    # appear (``timeout_ms``) plus the time its words had to come (``EXPECT_TIMEOUT_MS``): what
+    # the two waits had together when a bubble still being written was counted.
+    expect(assistant_replies(page)).to_have_count(
+        before + 1, timeout=timeout_ms + EXPECT_TIMEOUT_MS
+    )
     return _bubble_number(page, before)
 
 
@@ -312,6 +319,10 @@ def no_new_reply(page: Page, before: int, seconds: float = 8.0) -> None:
         if "data-writing" not in given or time.monotonic() > deadline:
             break
         page.wait_for_timeout(500)
+    # The loop ended on its bound: nothing is known of what that turn will leave.
+    assert "data-writing" not in given, (
+        f"a turn was still writing after {EXPECT_TIMEOUT_MS // 1000} s"
+    )
     assert given == "", "The assistant said something after all"
 
 
