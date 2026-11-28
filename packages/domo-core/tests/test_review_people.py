@@ -628,3 +628,43 @@ async def test_a_review_s_request_for_the_owner_waits_with_him_as_his_own(
     assert request.requester_id == owner.id
     assert made_in == request.conversation_id
     assert alex is not None and alex.news_at is not None
+
+
+# --- a sentence of a voice the house was not sure of (the merge of the voice) --------------------
+
+
+async def test_a_gesture_born_of_an_unsure_voice_weighs_who_spoke(
+    owner_chat: ChatPilot, monkeypatch: pytest.MonkeyPatch
+):
+    """A sentence heard from a voice the house was not sure was the owner's: a gesture of the
+    review in that slice is judged as for someone the code is not sure of (``judge_identity``),
+    as the same words said live would be: a silent judge never lets it run, where the same
+    sentence the house was sure of goes through (the test after this one)."""
+    from domo_core.confirmations.judge import fallback
+    from test_memory_review import mark_unsure
+
+    server = owner_chat.server
+    heard = "Dana moves in with us next week."
+    await owner_chat.say(heard)
+    await mark_unsure(server, heard)
+    monkeypatch.setattr(execution_module, "judge", Judged(fallback("error")))
+    [opened] = await reviewed(
+        owner_chat, his("record_open", name="Dana", standing="lives_here", ground="will_come")
+    )
+    assert (opened["status"], opened["reason"]) == ("not_done", "judge_silent"), opened
+    async with server.session_factory() as reader:
+        dana = list(await reader.scalars(select(Person).where(Person.display_name == "Dana")))
+    assert dana == []
+
+
+async def test_a_silent_judge_lets_a_sure_lines_gesture_run(
+    owner_chat: ChatPilot, monkeypatch: pytest.MonkeyPatch
+):
+    from domo_core.confirmations.judge import fallback
+
+    await owner_chat.say("Dana moves in with us next week.")
+    monkeypatch.setattr(execution_module, "judge", Judged(fallback("error")))
+    [opened] = await reviewed(
+        owner_chat, his("record_open", name="Dana", standing="lives_here", ground="will_come")
+    )
+    assert opened["status"] == "done", opened

@@ -104,7 +104,7 @@ import logging
 import uuid
 from collections.abc import Mapping, Sequence
 from contextlib import aclosing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Final, Literal, cast
@@ -1020,7 +1020,10 @@ async def _his_gesture(
     """A gesture on people of a review: his own idea, nobody asking (see the module docstring),
     with the call's reason (a gesture without one is ``invalid``; a look has none), born of the
     person reviewed, and whether their rights would allow it; then the way of any call he marked.
-    The mark never outlives the call."""
+    The mark never outlives the call. In a slice with a sentence of a voice the house was not sure
+    was theirs (``ToolContext.told_unsure``), the person it was born of is someone the code is not
+    sure of for that call (``Actor.standing`` ``unsure``): it is judged as the same words said
+    live would be (``barrier`` rule 6), never as their sure word."""
     arguments = _arguments_of(call.arguments)
     reason = None if arguments is None else reason_of(arguments)
     if arguments is not None and reason is None and tool.action_type in catalog.PEOPLE_GESTURES:
@@ -1032,10 +1035,14 @@ async def _his_gesture(
         born_of=person.id,
         lacks_the_right=not allowed,
     )
+    standing = ctx.actor.standing
+    if ctx.told_unsure and standing == "sure":
+        ctx.actor = replace(ctx.actor, standing="unsure")
     try:
         return await handle_tool_call(call, ctx=ctx, reply_id=None, over_limit=over_limit)
     finally:
         ctx.own_idea = None
+        ctx.actor = replace(ctx.actor, standing=standing)
 
 
 def review_pass(deps: TurnDeps) -> UpkeepPass:
