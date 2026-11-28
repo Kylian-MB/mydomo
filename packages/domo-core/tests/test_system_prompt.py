@@ -161,8 +161,9 @@ def test_the_fixed_text_stays_under_9000():
 
 # The length of the fixed text when the people of the house became the assistant's to keep (Task
 # 0 of that chantier, measured on the merged tree): what he must know of his gestures on people is
-# in his tools' descriptions and the context, never more fixed text.
-FIXED_TEXT_BEFORE_THE_PEOPLE = 8970
+# in his tools' descriptions and the context, never more fixed text. Measured again at the merge
+# of the voice (0.14.0), whose own sentences grew it: the fixed text is main's alone.
+FIXED_TEXT_BEFORE_THE_PEOPLE = 8989
 
 
 def test_the_people_guidance_did_not_grow_the_fixed_text():
