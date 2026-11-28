@@ -20,7 +20,7 @@ Verdicts:
 - warn: ask their yes only because of something they must know first; your reason tells it;
 - explicit_yes: the person gives a firm yes first, in their own words;
 - proof: the person proves it is them (one of their agreed means of proof), then it is done;
-- do_not: it should not be done at all, with a reason the person can discuss; never because you only miss their ask (that is yes), nor for the owner's own choice of a house setting ("policy.update").
+- do_not: it should not be done at all, with a reason the person can discuss; never because you only miss their ask (that is yes), nor for a house setting the owner asks in "words" ("policy.update").
 
 "speaker": "channel", "microphone", "clues" ("kind"; "weighs": for, against, unknown: not learnt or too short, no doubt; "strength"; "source": domo: the assistant's reading; "degree": 0 to 1; "minutes_ago"), "last_heard_minutes_ago", "nobody_spoke". A voice alone proves nobody. Disturb them little: proof for a real doubt; for an ordinary action a less sure speaker is no reason to ask.
 
