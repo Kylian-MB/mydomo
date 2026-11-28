@@ -26,6 +26,8 @@ from domo_core.memory.models import Memory
 from domo_core.memory.service import keep
 from domo_core.memory.told import agreed_asking, told
 from domo_core.policy.actions import DescribedAction
+from domo_core.policy.catalog import DEFAULT_POLICY
+from domo_core.policy.rights import NO_RIGHTS
 from domo_core.policy.subjects import HOUSE, Subject
 from domo_core.texts.view import REFERENCE
 from fakes import FakeChatModel
@@ -419,7 +421,7 @@ async def _danas_answered_warning(session_factory, monkeypatch, *answers: Judgem
     # shown the code's own line that it cannot be undone, on her card and to her assistant (R72).
     assert (request.requester_id, request.concerned_id) == (alex.id, dana.id)
     assert (request.warned, request.ask_why) == (True, CANNOT_BE_UNDONE_REASON)
-    card = asked_on_the_card(request, dana, REFERENCE)
+    card = asked_on_the_card(request, dana, REFERENCE, rights=NO_RIGHTS, policy=DEFAULT_POLICY)
     assert card is not None and t("confirmation.asked.domo.cannot_be_undone", "en") in card
     assert "you cannot take it back" not in card
     outcome, _ = await _yes(ctx, request, dana)
@@ -487,7 +489,7 @@ async def test_an_unwarned_request_moved_to_them_says_nothing_of_it(session_fact
     await handle_tool_call(take_back(dana), ctx=ctx, reply_id=reply_id)
     [request] = await _requests(session_factory)
     assert (request.concerned_id, request.warned, request.ask_why) == (dana.id, False, None)
-    card = asked_on_the_card(request, dana, REFERENCE)
+    card = asked_on_the_card(request, dana, REFERENCE, rights=NO_RIGHTS, policy=DEFAULT_POLICY)
     assert card is not None
     assert t("confirmation.asked.domo.cannot_be_undone", "en") not in card
 

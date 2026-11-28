@@ -1,9 +1,12 @@
-{#- The household, as the owner sees it (household/routes.py): read only. ``people`` are
-    ``PersonRow``s (everyone who ever joined, with where they stand), ``invitations`` the
-    ``InvitationRow``s of the invitations that wait (never their links: they are not kept).
-    Each person carries ``data-person-role`` and ``data-person-state``, each invitation
+{#- The household, as the owner sees it (household/routes.py): read only, no control. ``people``
+    are ``PersonRow``s (every record, with an account or not, but those merged or forgotten),
+    ``promises`` the ``PromiseRow``s that wait, ``directives`` the owner's ``DirectiveRow``s in
+    force, ``invitations`` the ``InvitationRow``s that wait (never their links: they are not
+    kept; never the assistant's reasons). Each person carries ``data-person-role`` and
+    ``data-person-state``, each directive ``data-directive-kind``, each invitation
     ``data-invitation-role`` (tests read them, whatever the language). Every value is output
-    through autoescaping: names were written by people, or by the model on their behalf. -#}
+    through autoescaping: names and words were written by people, or by the model on their
+    behalf. -#}
 {% extends "base.html" %}
 {% block title %}{{ t("household.title") }}{% endblock %}
 {% block content %}
@@ -15,11 +18,71 @@
 {% for row in people %}
         <li class="household-person" data-person-id="{{ row.id }}" data-person-role="{{ row.role }}" data-person-state="{{ row.state }}">
           <strong class="household-name">{{ row.name }}</strong>
+{% if row.role_name %}
+          <span class="household-role">{{ t("household.role.made", name=row.role_name, base=t("household.role." + row.role)) }}</span>
+{% else %}
           <span class="household-role">{{ t("household.role." + row.role) }}</span>
+{% endif %}
+{% if row.is_child and row.role != "child" %}
+          <span class="household-role">{{ t("household.child") }}</span>
+{% endif %}
+          <span class="household-state">{{ t("household.standing." + row.standing) }}</span>
           <span class="household-state">{{ row.state_text }}</span>
+{% if not row.has_account %}
+          <span class="household-state">{{ t("household.no_account") }}</span>
+{% endif %}
+{% if row.opened_by_domo %}
+          <span class="household-state">{{ t("household.opened_by_domo") }}</span>
+{% endif %}
+{% for which, labels in (("adds", row.adds), ("removes", row.removes)) if labels %}
+          <span class="household-access-head">{{ t("household.role." + which) }}</span>
+          <ul class="household-access" data-access="{{ which }}">
+{% for label in labels %}
+            <li>{{ label }}</li>
+{% endfor %}
+          </ul>
+{% endfor %}
         </li>
 {% endfor %}
       </ul>
+      <h2>{{ t("household.promises") }}</h2>
+{% if promises %}
+      <ul class="household-list">
+{% for row in promises %}
+        <li class="household-promise">
+          <strong class="household-name">{{ row.description }}</strong>
+          <span class="household-role">{{ row.role }}</span>
+          <span class="household-state">{{ row.asked_by }}</span>
+        </li>
+{% endfor %}
+      </ul>
+{% else %}
+      <p>{{ t("household.promises.none") }}</p>
+{% endif %}
+      <h2>{{ t("household.directives") }}</h2>
+{% if directives %}
+      <ul class="household-list">
+{% for row in directives %}
+        <li class="household-directive" data-directive-kind="{{ row.kind }}">
+          <strong class="household-name">{{ t("household.directives.kind." + row.kind) }}</strong>
+{% if row.name %}
+          <span class="household-role">{{ row.name }}</span>
+{% endif %}
+{% if row.description %}
+          <span class="household-state">{{ row.description }}</span>
+{% endif %}
+{% if row.except_words %}
+          <span class="household-state">{{ t("household.directives.except", words=row.except_words) }}</span>
+{% endif %}
+{% if row.until %}
+          <span class="household-state">{{ t("household.directives.until", date=row.until) }}</span>
+{% endif %}
+        </li>
+{% endfor %}
+      </ul>
+{% else %}
+      <p>{{ t("household.directives.none") }}</p>
+{% endif %}
       <h2>{{ t("household.invitations") }}</h2>
 {% if invitations %}
       <ul class="household-list">
@@ -31,6 +94,9 @@
           <span class="household-state">{{ t("household.invitation.stay", duration=row.stay) }}</span>
 {% endif %}
           <span class="household-state">{{ t("household.invitation.expires", date=row.expires) }}</span>
+{% if row.by_domo %}
+          <span class="household-state">{{ t("household.by_domo") }}</span>
+{% endif %}
         </li>
 {% endfor %}
       </ul>

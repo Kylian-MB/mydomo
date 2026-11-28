@@ -67,6 +67,7 @@ from domo_core.llm.types import JsonObject, ToolDefinition
 from domo_core.memory.told import agreed_asking
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.asks import ASKS, Ask
+from domo_core.policy.rights import load_rights
 from domo_core.policy.roles import Actor
 from domo_core.tools.context import (
     MAX_IDEA_REASON_LENGTH,
@@ -655,8 +656,14 @@ class ConfirmationAmend:
         if outcome in ("asked_again", "approver_changed") and request is not None:
             # How the new request is answered (final review Important 1): as it asks (a plain yes
             # does not give an explicit yes, nor a proof).
+            async with ctx.session_factory() as session:
+                rights = await load_rights(session)
             if request.requester_id != ctx.person.id and approves(
-                request.approver_kind, ctx.person, request.requester_id
+                request.approver_kind,
+                ctx.person,
+                request.requester_id,
+                rights=rights,
+                policy=ctx.policy,
             ):
                 # It still waits for this person's yes, as an approver (spec 5.1).
                 answer_with = how_to_approve(ask_of(request))

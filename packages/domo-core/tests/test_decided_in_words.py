@@ -164,7 +164,7 @@ async def test_the_other_requests_that_wait_stay_in_the_context(adult_chat, chat
 async def test_a_refusal_in_words_tells_domo_why(
     adult_chat, add_member, grant, set_role, chat_server, count_notes
 ):
-    sam = await add_member("Sam", "child")
+    sam = await add_member("Sam", "child", username="sam")  # a note is for who can answer
     summary = "Adults leave no note for a guest."
     await grant(
         "note.leave",

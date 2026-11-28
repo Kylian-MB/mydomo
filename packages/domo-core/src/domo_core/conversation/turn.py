@@ -185,13 +185,14 @@ from domo_core.llm.types import (
 from domo_core.memory.embedder import Embedder
 from domo_core.memory.search import embed_missing
 from domo_core.memory.service import mark_served
+from domo_core.people.directives import for_others
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.asks import Ask, most_demanding
 from domo_core.policy.catalog import is_silent
 from domo_core.policy.catalog import shown as action_shown
 from domo_core.policy.decision import doubted
 from domo_core.policy.rights import load_rights
-from domo_core.policy.roles import Role
+from domo_core.policy.roles import Actor, Role
 from domo_core.policy.settings import PolicySettings
 from domo_core.prompts import (
     NO_MEMORY,
@@ -436,12 +437,17 @@ class Prompt:
     ``writer_time`` (the time the rights writer has, and how often it ran out of it), ``ownership``
     (the note for a new owner) and ``successors`` (the list of successors, each place as
     ``SuccessorShown.as_json`` tells it, empty when the owner chose nobody) are the owner's only:
-    ``None`` for anyone else. ``today`` is the day and hour of the turn, in the household's time
-    zone or in UTC, ``household`` the active people of the house, ``nicknames`` the names the
-    person uses for some of them, each with the whole name it means (spec 6.7), and ``memory``
-    what Domo is given of his memory (his core, what he remembers about what the person said
-    lately, spec 6.4), ``plans`` the plans he set for the person that wait, the soonest first
-    (spec 6.9).
+    ``None`` for anyone else; so are ``promises``, the promises of access that wait
+    (``people.promises.shown``), empty for anyone else. ``directives`` are the owner's directives
+    in force (``people.directives.shown``): all of them for him, only that nobody new is kept for
+    anyone else (``people.directives.for_others``). ``today`` is the day and hour of the turn, in
+    the household's time zone or in UTC, ``household`` the active people of the house (with where
+    each stands, the child mark, the role made for them and whether they have an account in the
+    owner's turns and his own), ``known`` the records he only knows, with no access (those turns
+    alone, empty otherwise), ``nicknames`` the names the person uses for some of them, each with the
+    whole name it means (spec 6.7), and ``memory`` what Domo is given of his memory (his core, what
+    he remembers about what the person said lately, spec 6.4), ``plans`` the plans he set for the
+    person that wait, the soonest first (spec 6.9).
     ``spending`` is where the limits the person set stand, ``newcomers`` who began using a key
     they gave (told once), ``keys`` the keys they may use and those the request passed over at
     their limit, ``models`` the key and the model the request talks on, ``lessons`` what Domo
@@ -470,6 +476,7 @@ class Prompt:
     display_name: str
     role: Role
     can_act: bool
+    child: bool = False
     calls_domo: str | None = None
     house_calls: str | None = None
     house_called_before: str | None = None
@@ -477,8 +484,13 @@ class Prompt:
     writer_time: WriterTime | None = None
     ownership: OwnershipNote | None = None
     successors: tuple[JsonObject, ...] | None = None
+    promises: tuple[JsonObject, ...] = ()
+    directives: tuple[JsonObject, ...] = ()
+    owed: tuple[JsonObject, ...] = ()
+    owed_more: int = 0
     today: Today | None = None
     household: tuple[HouseholdLine, ...] = ()
+    known: tuple[JsonObject, ...] = ()
     nicknames: tuple[tuple[str, str], ...] = ()
     memory: MemoryBlock = NO_MEMORY
     plans: tuple[PlanLine, ...] = ()
@@ -526,6 +538,7 @@ class Prompt:
             display_name=self.display_name,
             role=self.role,
             can_act=self.can_act if can_act is None else can_act,
+            child=self.child,
             calls_domo=self.calls_domo,
             house_calls=self.house_calls,
             house_called_before=self.house_called_before,
@@ -534,10 +547,15 @@ class Prompt:
             writer_time=self.writer_time,
             ownership=self.ownership,
             successors=self.successors,
+            promises=self.promises,
+            directives=self.directives,
+            owed=self.owed,
+            owed_more=self.owed_more,
             decided=decided,
             to_approve=to_approve,
             today=self.today,
             household=self.household,
+            known=self.known,
             nicknames=self.nicknames,
             memory=self.memory,
             plans=self.plans,
@@ -565,6 +583,12 @@ class Prompt:
             expiring=self.expiring,
             speaking=self.speaking,
         )
+
+
+def prompted_as(prompt: Prompt, actor: Actor) -> bool:
+    """Whether ``prompt`` already tells who ``actor`` is now: their role and their child mark
+    (a change of either makes the rest of the turn that of who they are now)."""
+    return prompt.role == actor.role and prompt.child == actor.child
 
 
 @dataclass(frozen=True)
@@ -841,9 +865,28 @@ class Turn:
             # before it): it is over for them too.
             while self._also:
                 self._deps.wakes.spawn(_given_apart(self._also.pop(), Ended("partial")))
-            if not stopped:
+            if self._ctx.forgotten_in_turn:
+                self._after_forgetting()
+            elif not stopped:
                 self._answer_what_was_kept()
         return self._ended
+
+    def _after_forgetting(self) -> None:
+        """Once a turn in which the person was forgotten at their own request is over (its reply
+        settled, its journal lines written): what it ran in goes, in a task of the application
+        (``people.forget.finish_after_the_turn``), and what they wrote meanwhile is never
+        answered."""
+        # Imported here, not at the top: forgetting reaches the household, which reads turns.
+        from domo_core.people.forget import finish_after_the_turn
+
+        self._deps.kept.take(self._ctx.conversation_id)
+        self._deps.wakes.spawn(
+            finish_after_the_turn(
+                self._deps.session_factory,
+                sorted(self._ctx.forgotten_in_turn),
+                self._ctx.clock(),
+            )
+        )
 
     async def hear_also(self, requests: Sequence["TurnRequest"]) -> None:
         """Words of ``requests`` are answered by this turn's reply: whoever else they say hears
@@ -1223,7 +1266,7 @@ class Turn:
                 case "active":
                     pass
             role = ctx.actor.role
-            if role == self._p.prompt.role or self._p.prompt.upkeep is not None:
+            if prompted_as(self._p.prompt, ctx.actor) or self._p.prompt.upkeep is not None:
                 return
             async with self._deps.session_factory() as session:
                 rights = await load_rights(session)
@@ -1237,19 +1280,27 @@ class Turn:
         except Exception as error:
             logger.error("The person's role could not be read again (%s)", type(error).__name__)
             return
-        tools = tools_for(role, ctx.registry, ctx.policy, person_id=ctx.person.id, rights=rights)
-        kept = tools_kept_from(
-            role, ctx.registry, ctx.policy, person_id=ctx.person.id, rights=rights
-        )
+        tools = tools_for(ctx.actor, ctx.registry, ctx.policy, rights=rights)
+        kept = tools_kept_from(ctx.actor, ctx.registry, ctx.policy, rights=rights)
         prompt = replace(
             self._p.prompt,
             role=role,
+            child=ctx.actor.child,
             can_act=bool(tools),
             offered=frozenset(tool.name for tool in tools),
             kept=kept,
         )
         if role != "owner":
-            prompt = replace(prompt, writer_time=None, ownership=None, successors=None)
+            prompt = replace(
+                prompt,
+                writer_time=None,
+                ownership=None,
+                successors=None,
+                promises=(),
+                directives=for_others(prompt.directives),
+                owed=(),
+                owed_more=0,
+            )
         self._p = replace(
             self._p,
             prompt=prompt,
@@ -1272,6 +1323,10 @@ class Turn:
             writer_time=None,
             ownership=None,
             successors=None,
+            promises=(),
+            directives=(),
+            owed=(),
+            owed_more=0,
             spending=(),
             newcomers=(),
             keys=None,
@@ -1319,8 +1374,15 @@ class Turn:
             await self._mark_notes_told()
         if spoke and self._p.unmarked is not None:
             await self._mark_news_told(self._p.unmarked)
-        if spoke and self._p.news_seen is not None:
-            await clear_news(self._deps.session_factory, self._p.person_id, seen=self._p.news_seen)
+        owed = [uuid.UUID(str(row["act_id"])) for row in self._p.prompt.owed]
+        if spoke and (self._p.news_seen is not None or owed):
+            await clear_news(
+                self._deps.session_factory,
+                self._p.person_id,
+                seen=self._p.news_seen,
+                told_acts=owed,
+                now=self._ctx.clock(),
+            )
 
     def _log_failure(self, failure: ErrorKind) -> None:
         """Nobody reads the events of a wake (one that presents a request again included), nor of

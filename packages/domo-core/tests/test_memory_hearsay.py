@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from chat_support import ChatPilot
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.audit.models import AuditEntry
 from domo_core.confirmations.case import gather
@@ -21,7 +22,6 @@ from domo_core.memory.models import Memory
 from domo_core.memory.service import SAID_BY_YOU
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.catalog import DEFAULT_POLICY
-from domo_core.policy.roles import Actor
 from domo_core.policy.subjects import Subject
 from domo_core.prompts import build_system_prompt
 from domo_core.tools.context import ToolContext
@@ -240,7 +240,7 @@ def _review_context(person: Person, session_factory) -> ToolContext:
     """A call of the review's (``memory.review``): no message answered."""
     return ToolContext(
         session_factory=session_factory,
-        actor=Actor(person.id, person.role),  # type: ignore[arg-type]
+        actor=actor_of(person),  # type: ignore[arg-type]
         person=person,
         conversation_id=uuid.uuid4(),
         origin="",

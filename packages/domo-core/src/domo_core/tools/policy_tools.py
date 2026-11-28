@@ -34,10 +34,13 @@ from domo_core.policy.actions import DescribedAction
 from domo_core.policy.rights import Right, load_rights, paused_rights
 from domo_core.policy.roles import Actor
 from domo_core.policy.settings import (
+    ADULT_AGE_KEY,
+    GUESTS_OWN_KEY,
     HEAR_OUTSIDE_KEY,
     KEYS_SETTINGS,
     LIFETIME_KEY,
     NAME_SETTINGS,
+    TELL_ACCESS_KEY,
     TIME_ZONE_KEY,
     TOOLS_BASE_KEY,
     VOICE_GESTURE_KEY,
@@ -193,7 +196,16 @@ class PolicyUpdate:
             "that speaks of the hour or the day needs it, and it is never guessed); "
             f"{TOOLS_BASE_KEY} (how big the base your tools keep their data in may grow, a whole "
             "number of MB from 16 to 1048576, 1024 unless they choose: beyond it a write of a "
-            f"tool is refused); {HEAR_OUTSIDE_KEY} (yes or no, no unless they choose: whether what "
+            "tool is refused); "
+            f"{ADULT_AGE_KEY} (the age from which you may lift a record's child mark on a date "
+            "of birth you know, the whole number of years they give, 18 unless they choose); "
+            f"{TELL_ACCESS_KEY} (true: they are told each time you give access, on your own, to "
+            "someone new; false: they are not; null: you judge); "
+            f"{GUESTS_OWN_KEY} (true: whoever joins as a visitor, invited by anyone or by you, "
+            "comes with their own key and is off the general key; someone who lives here never "
+            "is; false or null: someone you invite yourself uses the general key, within its "
+            "limits); "
+            f"{HEAR_OUTSIDE_KEY} (yes or no, no unless they choose: whether what "
             "the microphones hear may go to a model outside the house: the voice then listens "
             "freely, and the sound, who speaks and the words said near it leave the house); "
             f"{VOICE_GESTURE_KEY} (yes or no, no unless they choose: when no model at home can "
@@ -206,11 +218,13 @@ class PolicyUpdate:
             "properties": {
                 "key": {"type": "string", "description": "The setting to change."},
                 "value": {
-                    "type": ["string", "integer", "null"],
+                    "type": ["string", "integer", "boolean", "null"],
                     "description": (
                         "A number of hours for the lifetime, a number of seconds for the writer, "
-                        "the name of a time zone, a number of MB for the tools' base, yes or no "
-                        "for the voice, or null to clear their choice."
+                        "the name of a time zone, a number of MB for the tools' base, a number of "
+                        "years for the age of a grown-up, true or false for being told of each "
+                        "access given or for guests bringing their own key, yes or no for the "
+                        "voice, or null to clear their choice."
                     ),
                 },
             },

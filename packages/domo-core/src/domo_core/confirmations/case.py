@@ -27,6 +27,7 @@ import anyio
 from sqlalchemy import ColumnElement, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import is_active
 from domo_core.chat.models import Conversation, Message, MessageAction
@@ -49,6 +50,8 @@ from domo_core.memory.embedder import Embedder
 from domo_core.memory.models import Memory
 from domo_core.memory.search import search_for_case
 from domo_core.memory.service import A_PROGRAM_OR_A_TOOL, of_domo, unconfirmed, visible_to
+from domo_core.people import reach
+from domo_core.people.made_roles import by_id
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.asks import NeverAsk
 from domo_core.policy.facts import (
@@ -58,6 +61,8 @@ from domo_core.policy.facts import (
     household_people,
     person_history,
 )
+from domo_core.policy.open_catalog import load_policy
+from domo_core.policy.rights import load_rights
 from domo_core.policy.roles import Actor
 from domo_core.policy.settings import load_policy_settings
 from domo_core.policy.subjects import Subject, owner_of_now
@@ -213,14 +218,17 @@ class KnownLine:
     keep_asking: bool | None = None
     may_agree: bool = False
     concerned: bool = False
+    # Of someone who may agree, that they only pass by (``standing`` not ``lives_here``): the
+    # judge weighs whether they look after the child then (the owner's answer of 2026-11-27).
+    only_passing: bool = False
 
 
 def line_json(line: "KnownLine | WentWrongLine") -> JsonObject:
-    """``line`` as the judge reads it: a known line's ``may_agree`` and ``concerned`` only when
-    the code set them."""
+    """``line`` as the judge reads it: a known line's ``may_agree``, ``concerned`` and
+    ``only_passing`` only when the code set them."""
     told: JsonObject = asdict(line)
     if isinstance(line, KnownLine):
-        for mark in ("may_agree", "concerned"):
+        for mark in ("may_agree", "concerned", "only_passing"):
             if not told[mark]:
                 del told[mark]
     return told
@@ -264,6 +272,10 @@ UNKNOWN_SOURCE_WORDS: Final = (
     "a note born of an unknown source: a voice nobody knows, or the assistant's own note written "
     "after reading a program's, a site's or a tool's text"
 )
+# What the judge reads in ``after_outside_words`` when the words a review's gesture was born of hold
+# a line heard from a voice the house was not sure was the person's (``ToolContext.told_unsure``):
+# the doubt itself, as the voice's clues tell it live (the owner's rule: the judge is given it).
+UNSURE_LINE_WORDS: Final = "a line heard from a voice the house was not sure was theirs"
 # What the judge reads in ``after_outside_words`` of each kind of a program's, a site's or a
 # tool's text in the turn (``ToolContext.outside_kinds``), as far as the code knows it (the owner,
 # 2026-11-26: the assistant tells each source apart, and the judge weighs it).
@@ -339,8 +351,10 @@ def outside_words(
     their_words: bool,
     sources: Sequence["OutsideSource"] = (),
     alone: bool = False,
+    unsure: bool = False,
 ) -> str | None:
     """Where the words not theirs in the turn come from, for ``IdeaTold.after_outside_words``: a
+    line heard from a voice not sure to be theirs (``unsure``: ``UNSURE_LINE_WORDS``), a
     note born of an unknown source (``unknown``: ``UNKNOWN_SOURCE_WORDS``), a program's, a site's
     or a tool's text of each kind (``kinds``, ``PROGRAM_TEXT_WORDS``), each named by which
     program it is and what it is built to reach (``sources``, ``source_words``: "not known which"
@@ -349,6 +363,8 @@ def outside_words(
     text is the only words not the assistant's own (``PROGRAM_TEXT_ALONE_WORDS``); ``None`` when
     neither a note nor such text is in it."""
     parts: list[str] = []
+    if unsure:
+        parts.append(UNSURE_LINE_WORDS)
     if unknown:
         parts.append(UNKNOWN_SOURCE_WORDS)
     programs = [kind for kind in kinds if kind != "channel"]
@@ -410,7 +426,9 @@ class Gathered:
 class JudgeCase:
     """What the judge reads (spec 4.2), built by the code from the database (``build_case``).
 
-    ``person`` is ``{"name", "role"}``; ``action`` ``{"type", "target", "facts", "says"}``, the
+    ``person`` is ``{"name", "role"}``, and for a person also ``made_role`` (the name of the
+    role the assistant made for them, or ``None``), ``child`` (their child mark) and ``standing``
+    (where they stand towards the house); ``action`` ``{"type", "target", "facts", "says"}``, the
     action as the barrier sees it (without ``NOT_FOR_THE_JUDGE``) and in words; ``rights`` what
     the barrier said; ``words`` the person's last ``JUDGE_MESSAGES`` messages of this
     conversation, oldest first, each cut at ``JUDGE_MESSAGE_CHARS``; ``asked_them`` what Domo
@@ -699,15 +717,24 @@ async def build_case(
         had_said = None
         pending: tuple[str, ...] = ()
     else:
-        name, role, their_language = (
-            await session.execute(
-                select(Person.display_name, Person.role, Person.language).where(
-                    Person.id == asks.id
-                )
+        record = (
+            await session.scalars(
+                select(Person).where(Person.id == asks.id).execution_options(populate_existing=True)
             )
         ).one()
-        # Their role as the barrier read it when the call is theirs; as it is now otherwise.
-        person = {"name": name, "role": actor.role if actor.person_id == asks.id else role}
+        name, role, their_language = record.display_name, record.role, record.language
+        # Their role as the barrier read it when the call is theirs; as it is now otherwise. Beside
+        # it, the role the assistant made for them (its name), their child mark and where they
+        # stand: told, never decided on here.
+        marks = actor_of(record)
+        made = None if marks.made_role is None else await by_id(session, marks.made_role)
+        person = {
+            "name": name,
+            "role": actor.role if actor.person_id == asks.id else role,
+            "made_role": None if made is None else made.name,
+            "child": marks.child,
+            "standing": record.standing,
+        }
         language = their_language or settings.house_language
         if words_override is None:
             words = await _persons_words(session, asks.id, conversation_id)
@@ -995,15 +1022,18 @@ async def _who_may_agree(
     session: AsyncSession, ids: Collection[UUID | None], about: UUID | None, now: datetime
 ) -> frozenset[UUID]:
     """Those of ``ids`` who may say yes for ``about`` (``may_agree_for_a_child``, the rule the
-    confirmations check too) and are in the household at ``now``; nobody when nobody asks."""
+    confirmations check too, under the rights in force), are in the household at ``now`` and can
+    answer (``reach.reachable``); nobody when nobody asks."""
     wanted = {person_id for person_id in ids if person_id is not None}
     if about is None or not wanted:
         return frozenset()
-    rows = await session.scalars(select(Person).where(Person.id.in_(wanted)))
+    rows = await session.scalars(select(Person).where(Person.id.in_(wanted), reach.reachable()))
+    rights, policy = await load_rights(session), await load_policy(session)
     return frozenset(
         person.id
         for person in rows
-        if is_active(person, now) and may_agree_for_a_child(person.role, person.id, about)
+        if is_active(person, now)
+        and may_agree_for_a_child(actor_of(person), about, rights=rights, policy=policy)
     )
 
 
@@ -1075,6 +1105,15 @@ async def _known(
     speakers = [m.said_by_id for m in (*sorted_out["other"], *sorted_out["owner"])]
     names = await _names(session, speakers)
     may_agree = await _who_may_agree(session, speakers, about, now)
+    passing: frozenset[UUID] = (
+        frozenset(
+            await session.scalars(
+                select(Person.id).where(Person.id.in_(may_agree), Person.standing != "lives_here")
+            )
+        )
+        if may_agree
+        else frozenset()
+    )
 
     def of_the_concerned(memory: Memory) -> bool:
         # What he told the person the thing belongs to, in a case that is not theirs to ask.
@@ -1087,7 +1126,11 @@ async def _known(
 
     def lines(by: Author) -> tuple[KnownLine, ...]:
         return tuple(
-            replace(line, concerned=True) if of_the_concerned(m) else line
+            replace(
+                line,
+                concerned=of_the_concerned(m),
+                only_passing=line.may_agree and m.said_by_id in passing,
+            )
             for m in sorted_out[by][:CASE_LINES]
             for line in (_known_line(m, by, names, zone, may_agree, about),)
         )

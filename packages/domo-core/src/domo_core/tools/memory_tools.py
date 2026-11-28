@@ -81,8 +81,9 @@ from typing import Final, cast, get_args
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domo_core.accounts.models import Person
 from domo_core.audit.log import append_audit
-from domo_core.household.service import active_persons, resolve_person
+from domo_core.household.service import known_persons, resolve_person
 from domo_core.llm.types import JsonObject, ToolDefinition
 from domo_core.memory.models import Kind, Memory, Origin
 from domo_core.memory.search import search
@@ -100,11 +101,14 @@ from domo_core.memory.service import (
     unconfirmed,
     who_said,
 )
-from domo_core.policy.actions import DescribedAction
-from domo_core.policy.roles import Actor
+from domo_core.people import directives, records
+from domo_core.people.acts import note_act
+from domo_core.policy.actions import MAX_FACT_TEXT_LENGTH, DescribedAction
+from domo_core.policy.roles import DOMO_LABEL, Actor
 from domo_core.text import is_plain_line, name_key
 from domo_core.tools.context import InvalidArguments, ToolContext, ToolOutcome, acts_alone
 from domo_core.tools.notes import MAX_NOTE_LENGTH, exact_text_in
+from domo_core.tools.people_tools import record_named
 from domo_core.trust.shown import trust_shown
 
 KINDS: Final[tuple[str, ...]] = get_args(Kind)
@@ -279,7 +283,7 @@ class _Keep:
 
     _REQUIRED: Final = frozenset({"content", "subject", "kind", "private", "core"})
     _LESSON: Final = frozenset({"lesson_of", "lesson_subject", "for_everyone"})
-    _ALLOWED: Final = _REQUIRED | {"about", "their_words"} | _LESSON
+    _ALLOWED: Final = _REQUIRED | {"about", "their_words", "exception_of"} | _LESSON
 
     def __init__(self, arguments: JsonObject) -> None:
         _only(arguments, self._REQUIRED, self._ALLOWED)
@@ -293,12 +297,19 @@ class _Keep:
         self.core = _flag(arguments["core"], "core")
         about = arguments.get("about")
         if about is not None and (not isinstance(about, str) or not about.strip()):
-            raise InvalidArguments("invalid", "about is the name of a person of the household")
+            raise InvalidArguments("invalid", "about is the name of someone you keep a record of")
         self.about: str | None = None if about is None else about.strip()
         words = arguments.get("their_words")
         if words is not None and not isinstance(words, str):
             raise InvalidArguments("invalid", "their_words is a text")
         self.their_words: str | None = words
+        # The owner's rule this memory is an exception to, as for every directive.
+        exception = arguments.get("exception_of")
+        if exception is not None and (
+            not isinstance(exception, str) or len(exception) > MAX_FACT_TEXT_LENGTH
+        ):
+            raise InvalidArguments("invalid", "exception_of is the identifiers of the rules")
+        self.exception_of: str | None = exception
         # What a lesson is about and for: only a lesson has it (``memory.service.keep``).
         if self.kind != "lesson" and self._LESSON & frozenset(arguments):
             raise InvalidArguments(
@@ -337,23 +348,63 @@ def _subject_key(value: object) -> str:
     return value
 
 
+async def _no_keeping_about(
+    session: AsyncSession,
+    about: uuid.UUID | None,
+    exception_of: str | None,
+    ctx: ToolContext,
+    now: datetime,
+) -> None:
+    """``not_possible`` for a memory about a record opened after the owner ruled that nobody new is
+    kept (his own request is never refused, as every directive), unless the assistant names the
+    directive whose words let it through (``exception_of``, as for every directive:
+    ``directives.lets_through``); that exception is then traced. A memory in free text about a
+    stranger is the assistant's rule to follow, told in his context, not enforced here."""
+    if about is None or (ctx.person.role == "owner" and not acts_alone(ctx)):
+        return
+    person = await session.get(Person, about)
+    if person is None:
+        return
+    blocking = await records.keeping_directives_against(session, person, now)
+    if not blocking:
+        return
+    by_domo = ctx.acting.subject == "domo"
+    if not directives.lets_through(blocking, named=exception_of, by_domo=by_domo):
+        raise InvalidArguments(
+            "not_possible", "the owner ruled that nobody new is kept: nothing is kept about them"
+        )
+    for directive in blocking:
+        await note_act(
+            session,
+            act="exception_used",
+            by=DOMO_LABEL,
+            reason=None,
+            turn_of=None if acts_alone(ctx) else ctx.person.id,
+            person_id=person.id,
+            directive_id=directive.id,
+            now=now,
+        )
+
+
 async def _member_named(
     session: AsyncSession, subject: str, ctx: ToolContext, now: datetime
 ) -> uuid.UUID | None:
-    """The member of the household a subject names, when it is a name: their whole name or a
-    nickname of the person who speaks (``resolve_person``, ``exact_only``), else the first name of
-    one member alone. Never the beginning of a name ("me" is not Mehdi); ``None`` otherwise."""
+    """The record a subject names, when it is a name, with or without an account or an access
+    now: their whole name, a nickname of the person who speaks or what a link that stands says of
+    them ("my mother": ``resolve_person``, ``among="records"``, ``exact_only``), else the first
+    name of one record alone. Never the beginning of a name ("me" is not Mehdi); ``None``
+    otherwise."""
     try:
         return (
-            await resolve_person(session, subject, now=now, speaker=ctx.person.id, exact_only=True)
+            await resolve_person(
+                session, subject, now=now, speaker=ctx.person.id, exact_only=True, among="records"
+            )
         ).id
     except InvalidArguments:
         pass
     key = name_key(subject)
     first = [
-        p
-        for p in await active_persons(session, now)
-        if name_key(p.display_name).split(" ")[0] == key
+        p for p in await known_persons(session) if name_key(p.display_name).split(" ")[0] == key
     ]
     return first[0].id if key and len(first) == 1 else None
 
@@ -374,15 +425,20 @@ class MemoryKeep:
             'Write your doubts in the sentence ("I think..."). Set private when someone asks you '
             "to keep it to yourself or when you judge it sensitive; in doubt, keep it to yourself: "
             "a secret can be lifted later, a word said cannot be taken back. Set core for what "
-            "you must always have in mind (who someone is, a lasting wish). When it is about a "
-            "person of the household, give their name in about, always. Never keep a "
+            "you must always have in mind (who someone is, a lasting wish). When it is about "
+            "someone you keep a record of, with or without an access, give their name in about, "
+            "always; about anyone else it stays free text, attached once you open their record. "
+            "Never keep a "
             "password, a key or a code. If what you keep comes from the person's own message, "
             "give in their_words the passage it comes from, copied word for word; always for "
             "what they tell you about another person: only then can what that person later "
             "confirms or denies count for them. A lesson is your own conclusion, whoever is "
             "talking: weighed later, never a ban; give lesson_of (the type of action), "
             "lesson_subject (a subject key as the context shows it) or for_everyone when it "
-            "says so. Nobody is shown that you keep it: say so in your words if it helps."
+            "says so. When the owner's rules say that nobody new is kept, keep something about a "
+            "new person only if their words make it an exception: then give in exception_of "
+            "the identifier of that rule, as the rules are shown to you. "
+            "Nobody is shown that you keep it: say so in your words if it helps."
         ),
         parameters={
             "type": "object",
@@ -409,10 +465,16 @@ class MemoryKeep:
                     "type": "boolean",
                     "description": "Whether it is always in your mind.",
                 },
+                "exception_of": {
+                    "type": "string",
+                    "description": "Of the owner's rules, the identifier of the one whose words "
+                    "make this an exception (several: separated by commas).",
+                    "maxLength": MAX_FACT_TEXT_LENGTH,
+                },
                 "about": {
                     "type": "string",
-                    "description": "The name of the person of the household it is about, "
-                    "whenever it is about one.",
+                    "description": "The name of the person it is about, whenever you keep a "
+                    "record of them.",
                     "minLength": 1,
                 },
                 "their_words": {
@@ -479,8 +541,9 @@ class MemoryKeep:
             about = (
                 await _member_named(session, given.subject, ctx, now)
                 if given.about is None
-                else (await resolve_person(session, given.about, now=now, speaker=ctx.person.id)).id
+                else (await record_named(session, given.about, ctx)).id
             )
+            await _no_keeping_about(session, about, given.exception_of, ctx, now)
             try:
                 memory = await keep(
                     session,

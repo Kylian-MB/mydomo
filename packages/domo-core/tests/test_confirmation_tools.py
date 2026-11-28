@@ -25,6 +25,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from chat_support import Reply, confirmation_cards, status_of
 from domo_common.i18n import t
+from domo_core.accounts.actors import actor_of
 from domo_core.chat.models import Conversation, Message
 from domo_core.chat.store import ConversationStore
 from domo_core.confirmations import service as confirmations_service
@@ -625,7 +626,7 @@ async def test_a_reminder_lets_the_next_yes_answer_the_request(
     adult_chat, display_name_of
 ):  # R74: the reply that reminds presents the request again
     reply = await adult_chat.say_with_tool("profile_rename", {"name": "Alex B"})
-    adult_chat.use_model(FakeChatModel(tool_script=["unclear", "Je sais lister le foyer."]))
+    adult_chat.use_model(FakeChatModel(tool_script=["unclear", "Je sais lister la maison."]))
     await adult_chat.say("qu'est-ce que tu sais faire ?")
     again = await adult_chat.say_with_tool(
         "confirmation_remind", {"request_id": str(reply.pending_confirmation_id)}
@@ -1784,7 +1785,7 @@ def agreeing(
     of the turn, one by one)."""
     return ToolContext(
         session_factory=lambda: nullcontext(session),
-        actor=Actor(person.id, person.role),
+        actor=actor_of(person),
         person=person,
         conversation_id=uuid.uuid4(),
         origin="",

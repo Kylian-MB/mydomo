@@ -110,6 +110,10 @@ async def test_the_model_only_sees_tools_allowed_for_the_role(guest_chat):
         "note_show",
         "act_on_my_own",
         "asking_agreed",
+        # What the assistant knows of them, which anyone may ask, and being forgotten, which a
+        # guest obtains without the owner's yes (spec 6.8).
+        "record_look",
+        "forget_me",
         "model_rekey",
         "key_add",
         "key_remove",
@@ -468,7 +472,7 @@ async def test_someone_removed_while_their_reply_streams_can_do_nothing_more(
     async def removed() -> None:
         async with chat_server.session_factory() as writer:
             await writer.execute(
-                text("UPDATE persons SET disabled_at = now() WHERE id = :id"),
+                text("UPDATE persons SET disabled_at = now(), state = 'gone' WHERE id = :id"),
                 {"id": adult_chat.person.id},
             )
             await writer.commit()
@@ -561,7 +565,17 @@ async def test_the_prompt_says_domo_can_act_when_it_has_tools(
             successors=[] if is_owner else None,
             today=today_of(chat.clock(), None),
             household=tuple(
-                HouseholdLine(name, role, is_you=name == person.display_name)
+                # The owner's turns see where each stands and who has an account.
+                HouseholdLine(
+                    name,
+                    role,
+                    is_you=name == person.display_name,
+                    standing="lives_here",
+                    child=role == "child",
+                    has_account=True,
+                )
+                if is_owner
+                else HouseholdLine(name, role, is_you=name == person.display_name)
                 for name, role in (
                     ("Owner", "owner"),
                     ("Alex", "adult"),
@@ -621,7 +635,10 @@ async def test_a_model_without_tool_support_is_told_it_cannot_act(owner_chat, ca
         can_act=False,
         successors=[],
         today=today_of(owner_chat.clock(), None),
-        household=(HouseholdLine("Owner", "owner", is_you=True),),
+        household=(
+            # The owner's turns see where each stands and who has an account.
+            HouseholdLine("Owner", "owner", is_you=True, standing="lives_here", has_account=True),
+        ),
         # No model of meanings in the pilots: the search works by words alone.
         memory=MemoryBlock(search="words_only"),
         models=PILOTS_MODEL,

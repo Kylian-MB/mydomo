@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from chat_support import ChatServer
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.llm.lessons import (
     ALL_REASONS,
@@ -30,7 +31,7 @@ from domo_core.llm.picker import MAX_RETRIES_UP, MAX_STEP_UPS
 from domo_core.llm.types import ToolCall
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.catalog import DEFAULT_POLICY
-from domo_core.policy.roles import Actor, as_role
+from domo_core.policy.roles import Actor
 from domo_core.tools.context import ToolContext
 from domo_core.tools.registry import TOOLS, InvalidArguments
 from fakes import FakeChatModel, is_judge_call
@@ -745,7 +746,7 @@ def a_context(person: Person) -> ToolContext:
     """The context of a call outside a turn (no models), for what needs no database."""
     return ToolContext(
         session_factory=None,  # type: ignore[arg-type]
-        actor=Actor(person.id, as_role(person.role)),
+        actor=actor_of(person),
         person=person,
         conversation_id=uuid.uuid4(),
         origin="https://domo.example.com/",

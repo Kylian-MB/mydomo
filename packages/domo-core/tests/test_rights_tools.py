@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 from chat_support import ChatPilot, Reply, confirmation_cards, status_of, tool_results
 from domo_common.i18n import t
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.confirmations.models import Confirmation
 from domo_core.llm.models import ProviderModel
@@ -37,7 +38,6 @@ from domo_core.policy.catalog import DEFAULT_POLICY
 from domo_core.policy.models import PolicyRight, RightsDraft
 from domo_core.policy.rights import load_rights, pause_personal_rights
 from domo_core.policy.rights_writer import MAX_OWNER_WORDS, WRITER_FIRST_LINE, WRITER_TOOL
-from domo_core.policy.roles import Actor, as_role
 from domo_core.tools import rights_tools
 from domo_core.tools.context import BoundsItsOwnSteps, InvalidArguments, ToolContext
 from domo_core.tools.registry import TOOLS
@@ -52,8 +52,12 @@ from sqlalchemy import delete, func, select
 
 
 def days_at_most(days: int) -> str:
-    """The limit of guests invited for ``days`` days at most."""
-    return f'action.facts.role == "guest" && action.facts.days <= {days} ? "allow" : "refuse"'
+    """The limit of guests invited for ``days`` days at most (a stay may have no end: the days
+    are read only when they are there)."""
+    return (
+        'action.facts.role == "guest" && action.facts.days != null '
+        f'&& action.facts.days <= {days} ? "allow" : "refuse"'
+    )
 
 
 THREE_DAYS = days_at_most(3)
@@ -64,11 +68,19 @@ WORDS = "Alex peut inviter des invités, 3 jours au plus"
 def alex_invites(alex: uuid.UUID, *, summary: str = SUMMARY, days: int = 3) -> dict[str, Any]:
     """The writer's draft of "Alex may invite guests, ``days`` days at most" (2 or more)."""
 
-    def invite(role: str, days: int | None, name: str, expected: str) -> dict[str, Any]:
+    def invite(
+        role: str, days: int | None, name: str, expected: str, *, first: bool = False
+    ) -> dict[str, Any]:
         return {
             "person_id": str(alex),
             "action_type": "household.invite",
-            "facts": {"role": role, "days": days, "display_name": name, "owner_first": False},
+            "facts": {
+                "role": role,
+                "days": days,
+                "no_end": False,
+                "display_name": name,
+                "owner_first": first,
+            },
             "expected": expected,
         }
 
@@ -90,6 +102,8 @@ def alex_invites(alex: uuid.UUID, *, summary: str = SUMMARY, days: int = 3) -> d
             invite("guest", 2, "Dana", "domo_judges"),
             invite("adult", None, "Eve", "refused"),
             invite("guest", 40, "Finn", "refused"),
+            # The right's limit replaces the default one of inviting: it shows it no longer holds.
+            invite("guest", 2, "Tom", "domo_judges", first=True),
         ],
     }
 
@@ -230,6 +244,7 @@ async def test_the_owner_proposes_a_right_and_sees_its_examples(
                     display_name="Dana",
                     role="guest",
                     days="2 days",
+                    no_end="no",
                     owner_first="no",
                 ),
                 "outcome": "domo_judges",
@@ -242,6 +257,7 @@ async def test_the_owner_proposes_a_right_and_sees_its_examples(
                     display_name="Eve",
                     role="adult",
                     days=t("rights.example.no_end", "en"),
+                    no_end="no",
                     owner_first="no",
                 ),
                 "outcome": "refused",
@@ -254,9 +270,23 @@ async def test_the_owner_proposes_a_right_and_sees_its_examples(
                     display_name="Finn",
                     role="guest",
                     days="40 days",
+                    no_end="no",
                     owner_first="no",
                 ),
                 "outcome": "refused",
+            },
+            {
+                "situation": t(
+                    "rights.example.household.invite",
+                    "en",
+                    who="Alex",
+                    display_name="Tom",
+                    role="guest",
+                    days="2 days",
+                    no_end="no",
+                    owner_first="yes",
+                ),
+                "outcome": "domo_judges",
             },
         ],
     }
@@ -269,6 +299,7 @@ async def test_the_owner_proposes_a_right_and_sees_its_examples(
         "domo_judges",
         "refused",
         "refused",
+        "domo_judges",
     ]
     assert await rights_of(session_factory) == []
 
@@ -598,6 +629,7 @@ async def test_a_paused_right_is_given_back_by_writing_it_again(
                 "facts": {
                     "role": "guest",
                     "days": 2,
+                    "no_end": False,
                     "display_name": "Dana",
                     "owner_first": False,
                 },
@@ -636,6 +668,7 @@ def takes_away_alexs_right(owner: uuid.UUID, alex: uuid.UUID) -> dict[str, Any]:
                 "facts": {
                     "role": "guest",
                     "days": 2,
+                    "no_end": False,
                     "display_name": "Dana",
                     "owner_first": False,
                 },
@@ -709,7 +742,15 @@ def asks_before_removing(owner: uuid.UUID, alex: uuid.UUID, **change: Any) -> di
             {
                 "person_id": str(owner),
                 "action_type": "household.remove",
-                "facts": {"person": f"person:{alex}", "current_role": "adult", "is_self": False},
+                "facts": {
+                    "person": f"person:{alex}",
+                    "current_role": "adult",
+                    "is_self": False,
+                    # What a removal says of the record it acts on.
+                    "made_role": None,
+                    "has_account": True,
+                    "state": "has_access",
+                },
                 "expected": "domo_judges" if rule.get("remove") else "asks_them",
             }
         ],
@@ -846,12 +887,20 @@ async def test_the_rights_tools_are_the_owners_and_described_for_the_barrier():
 async def test_the_owner_sets_a_rule_for_guests_before_the_first_guest(
     owner_chat, adult_member, session_factory
 ):
-    def as_a_guest(role: str, days: int | None, expected: str) -> dict[str, Any]:
+    def as_a_guest(
+        role: str, days: int | None, expected: str, *, first: bool = False
+    ) -> dict[str, Any]:
         return {
             "person_id": None,
             "role": "guest",
             "action_type": "household.invite",
-            "facts": {"role": role, "days": days, "display_name": "Dana", "owner_first": False},
+            "facts": {
+                "role": role,
+                "days": days,
+                "no_end": False,
+                "display_name": "Dana",
+                "owner_first": first,
+            },
             "expected": expected,
         }
 
@@ -870,6 +919,7 @@ async def test_the_owner_sets_a_rule_for_guests_before_the_first_guest(
             as_a_guest("guest", 2, "domo_judges"),
             as_a_guest("adult", None, "refused"),
             as_a_guest("guest", 40, "refused"),
+            as_a_guest("guest", 2, "domo_judges", first=True),
         ],
     }
     reply, model = await propose(owner_chat, "Les invités peuvent inviter", draft)
@@ -879,7 +929,12 @@ async def test_the_owner_sets_a_rule_for_guests_before_the_first_guest(
     assert shown["roles_without_people"] == ["child", "guest"]  # the owner and Alex only
     [result] = model.results
     assert result["rights"] == [summary]
-    assert [e["outcome"] for e in result["examples"]] == ["domo_judges", "refused", "refused"]
+    assert [e["outcome"] for e in result["examples"]] == [
+        "domo_judges",
+        "refused",
+        "refused",
+        "domo_judges",
+    ]
     assert result["examples"][0]["situation"] == t(
         "rights.example.household.invite",
         "en",
@@ -887,6 +942,7 @@ async def test_the_owner_sets_a_rule_for_guests_before_the_first_guest(
         display_name="Dana",
         role="guest",
         days="2 days",
+        no_end="no",
         owner_first="no",
     )
     [stored] = await drafts(session_factory)
@@ -1207,6 +1263,13 @@ async def test_an_example_the_tools_always_refuse_is_never_shown(
                     "current_role": "adult",
                     "role": "child",
                     "days": None,
+                    "no_end": False,
+                    "made_role": None,
+                    "has_account": True,
+                    "state": "has_access",
+                    "comes_to_live": False,
+                    "off_the_guests_key_rule": False,
+                    "may_then_agree_for_a_child": False,
                 },
                 "expected": "domo_judges",
             }
@@ -1229,7 +1292,7 @@ def owners_turn(owner: ChatPilot, model: ChatModel | None, *, person: Person | N
     who = owner.person if person is None else person
     return ToolContext(
         session_factory=owner.server.session_factory,
-        actor=Actor(who.id, as_role(who.role)),
+        actor=actor_of(who),
         person=who,
         conversation_id=uuid.uuid4(),
         origin="http://127.0.0.1/",

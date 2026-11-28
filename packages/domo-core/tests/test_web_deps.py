@@ -59,6 +59,7 @@ async def test_a_removed_person_is_sent_to_the_login(client, session, add_person
     token = await create_session(session, account.id, ttl=timedelta(days=1))
     assert (await client.get("/whoami", headers=with_cookie(token))).status_code == 200
     member.disabled_at = datetime.now(UTC)
+    member.state = "gone"
     await session.flush()
     r = await client.get("/whoami", headers=with_cookie(token))
     assert r.status_code == 303
@@ -173,9 +174,11 @@ async def test_a_page_for_an_action_is_for_whoever_the_rights_give_it_to(
     async def status(token: str) -> int:
         return (await client.get("/can-invite", headers=with_cookie(token))).status_code
 
-    # By default the owner's and the adults' (0.9.1), and no child's.
-    assert [await status(owner_token), await status(tokens["adult"])] == [200, 200]
+    # By default the owner's alone: inviting is in no role (ruling 14).
+    assert [await status(owner_token), await status(tokens["adult"])] == [200, 403]
     assert [await status(tokens["child"]), await status(tokens["other"])] == [403, 403]
+    await a_right(session, owner_account.person_id, person_id=adult.id, access="allow")
+    assert await status(tokens["adult"]) == 200
 
     # A right of the person is theirs only; a right of a role is its people's.
     await a_right(session, owner_account.person_id, person_id=other.id, access="allow")

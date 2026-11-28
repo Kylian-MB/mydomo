@@ -72,6 +72,7 @@ from domo_core.llm.choices import load_choices
 from domo_core.llm.types import JsonObject, ToolDefinition
 from domo_core.memory.service import get as get_memory
 from domo_core.memory.service import refuses_secret_shapes, unconfirmed
+from domo_core.people import whose
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.roles import Actor
 from domo_core.text import MAX_DISPLAY_NAME_LENGTH, is_plain_line
@@ -239,7 +240,14 @@ async def _notable(
     still unconfirmed, that gave no confirmed fact yet. The reporter of a ``reported`` fact is the
     person who speaks in a turn that answers a message of theirs; in any other turn it is the
     sayer of the memory the fact rests on (``_reporter``). ``InvalidArguments`` otherwise."""
-    person = await resolve_person(session, given.person, now=ctx.clock(), speaker=ctx.person.id)
+    person = await resolve_person(
+        session,
+        given.person,
+        now=ctx.clock(),
+        speaker=ctx.person.id,
+        among="records",
+        detailed=whose.may_see_every_record(ctx, ctx.acting),
+    )
     if person.id == ctx.person.id:
         raise InvalidArguments("not_possible", _NOT_ABOUT_ONESELF)
     if given.how == "confirmed" and given.memory is not None:
@@ -378,6 +386,7 @@ class TrustNote:
     # The argument that names someone of the household: given its whole name before the call is
     # described (``tools.context.NamesPeople``, spec 6.7).
     person_arguments: Final = ("person",)
+    names_among: Final = "records"
 
     async def describe(
         self, arguments: JsonObject, actor: Actor, ctx: ToolContext

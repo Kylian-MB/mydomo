@@ -5,6 +5,7 @@ from pathlib import Path
 import domo_core
 import pytest
 from alembic import command
+from alembic.script import ScriptDirectory
 from domo_core.accounts.models import Person
 from domo_core.db import Base, load_models
 from domo_core.migrate import MIGRATIONS_DIR, alembic_config, upgrade_to_head
@@ -72,6 +73,14 @@ ALL_TABLES = {
     "open_addresses",
     "went_wrong",
     "service_accounts",
+    "roles",
+    "role_accesses",
+    "person_links",
+    "access_promises",
+    "owner_directives",
+    "record_merges",
+    "person_acts",
+    "person_channel_refs",
     "voice_refs",
     "voice_prints",
     "voice_moments",
@@ -243,19 +252,21 @@ async def test_going_back_down_cancels_the_return_links_that_wait(scratch_databa
         async with engine.begin() as connection:
             await connection.execute(
                 text(
-                    "INSERT INTO persons (id, display_name, role, disabled_at) VALUES "
-                    "('00000000-0000-0000-0000-000000000001', 'Owner', 'owner', NULL), "
-                    "('00000000-0000-0000-0000-000000000002', 'Away', 'adult', now())"
+                    "INSERT INTO persons (id, display_name, role, disabled_at, state) VALUES "
+                    "('00000000-0000-0000-0000-000000000001', 'Owner', 'owner', NULL, "
+                    "'has_access'), "
+                    "('00000000-0000-0000-0000-000000000002', 'Away', 'adult', now(), 'gone')"
                 )
             )
             await connection.execute(
                 text(
                     "INSERT INTO invitations (token_hash, display_name, role, created_by, "
-                    "expires_at, person_id) VALUES "
+                    "expires_at, person_id, kind) VALUES "
                     "('h1', 'Away', 'adult', '00000000-0000-0000-0000-000000000001', "
-                    "now() + interval '7 days', '00000000-0000-0000-0000-000000000002'), "
+                    "now() + interval '7 days', '00000000-0000-0000-0000-000000000002', "
+                    "'return'), "
                     "('h2', 'New', 'adult', '00000000-0000-0000-0000-000000000001', "
-                    "now() + interval '7 days', NULL)"
+                    "now() + interval '7 days', NULL, 'new')"
                 )
             )
         await asyncio.to_thread(command.downgrade, config, "0011")
@@ -356,14 +367,14 @@ async def test_going_back_down_drops_the_requests_that_wait_for_the_owner(scratc
 async def test_the_limits_keep_what_domo_could_not_tell_and_stays_up_to_a_year(
     scratch_database_url,
 ):
-    """A request keeps the question Domo could not answer, and a guest's stay goes up to the
-    technical ceiling (the household's rule of 30 days is a limit of the catalog). Going back
-    down brings a longer stay back to 30 days: shorter than allowed, never longer."""
+    """A request keeps the question Domo could not answer, and a guest's stay goes up to a year
+    (until ``0074`` takes the ceiling away: ``test_people_stays.py``). Going back down brings a
+    longer stay back to 30 days: shorter than allowed, never longer."""
     config = alembic_config(scratch_database_url)
     await asyncio.to_thread(command.upgrade, config, "0013")
     before = await schema_of(scratch_database_url)
     assert "ask_reason" not in {row[1] for row in before["columns"] if row[0] == "confirmations"}
-    await asyncio.to_thread(command.upgrade, config, "head")
+    await asyncio.to_thread(command.upgrade, config, "0073")
     after = await schema_of(scratch_database_url)
     added = [row for row in after["columns"] if row[:2] == ("confirmations", "ask_reason")]
     assert added == [("confirmations", "ask_reason", "text", "YES", None)]
@@ -2292,3 +2303,19 @@ async def test_0069_lets_a_memory_come_from_an_unsure_voice_and_takes_it_back(
     finally:
         await engine.dispose()
     assert await schema_of(scratch_database_url) == before
+
+
+def test_the_line_logged_for_each_migration_quotes_no_word_the_voice_trial_says():
+    """Alembic logs every step at start ("Running upgrade 0074 -> 0075, <first paragraph of the
+    docstring>"). The voice trial checks that none of the words it says out loud reaches the
+    core's log: a migration's example sentence quoting one of them would make that check fail for
+    a reason that is not something heard."""
+    heard = ("lumière", "lumiere", "salon", "fromage", "garage")
+    scripts = ScriptDirectory.from_config(alembic_config("postgresql+asyncpg://unused/unused"))
+    logged = {script.revision: (script.doc or "").lower() for script in scripts.walk_revisions()}
+    assert logged
+    assert {
+        revision: [word for word in heard if word in line]
+        for revision, line in logged.items()
+        if any(word in line for word in heard)
+    } == {}

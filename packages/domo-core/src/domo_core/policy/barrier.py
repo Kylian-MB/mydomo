@@ -39,7 +39,10 @@ The rules, in this order (spec 4.4, 5.8):
    adult's when a right says so, the owner's when a right says so (never for the owner's own
    request), and, when no right names anyone, an adult's for a child on the types of
    ``catalog.ADULT_AGREES_FOR_A_CHILD`` (a right that opens such a type to a child keeps the adult,
-   unless it says the child agrees for themselves, ``self``); otherwise the action is allowed.
+   unless it says the child agrees for themselves, ``self``). A child-marked person allowed
+   something a child does not have (by the owner's right for them, or for the role "child") has
+   an adult's agreement set by the code (``rights.RightsTable.resolve``), unless that right names
+   another approver; otherwise the action is allowed.
    An adult's agreement for a child that no right asks for (the catalog's default) is left to the
    yes-judge first too (``judge_first``): an adult's yes already heard for this very request lets
    it through; otherwise the adult is asked. An approver a right names is the owner's word: never
@@ -109,8 +112,11 @@ from domo_core.policy.rights import NO_RIGHTS, Limit, Resolved, RightsTable
 from domo_core.policy.roles import Actor, Role, actor_label, domo_actor
 from domo_core.policy.settings import OrdinaryWhenUnsure
 
-# ``limit``: a limit refused it; ``limit_error``: a limit could not say (refused all the same).
-RefusalReason = Literal["not_allowed", "untrusted_identity", "limit", "limit_error"]
+# ``limit``: a limit refused it; ``limit_error``: a limit could not say (refused all the same);
+# ``owner_directive``: a directive of the owner's on people applies (``people.directives``).
+RefusalReason = Literal[
+    "not_allowed", "untrusted_identity", "limit", "limit_error", "owner_directive"
+]
 
 
 @dataclass(frozen=True)
@@ -214,14 +220,21 @@ def may_act_weakly(action_type: str, policy: PolicyTables, *, risks: Risks | Non
     return action_type in WEAKLY_FINE
 
 
-def given_for_an_idea(policy: PolicyTables, role: Role, action_type: str) -> PolicyTables:
+def given_for_an_idea(
+    policy: PolicyTables, role: Role, action_type: str, *, child: bool = False
+) -> PolicyTables:
     """``policy`` with ``action_type`` given by the catalog to ``role`` (ruling R26): the barrier
     decides so for the person of the turn when the assistant marked a call as his own idea, so
     that only a right not given is lifted. A right the owner wrote (a deny, an approver, a limit,
     "ask me first") and the rules of the barrier still count, and the stricter of that decision
-    and the assistant's applies (``stricter``)."""
-    given = policy.allowed.get(role, frozenset()) | {action_type, rights_type(action_type)}
-    return replace(policy, allowed={**policy.allowed, role: given})
+    and the assistant's applies (``stricter``). A child-marked person (``child``) is read with the
+    set of the role ``child`` (``policy.rights``): the type is given there too, so that the
+    assistant's own idea is never refused because the turn is a visiting child's."""
+    added = {action_type, rights_type(action_type)}
+    allowed = {**policy.allowed, role: policy.allowed.get(role, frozenset()) | added}
+    if child:
+        allowed["child"] = policy.allowed.get("child", frozenset()) | added
+    return replace(policy, allowed=allowed)
 
 
 def approval_needed(actor: Actor, resolved: Resolved, action_type: str) -> NeedsApproval | None:
@@ -239,7 +252,7 @@ def approval_needed(actor: Actor, resolved: Resolved, action_type: str) -> Needs
         case "self":
             approver = None
         case None:
-            approver = "adult" if an_adult_agrees_for(actor.role, action_type) else None
+            approver = "adult" if an_adult_agrees_for(actor.child, action_type) else None
     if approver is None:
         return None
     return NeedsApproval(approver, None, resolved.ask, resolved.never_ask)

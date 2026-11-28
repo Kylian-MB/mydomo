@@ -2,7 +2,8 @@
     (household/routes.py). ``invitation`` is the open invitation of the link, or none: the link
     cannot be used (unknown, used, cancelled or expired), and the page says only that, the same for
     each case. ``token`` is the link's own token (the form posts back to it); ``stay`` is a guest's
-    stay in words. ``returning_username`` is set for a return link: the username the person keeps,
+    stay in words; ``username`` the one the form holds (the one the assistant proposed, until the
+    person typed another). ``returning_username`` is set for a return link: the username the person keeps,
     shown as text; only a new password is asked. The password is never put back in the form. Every
     value is output through autoescaping: the name was written by the owner, or by the model on
     their behalf, and the username by the person. -#}
@@ -44,7 +45,10 @@
         <label for="username">{{ t("invite.username") }}</label>
         <input id="username" name="username" type="text" value="{{ username }}"
                autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"
-               required autofocus>
+               {% if invitation.proposed_username %}aria-describedby="username-hint" {% endif %}required autofocus>
+{% if invitation.proposed_username %}
+        <p id="username-hint" class="muted">{{ t("invite.username_proposed") }}</p>
+{% endif %}
         <label for="password">{{ t("invite.password") }}</label>
         <input id="password" name="password" type="password" autocomplete="new-password"
                minlength="{{ min_password_length }}" aria-describedby="password-hint" required>

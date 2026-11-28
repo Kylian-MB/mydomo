@@ -12,13 +12,14 @@ assistant's core process can never read.
 a server, create the owner account, choose the AI model it talks to (Anthropic,
 OpenAI, Google, or any server that speaks the OpenAI API, such as one running
 on your own network), and chat with it in a web page, from a computer or a
-phone. The owner invites the people they live with (adults, children, guests),
-and each person has their own account and their own conversation. The assistant can
-now do a few things: leave a note for someone, invite people and change their
-role, help the owner change the model's key. The assistant judges, for each action,
-whether to do it, to ask for a yes, the button, or a proof that it is you; the
-owner's rules and the rights come first. People can sign in with a passkey instead of
-their password. Every important action is written to a tamper-evident audit
+phone. The assistant keeps the people of the household himself: the people you
+live with, your guests, and those who matter to the household, with or without
+an account. Whoever has an account has their own conversation. The assistant
+can now do a few things: leave a note for someone, invite people and change
+their role, make roles of his own, help the owner change the model's key. The
+assistant judges, for each action, whether to do it, to ask for a yes, the
+button, or a proof that it is you; the owner's rules and the rights come first.
+People can sign in with a passkey instead of their password. Every important action is written to a tamper-evident audit
 log that the owner can read. Everything you read is the assistant's, for you, in your
 language: he starts from default phrases in English and in French, and rewrites
 them when he has a reason to (see
@@ -224,20 +225,53 @@ at `https://<address>:8443/audit`, and see the household at
 
 ## The household
 
-The assistant is shared by the people you live with. The owner, the person who set it
-up, invites the others. Each person has their own account, their own password
-and their own conversation: the assistant shows it to nobody else, not even the
-owner.
+The assistant is shared by the people you live with. You, the owner, set it up.
+After that, the assistant keeps the people of the household himself, from what
+he is told, hears and reads: he asks you as little as he can. Whoever has an account
+has their own password and their own conversation: the assistant shows it to
+nobody else, not even you.
 
 Everything goes through the chat, in your own words: "invite Alex as an
-adult", "invite Sam as a guest for a week", "Alex is an adult now". There is
-no form to fill in.
+adult", "invite Sam as a guest for a week", "Alex is an adult now", "my parents
+come on Saturday". There is no form to fill in.
 
-- **Roles.** At the start, the owner can do everything on this list. Adults and
-  children can ask who is in the household and leave notes, for anyone, a guest
-  included. Adults can also invite someone, as the point on inviting says. A
-  guest can talk with the assistant and change their own name. The owner can change
-  this, as the next point says.
+- **The people of the household.** For each person who counts, the assistant
+  keeps a record: their name as the household says it, whether they live here,
+  come by, or never come, whether they are a child, their role, what they may do, and what
+  they are to the others ("Paul's friend", "Dana's mother"). Two records may
+  have the same name. He opens one for whoever lives here, comes, will come or is
+  given access, and, if he judges so, for someone who matters to the household and
+  keeps coming up; never for a name said in passing, which stays a memory. What
+  he knows of a person stays in his memory, tied to their record. A record gives
+  nothing by itself.
+- **An access is not an account.** An access is the right to use the assistant;
+  the record carries it, through its role and the rights given to that person.
+  An account (a username, a password, passkeys) is only the way to talk to him on
+  one's own device: the people who live here get one, and anyone else when you
+  ask, or when the assistant judges it useful (he then tells you). The
+  assistant can give access to someone, or take it back, on his own when he
+  judges it right. "Give my partner and her children access": if he does not
+  know them yet, he notes a **promise**, and keeps it the day he recognises them,
+  without asking again; when he doubts, he waits. Only your promise is an order:
+  someone else's is a request he judges when the time comes.
+- **Roles.** At the start, there are four: owner, adult, child and guest. You can
+  do everything on this list. Adults and children can ask who is in the
+  household and leave notes, for anyone, a guest included. A guest can talk with
+  the assistant and change their own name. Inviting, giving a role, removing or
+  bringing someone back, and every other change to the people of the household, are
+  yours and the assistant's: anyone else asks him, and he judges. You can change
+  all this, as the next point says.
+- **The roles the assistant makes.** When he needs one ("best friend",
+  "neighbour", "nanny"), the assistant makes a role, gives it a name, changes it,
+  and deletes it once nobody has it. Each one starts from an adult of the
+  household, a child, or someone passing by, and adds or takes away what he
+  judges right. It never holds what is yours alone (the rules and rights, your
+  successors, handing over your role, the level of the models, sharing a house
+  account). It does not give the spending limits either, nor the changes to
+  people and roles, nor what the assistant does not have himself. You can still
+  open the changes to people and roles to a precise person yourself. A role
+  never lifts what protects a child: someone marked as a child keeps an adult's
+  agreement and gets nothing kept for adults, whatever their role.
 - **Rights and limits.** The owner decides who may do what, and tells the assistant in
   their own words: "Alex may invite guests, 3 days at most", "guests can no
   longer rename themselves", "Sam's notes go through an adult". A right is for a
@@ -271,15 +305,21 @@ no form to fill in.
   by telling the assistant ("give the rights writer two minutes"). When it runs out of
   time, nothing is written and the audit log notes it; if it happens often,
   The assistant can suggest more time, and never changes it without the owner's yes.
-- **Inviting someone.** The owner and the adults can invite. The assistant prepares
-  the invitation and judges whether to ask for a yes. When an adult asks, he
-  judges too whether the owner should agree first: their own child joins at
-  once; someone the household does not know, another adult, or someone who will
-  use the owner's keys waits for the owner's yes. An adult gives the link again,
-  or cancels, only an invitation they made; the owner, any. Once it is done, the card under the assistant's reply shows the invitation's
-  link, **only that once**: send it yourself, by message or by email. The link
-  works once, for 7 days, and the assistant never sees it. The person opens it,
-  chooses a username and a password, and lands in their own chat. When someone
+- **Inviting someone.** An invitation gives someone an account. You and the
+  assistant invite; anyone else asks him. He prepares the invitation and judges
+  whether to ask for a yes. When someone else asks, he judges too whether you
+  should agree first, and the invitation then waits for your yes. He may also
+  invite someone on his own, someone passing by included: you are then told. A
+  person gives the link again, or cancels, an invitation they made; one the
+  assistant made, whoever has the right to may, and he judges; you, any. Once it
+  is done, the card under the assistant's reply shows the invitation's
+  link, **only that once**: send it yourself, by message or by email. If the
+  assistant has a tool that can write to the person's address, he can send it
+  himself: the link goes into the message without him or his tool ever seeing
+  it. The link works once, for 7 days. The person opens it, finds a username
+  already proposed, chooses a password, and lands in their own chat; if the
+  assistant already had a record for them, the account joins it, with what he
+  knows of them. When someone
   else says yes to the invitation of a person who has the right to invite (the
   owner, say), the link is for the person who asked: a "Show the link" button on
   their card shows it, once, to them alone. If they say yes themselves, it is
@@ -292,26 +332,34 @@ no form to fill in.
   yes, and the new one waits behind the "Show the link" button of the card of
   the one who asked. If someone other than you asks for the link again, your own
   "Show the link" button, if it still waited, no longer gives a link: the new
-  one is theirs to send.
-- **Guests.** A guest's access ends after a stay chosen when they are invited
-  (2 days by default). The household's rule at the start is 30 days at most;
-  the owner can change that rule by telling the assistant (up to 365 days). Someone who
-  becomes a guest later gets a stay the same way. A guest may stay longer or
-  shorter than planned: "Sam is staying until Sunday after all", "Sam leaves
-  tomorrow". The new stay counts from now, under the same household rule, and the
-  card says the new end date.
+  one is theirs to send. You, and only you, can ask to see a link that waits for
+  someone else ("show me Dana's link"): it is shown to you once, and that person
+  is told.
+- **Guests.** Any length of stay is accepted, from one day up, and a stay may have no
+  end. When nothing is said, a guest invited with an account stays 30 days;
+  that is only a default. A longer stay, or one with no end, is your order or the assistant's
+  judgement. If you write a rule on the length of a stay ("guests, 10 days at
+  most"), it comes first, and "no end" counts as longer than any number. For a
+  guest without an account, the assistant judges when they have left, and can
+  give them access again at their next visit. Someone who becomes a guest later
+  gets a stay the same way. A guest may stay longer or shorter than planned:
+  "Sam is staying until Sunday after all", "Sam leaves tomorrow". The new stay
+  counts from now, under the same rules, and the card says the new end date.
 - **Changing a role, removing someone.** Ask the assistant. Removing someone closes
   their account at once and signs them out everywhere; what they wrote is kept.
   An invitation that is still waiting can be cancelled: its link stops working.
-  The rights the owner gave that person alone are paused as soon as they leave;
-  the owner can still take them away while the person is gone ("Paul left, take
-  away his right to invite").
+  The rights you gave that person alone are paused as soon as they leave;
+  you can still take them away while the person is gone ("Paul left, take
+  away his right to invite"). When you remove someone, it is one of your
+  directives (see below): the assistant never gives them anything back on his
+  own. Someone who left on their own, or whom the assistant removed, is under no
+  directive: he may bring them back.
 - **Leaving the household.** Anyone can ask the assistant to leave: "remove me from the
   household". A guest can leave early that way. An adult or a guest says yes
   themselves; for a child, an adult says yes. The owner never leaves that way:
-  they hand their role over first. Removing someone else stays the owner's, or
-  that of whoever they gave the right to. Nothing is erased, and the person can
-  come back.
+  they hand their role over first. Removing someone else stays yours and the
+  assistant's, or that of whoever you gave the right to. Nothing is erased, and
+  the person can come back (to be forgotten, see "Forget me" below).
 - **Bringing someone back.** A person who was removed, or a guest whose stay is
   over, can come back: ask the assistant "bring Alex back". The assistant judges whether
   to ask for a yes, then the card shows a link, once, as for an invitation. The
@@ -323,6 +371,45 @@ no form to fill in.
   says which to give back. If two people who left had the same name, the assistant asks
   which one. If the person lost their link, "make Alex's link again" makes a new
   one, with a single yes: the old one stops working, and the card says so.
+  Someone you removed comes back only on your own word, which lifts your
+  directive.
+- **Your directives.** Three orders of yours on the people of the household come
+  before anything the assistant judges; you alone give them and lift them.
+  "Don't make new people": he opens no record and gives no access to anyone
+  new; the records already there do not move. If you add "don't keep them
+  either", he keeps nothing more tied to new people's records. "Take away
+  Sam's access": all their accesses end at once, their sessions and devices are cut, the record stays,
+  and the assistant never gives them anything back. "Refuse Tom": the same,
+  before Tom ever had anything; it works for someone he does not know yet too,
+  from a description. A directive can have an end ("during Saturday's party")
+  or an exception in words ("except the family"), which the assistant judges.
+  You can also tell him "accept", "give access to", "make an account for",
+  "send them the link": he does it with what he has.
+- **Your two rules.** "Tell me each time you give access to someone new": a
+  message then always reaches you. Without it, the assistant judges whether to
+  tell you, and may suggest the rule the first time he gives access on his own.
+  "Guests come with their own key": see
+  [Models and the budget](#models-and-the-budget).
+- **When he gets it wrong.** The assistant puts two records of one person
+  together as soon as he understands it ("Grandma and my mother are the same
+  person"), and can split them again for **90 days**: that is how long he keeps
+  what came from each. He erases a record opened by mistake. When someone is not
+  who he thought, he takes back at once the access given by mistake and tells
+  you what was open, since when, and what they did meanwhile. One sentence is
+  enough to correct him ("he is not my brother, he is the neighbour"), and he
+  keeps the lesson.
+- **"Forget me".** Anyone can ask the assistant to forget them, even someone who
+  lives here and has access, without your yes. Since it cannot be undone, he
+  says once what it means, then does it: their accesses end, and their record,
+  their links, nicknames and trust, the memories about them, their
+  conversations and their account are erased. You are told afterwards. You are
+  never forgotten yourself. If you had refused someone or taken their access
+  away, that directive stays, with a short description to know them again.
+- **Not yet: the voice.** Before the assistant can hear people, someone without an
+  account has nowhere to talk to him: they go through someone of the household
+  ("put some music on for Tom"). It is then that person's request, made with
+  their rights; Tom's record only gives the assistant the context. The access on
+  Tom's record will serve the day the assistant can hear him.
 - **Several actions in one sentence.** When a sentence asks for actions that
   depend on each other ("give my role to Alex, then remove me"), the assistant makes
   **one request**: one card that lists the steps in order, and one yes for all
@@ -355,19 +442,21 @@ no form to fill in.
     The assistant tells you. If a rule of the owner on a step left asks more than the
     yes that was given, he first asks you again, and the card says who joined.
     If the link is not used in time, or the invitation
-    is cancelled, the chain stops and the assistant tells you. You can also drop it.
+    is cancelled, the chain stops and the assistant tells you. If he then invites
+    the same person again with the same role, the chain goes on under the same
+    yes. You can also drop it.
   - **Several links.** Each link a chain makes (an invitation, a return) has its
     own "Show the link" button on the card, for the person who asked only, even
     when the chain waits again.
 - **Handing over the owner's role.** The owner can give their role to an adult
-  of the household: "give my access to Justine". It is the owner's alone, no
+  of the household: "give my access to Dana". It is the owner's alone, no
   right can give it. Like any request, once the assistant understood it he does it: he
   does not ask again whether you are sure, unless he doubts what you meant or
   that it is you, or you told him to always ask you first. The person must be an
   adult who is in the household (not a child, a guest, someone who left, nor the
   owner). They do not have to agree. The former owner becomes an adult and
   keeps their account and their conversation; one sentence can hand the role over
-  and remove them ("give my access to Justine and remove me"). There is always
+  and remove them ("give my access to Dana and remove me"). There is always
   exactly one owner, and the role has no end date. It comes back only if the new
   owner hands it back. The rules, the rights, the model's key and the time zone
   stay with the household. For the new owner, the rights they had been given
@@ -422,12 +511,15 @@ no form to fill in.
   sees the notes you left, and the ones left for you until he has told them.
 - **The time zone.** A right that talks about the hour or the day ("only at
   weekends") needs the household's time zone, such as `Europe/Paris`. Tell
-  The assistant once ("our time zone is Europe/Paris"); if it is not set, the assistant asks
+  the assistant once ("our time zone is Europe/Paris"); if it is not set, the assistant asks
   before writing such a right, and never guesses it. (It is not the `TZ`
   variable of `.env`, which is the time zone of the services.)
-- **The pages.** The owner sees who is in the household, and the invitations
-  that wait, at `https://<address>:8443/household` (to change something, ask
-  The assistant). Everyone changes their name, their password and their passkeys on
+- **The pages.** You see the people of the household at
+  `https://<address>:8443/household`: every record, with an account or not,
+  where each one stands, each person's role and what it adds or takes away,
+  the promises that wait, your directives in force, and the
+  invitations that wait. The page only shows: to change something, ask the
+  assistant. Everyone changes their name, their password and their passkeys on
   "My account" (`https://<address>:8443/account`).
 
 ## Confirmations
@@ -499,15 +591,18 @@ idea: he marks single actions.
 
 **What he keeps on his own.** On his own, the assistant keeps his memory, the trust
 he notes from what he saw, his plans, his reminders, his chains and his way of
-writing; he invites, invites again, cancels an invitation, gives a role, removes
+writing; he opens, completes, puts together and erases the records of people,
+makes roles, gives and takes back accesses, and promises them; he invites,
+invites again, cancels an invitation, gives a role, removes
 or brings back someone of the household; he takes back a device (someone else's
 waits for that person's yes when he doubts), and removes an account that no
-longer serves. Sharing a house account stays the
+longer serves. Sharing a house account and your directives stay the
 owner's. What he keeps or sets on his own is his, not the person's whose
 conversation it is. The owner takes back whatever he wants by a rule: a "never",
 or "ask me first", which then waits for the owner's yes. An invitation he makes on
-his own is still recorded with the person of the conversation as the one who
-invited, for now; the audit log says it was him.
+his own is recorded as his, with his reason, and the audit log says it was him.
+A program he wrote never makes a person, changes a role, or gives or takes an
+access: only he does.
 
 **What went wrong, and what he learns.** The code notes what went wrong: a
 request refused (by whom, with the words of the refusal cut short), a request that
@@ -1015,6 +1110,15 @@ model, on which key.
   than their host. For those who arrive next, you can say "from now on, guests no
   longer use my general key": those already there keep what they have, and you can
   take it away from them one by one.
+- **Guests come with their own key.** Someone the assistant gave an account on his
+  own has no host: they use the general key, within its limits. You can set the
+  rule "guests come with their own key". It holds at each turn, whenever it was
+  set and however the person came: someone visiting then uses only a key they
+  gave themselves, or one you let them use by name. Someone who lives here is
+  never touched, and turning the rule off gives the general key back. A visitor
+  with no key still gets the small turn in which the assistant asks them for one,
+  paid by the general key, as long as you allow the general key to serve for
+  that.
 - **Who begins to use your key.** When someone begins to use a key you gave, the
   general key included, the assistant knows it at your next turn: their name, their role,
   who invited them, and what they spent on that key this month (an estimate, in
@@ -1083,7 +1187,7 @@ reason to.
   conversation, what people typed (but names), a web page or a note. Then the
   code and a checker make sure the text says what it must, before it is kept.
   On a request that waits for a yes, the top of the card is written for each
-  person who reads it ("Alex would like to invite Robin this weekend, do you
+  person who reads it ("Alex would like to invite Tom this weekend, do you
   agree?"), on the moment, and checked against the exact action; if that fails
   or is late, the card shows its default phrase. Your yes always applies to the
   exact action, never to the words of the card.

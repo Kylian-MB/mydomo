@@ -25,6 +25,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import is_active
 from domo_core.conversation.channel import NOBODY_LISTENS, Abilities
@@ -35,11 +36,12 @@ from domo_core.llm.listing import ModelLister
 from domo_core.llm.picker import ModelPicker
 from domo_core.llm.types import JsonObject, ToolDefinition
 from domo_core.memory.embedder import NO_EMBEDDER, Embedder
+from domo_core.people.hooks import RecordListeners
 from domo_core.policy.actions import DescribedAction, FactValue, Present
 from domo_core.policy.asks import Ask, Asked
 from domo_core.policy.catalog import HOUSE_SET, PROGRAM_RUN, PolicyTables, is_made, is_silent
 from domo_core.policy.rights import NO_RIGHTS, Approver, RightsTable, load_rights
-from domo_core.policy.roles import Actor, Role, as_role, domo_actor
+from domo_core.policy.roles import Actor, domo_actor
 from domo_core.prompts import DuePlan
 from domo_core.texts.view import REFERENCE, Texts
 
@@ -335,7 +337,9 @@ class ToolContext:
     ``embedder`` is the local model that gives the meaning of memories (``memory.embedder``), for
     a tool that searches them: ``NO_EMBEDDER`` (found by their words alone) outside a turn.
     ``memories_found`` are the memories a search gave Domo in this turn: the turn marks them as
-    served once it is over (``conversation.turn``), never in the call.
+    served once it is over (``conversation.turn``), never in the call. ``forgotten_in_turn`` are
+    the people forgotten at their own request in this turn: what the turn runs in (their
+    conversations, requests and account) goes once it is over (``people.forget.finish``).
 
     ``made_tool_named`` finds, when the model calls it, a tool Domo made that the turn did not
     offer (``t_<name>``, past the ones a turn offers: ``madetools.offered.offer_named``), which
@@ -357,6 +361,15 @@ class ToolContext:
     does there is his idea (``idea_of``). ``judged_as`` is, while a call runs, who it was judged
     as (``judged_actor_of``: Domo for an idea of his), set by whoever runs it and set back after
     (``None`` otherwise): a tool that records who acted reads it (``acting``).
+
+    ``record_listeners`` are the channels told of a merge, a split, an erasure or a forgetting
+    once the tool that made it committed (``people.hooks``): the application's, in a turn, a
+    review and a request run after a yes; nobody, where none is given.
+
+    ``in_review`` is set for a review of what was said (``memory.review``): nobody reads it and
+    no reply is written; every call of a gesture on people there is the assistant's own idea, born
+    of the person reviewed, who may have left (``conversation.execution
+    .needs_them_in_the_household``).
     """
 
     session_factory: SessionFactory
@@ -397,12 +410,15 @@ class ToolContext:
     asked_before: bool = False
     embedder: Embedder = NO_EMBEDDER
     memories_found: set[UUID] = field(default_factory=lambda: set[UUID](), repr=False)
+    forgotten_in_turn: set[UUID] = field(default_factory=lambda: set[UUID](), repr=False)
     made_tool_named: "Callable[[str], Awaitable[InternalTool | None]] | None" = None
     launch_deps: "LaunchDeps | None" = None
     on_his_own: bool = False
     own_idea: OwnIdea | None = None
     turn_reason: str | None = None
     judged_as: Actor | None = None
+    in_review: bool = False
+    record_listeners: RecordListeners = field(default_factory=RecordListeners, repr=False)
     # Never in a representation of the context (a log, an error): someone's own words.
     said: str | None = field(default=None, repr=False)
     said_later: tuple[str, ...] = field(default=(), repr=False)
@@ -477,7 +493,7 @@ class ToolContext:
         approver = await session.get(Person, self.approved_by)
         if approver is None or not is_active(approver, self.clock()):
             return False
-        who = Actor(approver.id, as_role(approver.role))
+        who = actor_of(approver)
         return _sets_at_once(rights, who, self.policy, refuses=False)
 
     def take_ask_more(self) -> tuple[Ask, str] | None:
@@ -625,7 +641,7 @@ async def set_on_a_yes(session: AsyncSession, ctx: ToolContext) -> bool:
     if ctx.approved_by is None or ctx.approved_by == ctx.person.id:
         return False
     rights = await load_rights(session)
-    person = Actor(ctx.person.id, as_role(ctx.person.role))
+    person = actor_of(ctx.person)
     return not rights.resolve(person, HOUSE_SET, ctx.policy).allowed
 
 
@@ -915,28 +931,22 @@ class PlansSteps(Protocol):
         ...
 
 
-# Who is shown the tools when no person is named: nobody's own rights are theirs (no person has
-# this id: the database gives random ones).
-_NOBODY: Final = UUID(int=0)
-
-
 def tools_for(
-    role: Role,
+    actor: Actor,
     registry: Mapping[str, InternalTool],
     policy: PolicyTables,
     *,
-    person_id: UUID | None = None,
     rights: RightsTable = NO_RIGHTS,
     on_his_own: bool = False,
 ) -> list[ToolDefinition]:
-    """The definitions of the tools of ``registry`` that the person ``person_id``, of ``role``,
-    may use: those whose type of action ``rights`` resolve as allowed for them on top of the
-    catalog ``policy`` (``RightsTable.resolve``: the catalog knows the type, and their own right,
-    else their role's, else the catalog gives it; the owner's own actions to the owner only), in
-    the registry's order. Without ``person_id`` only the rights of the role count. A tool that is
-    Domo's own act (``ActsAsDomo``), and every tool in a turn ``on_his_own``, is resolved for
-    Domo himself (``policy.roles.domo_actor``), as the barrier judges its calls."""
-    actor = Actor(_NOBODY if person_id is None else person_id, role)
+    """The definitions of the tools of ``registry`` that ``actor`` (a person, with the marks of
+    their record: a made role and the child mark count) may use: those whose type of action
+    ``rights`` resolve as allowed for them on top of the catalog ``policy``
+    (``RightsTable.resolve``: the catalog knows the type, and their own right, else their role's,
+    else the catalog gives it; the owner's own actions to the owner only), in the registry's
+    order. A tool that is Domo's own act (``ActsAsDomo``), and every tool in a turn
+    ``on_his_own``, is resolved for Domo himself (``policy.roles.domo_actor``), as the barrier
+    judges its calls."""
     domo = domo_actor()
     return [
         tool.definition
@@ -950,24 +960,21 @@ def tools_for(
 
 
 def tools_kept_from(
-    role: Role,
+    actor: Actor,
     registry: Mapping[str, InternalTool],
     policy: PolicyTables,
     *,
-    person_id: UUID | None = None,
     rights: RightsTable = NO_RIGHTS,
     on_his_own: bool = False,
 ) -> tuple[str, ...]:
     """The names of the tools of ``registry`` that the rights in force keep from the person
-    ``person_id``, of ``role`` (``tools_for`` leaves them out), in the registry's order, but the
+    ``actor`` (``tools_for`` leaves them out), in the registry's order, but the
     silent ones (``policy.catalog.is_silent``): they exist in the household and are not theirs to
     ask for (the owner's trial of 0.9.1: Domo said he lacked a tool to add someone). A tool the
     turn left out for another reason (an arrival's) is not in ``registry``, so not here."""
     offered = {
         definition.name
-        for definition in tools_for(
-            role, registry, policy, person_id=person_id, rights=rights, on_his_own=on_his_own
-        )
+        for definition in tools_for(actor, registry, policy, rights=rights, on_his_own=on_his_own)
     }
     return tuple(
         name

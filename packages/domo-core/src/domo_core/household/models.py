@@ -2,15 +2,21 @@
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
-from sqlalchemy import CheckConstraint, ForeignKey, func
+from sqlalchemy import CheckConstraint, ForeignKey, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from domo_core.db import Base
 
+# What an invitation's link does: make a new person, bring back someone who left, or give an
+# account to a record that exists.
+InvitationKind = Literal["new", "return", "record"]
+
 
 class Invitation(Base):
-    """A one-time invitation to join the household, made by the owner or whoever has the right.
+    """A one-time invitation to join the household, made by the assistant, the owner, or someone
+    the owner gave the right.
 
     Only the hash of its token is stored: a database leak does not leak working links. The hash
     is empty while the invitation waits for its link: when someone other than the one who asked
@@ -20,21 +26,35 @@ class Invitation(Base):
     invitation is open until it is accepted (``accepted_at``, with the person it created in
     ``accepted_person_id``), cancelled
     (``cancelled_at``) or past ``expires_at``. ``guest_days`` is how long a guest may stay once
-    they have joined; only a guest has one.
+    they have joined (empty for a guest: no end); only a guest has one.
 
-    An invitation with a ``person_id`` is a return link: it does not make a new person, it brings
-    that person, who left the household, back (``household.service.accept_return``). The role,
-    ``guest_days`` and display name are then the ones they come back with, and
-    ``accepted_person_id`` is that same person once the link is used.
+    What the link does is its ``kind``. ``new`` makes a new person. ``return`` is a return link
+    (``person_id``): it does not make a new person, it brings that person, who left the household,
+    back (``household.service.accept_return``); the role, ``guest_days`` and display name are then
+    the ones they come back with, and ``accepted_person_id`` is that same person once the link is
+    used. ``record`` gives an account to a record that exists already (``person_id``, someone the
+    assistant knows): the record keeps its memories, links and accesses
+    (``household.service.accept_invitation``).
+
+    An invitation with no ``created_by`` is the assistant's own act (``by_domo``, exactly then),
+    with his ``reason`` (exactly then); its link always waits for someone (``link_for_id``).
+    ``proposed_username`` is the username the page proposes (the person may change it).
     """
 
     __tablename__ = "invitations"
     __table_args__ = (
         CheckConstraint("role IN ('adult', 'child', 'guest')", name="role_values"),
-        # The technical ceiling of a stay (``household.service.GUEST_DAYS_CEILING``): the
-        # household's rule, 30 days unless the owner chose otherwise, is a limit of the catalog.
-        CheckConstraint("guest_days BETWEEN 1 AND 365", name="guest_days_range"),
+        # A stay is a day at least, with no ceiling (audit POL-5); empty, for a guest, no end.
+        CheckConstraint("guest_days >= 1", name="guest_days_range"),
         CheckConstraint("guest_days IS NULL OR role = 'guest'", name="guest_days_only_for_guests"),
+        CheckConstraint("(created_by IS NULL) = by_domo", name="by_domo_has_no_maker"),
+        CheckConstraint("(reason IS NOT NULL) = by_domo", name="reason_of_domo"),
+        CheckConstraint("char_length(reason) BETWEEN 1 AND 300", name="reason_length"),
+        CheckConstraint("kind IN ('new', 'return', 'record')", name="kind_values"),
+        CheckConstraint("(kind = 'new') = (person_id IS NULL)", name="kind_has_a_person"),
+        CheckConstraint(
+            "char_length(proposed_username) BETWEEN 1 AND 64", name="proposed_username_length"
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=func.gen_random_uuid())
@@ -42,7 +62,12 @@ class Invitation(Base):
     display_name: Mapped[str]
     role: Mapped[str]
     guest_days: Mapped[int | None]
-    created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("persons.id"))
+    # ``None``: the assistant made it (``by_domo``).
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("persons.id"))
+    by_domo: Mapped[bool] = mapped_column(server_default=text("false"), default=False)
+    reason: Mapped[str | None]
+    kind: Mapped[InvitationKind] = mapped_column(server_default=text("'new'"), default="new")
+    proposed_username: Mapped[str | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.clock_timestamp())
     expires_at: Mapped[datetime]
     accepted_at: Mapped[datetime | None]

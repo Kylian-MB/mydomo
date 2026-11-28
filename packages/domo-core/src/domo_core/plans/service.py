@@ -44,9 +44,9 @@ from sqlalchemy import ColumnElement, and_, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domo_core.accounts.models import Person
-from domo_core.accounts.sessions import active_at
 from domo_core.madetools.models import BuildState, MadeTool, ToolBuild
 from domo_core.memory.service import SecretRefused, refuses_secret_shapes
+from domo_core.people import reach
 from domo_core.plans.models import Plan
 from domo_core.plans.schedule import catch_up, next_after, remaining, valid_repeat, with_count
 
@@ -106,7 +106,11 @@ async def make(
     build of a tool it waits for: the caller checked that the person may wait for it); with
     ``repeat`` and no ``due_at`` it is first due at the rule's first time after ``now``. Raises
     ``SecretRefused`` for a ``why`` or exact words with the shape of a secret and ``ValueError``
-    for anything else out of bounds; nothing is written then. Flushed."""
+    for anything else out of bounds, and for a person who cannot answer (no access now, or no
+    account: a plan is kept for someone the assistant can speak to); nothing is written then.
+    Flushed."""
+    if not await reach.can_answer(session, person_id, now):
+        raise ValueError("A plan is kept for someone who can answer.")
     _check_why(why)
     _check_their_words(their_words)
     if due_at is None and repeat is None and not on_return and after_build_id is None:
@@ -227,10 +231,10 @@ async def waiting_plan_of(
 
 
 def _of_people_here(now: datetime) -> ColumnElement[bool]:
-    """The plans of people who are in the household at ``now``: the plans of someone removed, or of
-    a guest whose stay ended, are never due (they stay as they are, waiting, should they come
-    back)."""
-    return Plan.person_id.in_(select(Person.id).where(active_at(now)))
+    """The plans of people who are in the household at ``now`` and can answer
+    (``reach.answering``): the plans of someone removed, or of a guest whose stay ended, are never
+    due (they stay as they are, waiting, should they come back)."""
+    return Plan.person_id.in_(select(Person.id).where(reach.answering(now)))
 
 
 def _woken_by_their_build() -> ColumnElement[bool]:

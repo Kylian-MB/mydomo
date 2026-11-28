@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 from chat_support import ChatPilot, ChatServer
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.chat.agent import ActionRecord
 from domo_core.confirmations import service as service_module
@@ -43,13 +44,21 @@ from domo_core.policy.catalog import (
 from domo_core.policy.facts import decision_facts
 from domo_core.policy.models import PolicyRight
 from domo_core.policy.rights import NO_RIGHTS
-from domo_core.policy.roles import Actor, as_role, domo_actor
+from domo_core.policy.roles import Actor, domo_actor
 from domo_core.policy.settings import load_policy_settings
 from domo_core.tools.context import InvalidArguments, ToolContext, ToolOutcome
 from domo_core.tools.registry import TOOLS
 from fakes import FakeChatModel, FakeSandbox
 from sqlalchemy import func, select, update
-from test_concerned_person import DOUBT, _judge, _people, _requests, _turn
+from test_concerned_person import (
+    DOUBT,
+    _conversation_of,
+    _judge,
+    _people,
+    _reply_in,
+    _requests,
+    _turn,
+)
 from test_madetools_in_turn import (
     add_tool,
     audit_of,
@@ -454,7 +463,7 @@ async def test_a_note_in_his_name_changed_by_the_person_is_judged_both_ways_agai
     dana = adult_chat.person
     theirs = replace(
         tool_context,
-        actor=Actor(dana.id, as_role(dana.role)),
+        actor=actor_of(dana),
         person=dana,
         conversation_id=asked.conversation_id,
         change_grant=asked.id,
@@ -515,7 +524,7 @@ async def test_on_his_own_a_person_s_request_is_his_to_change_only_by_the_owner_
     dana = adult_chat.person
     alone = replace(
         tool_context,
-        actor=Actor(dana.id, as_role(dana.role)),
+        actor=actor_of(dana),
         person=dana,
         conversation_id=asked.conversation_id,
         on_his_own=True,
@@ -768,7 +777,9 @@ async def test_the_concerned_person_s_yes_but_he_doubts_waits_for_them_again(
         ctx.domo_message_id,
     )
     assert new.ask_why is None and new.arguments["at"] == "22:30"
-    assert may_decide(new, dana, LIVE) and not may_decide(new, alex, LIVE)
+    assert may_decide(new, dana, LIVE, rights=NO_RIGHTS, policy=DEFAULT_POLICY) and not may_decide(
+        new, alex, LIVE, rights=NO_RIGHTS, policy=DEFAULT_POLICY
+    )
     async with session_factory() as reader:
         settings = await load_policy_settings(reader)
         listed = await pending_for(reader, dana.id, ctx.conversation_id, settings, LIVE)
@@ -798,9 +809,14 @@ async def test_a_yes_but_of_a_request_whose_turn_cannot_be_known_runs_nothing(
     session_factory, monkeypatch
 ):
     people, _, request = await his_take_back_waiting_for_dana(session_factory, monkeypatch)
+    # Said to be made under a reply of Dana's own conversation: not the one who asked's (a request
+    # made under no reply at all, as in a review, was made in theirs: ``test_concerned_person``).
+    danas_reply = await _reply_in(
+        session_factory, await _conversation_of(session_factory, people["Dana"])
+    )
     async with session_factory() as writer:
         await writer.execute(
-            update(Confirmation).where(Confirmation.id == request.id).values(message_id=None)
+            update(Confirmation).where(Confirmation.id == request.id).values(message_id=danas_reply)
         )
         await writer.commit()
     _judge(monkeypatch, Judgement("do"))
@@ -820,7 +836,7 @@ async def his_idea_in_sam_s_turn(
     _judge(monkeypatch, DOUBT)
     ctx, reply_id, _ = await _turn(session_factory, people["Sam"])
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     [request] = await _requests(session_factory)
     assert (request.by_domo, request.concerned_id) == (True, people["Alex"].id)
     return people, ctx, request
@@ -861,7 +877,8 @@ async def test_his_change_of_an_idea_that_runs_runs_in_the_turn_it_was_born_in(
     async with session_factory() as reader:
         [made] = await reader.scalars(select(Invitation))
         done = await reader.get(Confirmation, request.id)
-    assert made.created_by == people["Sam"].id
+    # The assistant's invitation (S-K): never Sam's, its link waiting for the owner.
+    assert (made.created_by, made.by_domo, made.link_for_id) == (None, True, people["Alex"].id)
     assert done is not None and done.status == "executed"
 
 

@@ -1,12 +1,15 @@
-"""The household: who is in it, the invitations to join it, and the owner's changes to it.
+"""The household: who is in it, the invitations to join it, and the changes to it.
 
 Who is in the household
 -----------------------
 
-A person is in the household while they are active (``accounts.sessions.is_active``): not removed
-(``disabled_at``) and, for a guest, before the end of their stay (``expires_at``). Domo and the
-owner name people by their display name: ``resolve_person`` finds the one person who has that
-name among the people in the household now (or, when nobody has it, whose first name it is, or
+A person is a record (``accounts.models.Person``), with or without a login: the assistant opens
+and keeps the records himself (``people.records``), and having access is not having an account.
+A person is in the household while they are active (``accounts.sessions.is_active``): with an
+access, not removed (``disabled_at``) and before the end of their stay, when it has one
+(``expires_at``). The assistant and the owner name people by their display name:
+``resolve_person`` finds the one person who has that name among the people in the household now,
+or among every record the assistant may name (or, when nobody has it, whose first name it is, or
 the beginning of whose name: spec 6.7). Two names are the same name when they read the same
 (``text.name_key``: whatever the case, the spaces, the invisible characters or the accents'
 encoding). A name that means nobody is ``not_found``, one that means several people is
@@ -16,19 +19,31 @@ copied (R81): a name that reads like another cannot be taken, so nobody can spea
 Invitations (decision D3)
 -------------------------
 
-The owner, or whoever the owner gave the right, invites someone with a name and a role (adult,
-child or guest; never owner) and, for a guest, the number of days they may stay once they have
-joined (2 by default). The household's rule is 30 days at most, unless the owner chose otherwise:
-that is a limit of the catalog (``policy.catalog.DEFAULT_LIMITS``), which the barrier applies; here
-the stay is only kept within a technical ceiling (1 to ``GUEST_DAYS_CEILING`` days). The invitation
-is a link, single-use and valid for seven days (``INVITATION_TTL``). Its token is 256 random bits:
-the raw token is returned once, by ``create_invitation``, for the one who asked to see; only its
-SHA-256 is stored, so a leak of the database does not leak working links.
+The assistant, the owner, or someone the owner gave the right (inviting is in no role:
+``policy.catalog.PEOPLE_GESTURES``) invites someone with a name and a role (adult, child or guest;
+never owner) and, for a guest, the number of days they may stay once they have joined
+(``GUEST_DAYS_DEFAULT`` when nothing was said), or no end at all. No length is refused by the code
+(from 1 day, with no upper bound): a stay is the owner's order or the assistant's judgement, under
+the limits the owner writes himself. The days are resolved when the invitation is made: its
+``guest_days`` empty, for a guest, means a stay with no end. The invitation is a link, single-use
+and valid for seven days (``INVITATION_TTL``). Its token is 256 random bits: the raw token is
+returned once, by ``create_invitation``, for the one who asked to see; only its SHA-256 is stored,
+so a leak of the database does not leak working links.
 
 The link is for the one who asked. When someone else said yes (the owner, to an invitation Alex
 asked for), the invitation is made without a token (``with_token=False``: its hash is empty), and
 the one who asked makes the token, and sees the link, once, with a button on their card
 (``reveal_link``). Nobody else can, and it can be made once: the hash is then set.
+
+The assistant invites too, in his own name (``created_by`` empty, ``by_domo``, with his reason):
+whoever holds the right may cancel it or give its link again, and the judge weighs it (the fact
+``given_by_domo``); its link always waits for someone (``link_for_id``: the person of the turn who
+could invite, else the owner, who is told of it); whoever joins with it was invited by nobody
+(``invited_by`` empty, ``origin`` ``domo``) and uses the house's general key, as he does, unless the
+owner's rule ``keys.guests_bring_own`` keeps a visitor off it (read at each turn). An invitation may
+be for a record that exists (kind ``record``): its link gives that record an account, and nothing
+else changes of it; it is unusable once the record is merged, forgotten, has an account, or is under
+the owner's withdrawal or refusal.
 
 A link can be given again while its invitation waits (2026-11-16, the owner's trial of 0.9.0):
 ``give_link_again`` replaces the token, so the old link stops working, and the invitation keeps
@@ -52,16 +67,20 @@ general key is the household's already. They follow their inviter on the general
 (``keys.invitee_general`` ``never``): a line then takes them off the general key, unless their
 inviter gave it. Their own: a line takes them off the general key.
 
+The owner's rule "guests come with their own key" (``keys.guests_bring_own``) writes no line: it
+is read at each turn, where the keys a person may use are resolved (``llm.router.usable_keys``).
+
 Coming back
 -----------
 
 Someone who left the household (removed, or a guest whose stay is over) keeps their account and
-everything they wrote; only their access is closed. The owner brings them back with a *return
+everything they wrote; only their access is closed. Someone without an account comes back at once
+(``people.records``). The assistant or the owner brings back someone with an account with a *return
 link*: an invitation tied to that person (``Invitation.person_id``) with the role, the days and the
 display name they come back with. It is made like any invitation, with the same delay and the same
 "shown once" token (``create_return_invitation``), and nothing of the old access works before the
-person uses it. A name that means several former members is ``ambiguous``, and Domo tells them
-apart by the role they had and the day they left (``resolve_former_person``, ``left_on``).
+person uses it. A name that means several former members is ``ambiguous``, and Domo tells them apart
+by the role they had and the day they left (``resolve_former_person``, ``left_on``).
 
 Coming back takes the two steps of joining, with the slow hash of the new password between them:
 ``check_return`` reads, and ``accept_return`` locks the link and the person, checks them again and
@@ -74,22 +93,23 @@ never taken for each other. A new return link replaces the one that waits for th
 caller cancels the old one (``cancel_invitation``) and the name check leaves it out
 (``name_in_use``, ``excluding_invitation``).
 
-The owner's changes
--------------------
+Roles and removals
+------------------
 
-``set_role`` changes a role. Someone who becomes a guest gets an end of stay, as an invited guest
-does (``guest_days`` from the change, 2 by default: R78); someone who stops being a guest keeps
-none. ``disable`` removes someone: their account is disabled, every session they have ends, the
-requests they made that wait for a yes are refused, and the rights the owner gave them themselves
-are paused (spec 5.7; the upkeep does the same for anyone who left without it,
-``household.upkeep``). Nothing they wrote is deleted.
+A role is changed on the record (``people.records.give_access``), by the assistant or the owner.
+``disable`` removes someone (``people.records.remove``: the owner's own order is a withdrawal):
+their account, if they have one, is disabled, every session they have ends, the requests they made
+that wait for a yes are refused, and the rights the owner gave them themselves are paused (spec 5.7;
+the upkeep does the same for anyone who left without it, ``household.upkeep``). Nothing they wrote
+is deleted.
 
 Handing the owner's role over
 -----------------------------
 
 ``transfer_ownership`` gives the owner's role to an adult of the household and makes the owner an
 adult, in the caller's transaction. It is the one way the role moves (spec 8): the tool that asks
-for it (``tools.household_admin``) is the owner's alone and waits for an explicit yes every time.
+for it (``tools.household_admin``) is the owner's alone and cannot be undone: the judge decides
+whether a yes is asked, and which.
 The two rows are locked first, in the order of their identifiers (so that two hand-overs never
 wait for each other in circles), and checked again: the one who gives is the owner and in the
 household, the one who receives an adult in the household, and not the same person. Then, in this
@@ -110,6 +130,8 @@ None of these functions commits: the caller owns the transaction (and writes the
 """
 
 import hashlib
+import math
+import re
 import secrets
 from collections.abc import Sequence
 from collections.abc import Set as AbstractSet
@@ -118,7 +140,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Final, Literal, cast, get_args, overload
 from uuid import UUID
 
-from sqlalchemy import ColumnElement, and_, delete, func, select, update
+from sqlalchemy import ColumnElement, and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -132,9 +154,12 @@ from domo_core.audit.models import AuditEntry
 from domo_core.confirmations.models import Confirmation
 from domo_core.devices.service import forget_devices_of
 from domo_core.household import nicknames
-from domo_core.household.models import Invitation, Successor
+from domo_core.household.models import Invitation, InvitationKind, Successor
 from domo_core.llm.models import Provider, ProviderUser
 from domo_core.llm.types import JsonObject
+from domo_core.people.directives import directives_now, under_directive
+from domo_core.people.models import PersonLink
+from domo_core.people.reach import known_records
 from domo_core.policy.rights import pause_personal_rights, pause_rights_and_audit
 from domo_core.policy.settings import load_policy_settings
 from domo_core.prompts import OwnershipNote
@@ -143,12 +168,10 @@ from domo_core.tools.context import InvalidArguments
 
 # How long an invitation link works.
 INVITATION_TTL: Final = timedelta(days=7)
-# How long a guest stays once they have joined, unless the owner said otherwise; and the
-# technical ceiling of a stay (the household's rule, 30 days unless the owner chose otherwise, is a
-# limit of the catalog, ``policy.catalog.DEFAULT_LIMITS``). The ``invitations`` table says the
-# same.
-GUEST_DAYS_DEFAULT: Final = 2
-GUEST_DAYS_CEILING: Final = 365
+# The end of a guest's stay when nothing was said, for a guest who gets an account (an invitation)
+# or has one: a default, never a ceiling. A record without an account is given no end when nothing
+# is said (the assistant judges when they left).
+GUEST_DAYS_DEFAULT: Final = 30
 # The longest username (the same limit as the owner's, at the first launch).
 MAX_USERNAME_LENGTH: Final = 64
 # The key of the advisory lock that serialises the claims on a display name (see
@@ -221,6 +244,126 @@ async def active_persons(session: AsyncSession, now: datetime) -> list[Person]:
     return list(result.scalars())
 
 
+Among = Literal["household", "records"]
+
+# The words that say whose relation it is ("my mother"): the speaker's own.
+_MINE: Final = frozenset({"my", "mon", "ma", "mes"})
+# The last word of a relation that points at the person it is about ("mother of", "mère de").
+_OF: Final = frozenset({"of", "de"})
+# A plural that says "the records that are children of...": "children" is "child".
+_IRREGULAR_PLURALS: Final = {"children": "child", "enfants": "enfant"}
+_LISTED: Final = re.compile(r"\s*(?:,|&|\band\b|\bet\b)\s*")
+_OWNED_FIRST: Final = re.compile(r"(.+?)['’]s (.+)")
+_OWNED_LAST: Final = re.compile(r"(?:the |les |le |la )?(.+?) (?:of|de|d') ?(.+)")
+
+
+def names_among(tool: object) -> Among:
+    """Among whom the people a tool names (``tools.context.NamesPeople``) are looked for: the
+    records (``names_among = "records"`` on the tool: it acts on a record, with or without access)
+    or the household (the default: it acts on someone who must be there)."""
+    return "records" if getattr(tool, "names_among", None) == "records" else "household"
+
+
+async def _candidates(session: AsyncSession, now: datetime, among: Among) -> list[Person]:
+    """The people a name may mean: those who have access at ``now`` (``household``), or every
+    record the assistant may name, whatever its state (``records``), in the order they arrived."""
+    return (
+        await active_persons(session, now) if among == "household" else await known_persons(session)
+    )
+
+
+async def known_persons(session: AsyncSession) -> list[Person]:
+    """Every record the assistant may name (``people.reach.known_records``), whatever its state,
+    in the order they arrived."""
+    result = await session.execute(
+        select(Person).where(known_records()).order_by(Person.created_at, Person.id)
+    )
+    return list(result.scalars())
+
+
+async def _standing_links(session: AsyncSession, person_id: UUID) -> list[PersonLink]:
+    """The links of a record that stand (``people.links``: confirmed by who can know), oldest
+    first. Read here and not through ``people.links``, which this module cannot import."""
+    found = await session.scalars(
+        select(PersonLink)
+        .where(
+            or_(PersonLink.from_id == person_id, PersonLink.to_id == person_id),
+            PersonLink.confirmed_at.is_not(None),
+        )
+        .order_by(PersonLink.created_at, PersonLink.id)
+    )
+    return list(found)
+
+
+async def _related_to(session: AsyncSession, to_id: UUID) -> list[tuple[Person, str]]:
+    """Each record that is ``relation`` ``to_id`` by a link that stands, with the relation, oldest
+    link first; never a record merged into another or forgotten."""
+    found = await session.execute(
+        select(Person, PersonLink.relation)
+        .join(PersonLink, PersonLink.from_id == Person.id)
+        .where(PersonLink.to_id == to_id, PersonLink.confirmed_at.is_not(None), known_records())
+        .order_by(PersonLink.created_at, PersonLink.id)
+    )
+    return [(person, relation) for person, relation in found]
+
+
+async def told_apart(
+    session: AsyncSession, persons: Sequence[Person], *, with_ids: bool = False
+) -> str:
+    """Each of ``persons`` in a few words that tell it from the others, one after the other: the
+    links that stand for it ("Tom, friend of Paul"), else where it stands towards the house ("Tom,
+    visiting"). Never a link nobody who can know has confirmed; an identifier (``person:<id>``)
+    only with ``with_ids``, for a tool that takes one."""
+    told: list[str] = []
+    for person in persons:
+        said: list[str] = []
+        for link in await _standing_links(session, person.id):
+            mine = link.from_id == person.id
+            other = await session.get(Person, link.to_id if mine else link.from_id)
+            if other is None or other.forgotten_at is not None or other.merged_into_id is not None:
+                continue
+            said.append(
+                f"{link.relation} {other.display_name}"
+                if mine
+                else f"{other.display_name} is {link.relation} them"
+            )
+        who = f"{person.display_name} (person:{person.id})" if with_ids else person.display_name
+        told.append(f"{who}, {', '.join(said) if said else person.standing}")
+    return "; ".join(told)
+
+
+def _relation_head(relation: str) -> str:
+    """What a relation says of the one it is about: "mother" for "mother of", "mère" for "mère
+    de" (``text.name_key``)."""
+    words = name_key(relation).split(" ")
+    return " ".join(words[:-1] if len(words) > 1 and words[-1] in _OF else words)
+
+
+def _without_mine(key: str) -> str:
+    """``key`` without the word that says it is the speaker's own ("my mother" is "mother")."""
+    words = key.split(" ")
+    return " ".join(words[1:]) if len(words) > 1 and words[0] in _MINE else key
+
+
+def _singular(word: str) -> str:
+    """A relation word as one relation: "friends" is "friend", "children" is "child"."""
+    word = word.strip()
+    if word in _IRREGULAR_PLURALS:
+        return _IRREGULAR_PLURALS[word]
+    return word[:-1] if len(word) > 3 and word.endswith("s") else word
+
+
+async def _by_relation(session: AsyncSession, key: str, speaker: UUID) -> list[Person]:
+    """The records that are what ``key`` says to the speaker ("my mother", "ma mère", "mum") by a
+    link that stands whose ``to`` is the speaker. Each once."""
+    wanted = _without_mine(key)
+    found: dict[UUID, Person] = {}
+    for person, relation in await _related_to(session, speaker):
+        if _relation_head(relation) == wanted:
+            found.setdefault(person.id, person)
+    return list(found.values())
+
+
 async def resolve_person(
     session: AsyncSession,
     name: str,
@@ -229,25 +372,35 @@ async def resolve_person(
     whole_name_only: bool = False,
     speaker: UUID | None = None,
     exact_only: bool = False,
+    among: Among = "household",
+    with_ids: bool = False,
+    detailed: bool = False,
 ) -> Person:
-    """The one person in the household at ``now`` that ``name`` means (spec 6.7). Names are
-    compared as they read (``text.name_key``: the case, the spaces and invisible characters do not
-    count), among the people in the household alone (never someone removed, nor a guest whose
-    stay is over), in four steps, each tried only when the one before finds nobody:
+    """The one person that ``name`` means, among the people in the household at ``now``
+    (``household``: never someone removed, nor a guest whose stay is over) or among every record
+    the assistant may name, whatever its state (``records``: someone who has no access nor
+    account, a guest whose stay is over; never a record merged into another or forgotten). Names
+    are compared as they read (``text.name_key``: the case, the spaces and invisible characters do
+    not count), in four steps, each tried only when the one before finds nobody:
 
     1. the whole display name;
-    2. a nickname the person who speaks (``speaker``) keeps for someone in the household
-       (``household.nicknames``: "Juju" for whoever they mean by it); never someone else's
-       nickname, and nothing without a speaker;
+    2. a nickname the person who speaks (``speaker``) keeps for someone (``household.nicknames``:
+       "Juju" for whoever they mean by it); never someone else's nickname, and nothing without a
+       speaker;
     3. the first word of the display name ("Alex" for "Alex Martin");
     4. the beginning of the display name ("Sam" for "Samuel"), which starts where the name starts:
-       a piece from inside a word ("muel") or from a later word ("Martin") means nobody.
+       a piece from inside a word ("muel") or from a later word ("Martin") means nobody;
+
+    and, among the records for a ``speaker``, a fifth: what a link that stands says of the speaker
+    ("my mother", "ma mère": the relation of a record whose link ends at the speaker,
+    ``people.links``; never a link nobody who can know has confirmed).
 
     So "Sam" is Sam when there is one, never Samuel, whatever nickname anyone keeps: a whole name
     always means its owner. ``whole_name_only`` keeps to the first step, for a caller that looks
-    somewhere else before a shorter name may count; ``exact_only`` to the first two, for a caller
-    that must not take a first name or a beginning for a member (a later step of a chain, which
-    may name someone who has not joined yet by a shorter form of their name).
+    somewhere else before a shorter name may count; ``exact_only`` to the first two (and the
+    relation words), for a caller that must not take a first name or a beginning for a member (a
+    later step of a chain, which may name someone who has not joined yet by a shorter form of
+    their name).
 
     A name that is the whole name of an invitation that waits never goes past the first step:
     that name is someone who has not joined yet, never a member whose name begins the same way
@@ -255,41 +408,97 @@ async def resolve_person(
     Samuel). The refusal then names the members it could have meant, for Domo to ask.
 
     ``InvalidArguments("not_found")`` when nobody matches, ``InvalidArguments("ambiguous")`` when
-    several people do: nobody is picked at random. When a first name or a beginning matches
-    several people, the refusal gives their whole names, so that Domo can choose with what he
-    knows or ask (the names of the household are in his context already)."""
+    several people do: nobody is picked at random. Among the household the refusal gives their
+    whole names, so that Domo can choose with what he knows or ask (the names of the household are
+    in his context already); among the records it tells each one apart by what stands of them
+    (``told_apart``: "Tom, friend of Paul; Tom, neighbour of Dana"), never by an identifier unless
+    ``with_ids`` (a tool that takes ``person:<id>``: ``tools.people_tools.record_named``). Those
+    details are given only when ``detailed`` (the owner's request, or the assistant's own call:
+    ``people.whose.may_see_every_record``): anyone else is given the plain whole names."""
     key = name_key(name)
-    persons = await active_persons(session, now) if key else []
+    persons = await _candidates(session, now, among) if key else []
+    at_records = among == "records"
+    nobody = "no record has this name" if at_records else "nobody in the household has this name"
+
+    async def ambiguous(found: Sequence[Person], plain: str) -> InvalidArguments:
+        if not at_records or not detailed:
+            return InvalidArguments("ambiguous", plain)
+        return InvalidArguments(
+            "ambiguous",
+            f"several records match: {await told_apart(session, found, with_ids=with_ids)}",
+        )
+
     matches = [p for p in persons if name_key(p.display_name) == key]
     if len(matches) > 1:
-        raise InvalidArguments(
-            "ambiguous", "several people in the household have this name: ask which one is meant"
+        raise await ambiguous(
+            matches, "several people in the household have this name: ask which one is meant"
         )
     if matches:
         return matches[0]
     if whole_name_only or not key:
-        raise InvalidArguments("not_found", "nobody in the household has this name")
+        raise InvalidArguments("not_found", nobody)
     invited = any(name_key(i.display_name) == key for i in await open_invitations(session, now))
     if speaker is not None and not invited:
-        nicknamed = await nicknames.meant(session, speaker, name, now=now)
+        nicknamed = await nicknames.meant(session, speaker, name, now=now, among=among)
         if nicknamed is not None:
             return nicknamed
+    by_relation = at_records and speaker is not None and not invited
     if exact_only and not invited:
-        raise InvalidArguments("not_found", "nobody in the household has this name")
-    loose = [p for p in persons if name_key(p.display_name).split(" ")[0] == key] or [
-        p for p in persons if name_key(p.display_name).startswith(key)
-    ]
-    names = ", ".join(p.display_name for p in loose)
+        loose = await _by_relation(session, key, speaker) if by_relation and speaker else []
+        if not loose:
+            raise InvalidArguments("not_found", nobody)
+    else:
+        loose = [p for p in persons if name_key(p.display_name).split(" ")[0] == key] or [
+            p for p in persons if name_key(p.display_name).startswith(key)
+        ]
+        if not loose and by_relation and speaker is not None:
+            loose = await _by_relation(session, key, speaker)
     if invited:
+        names = ", ".join(p.display_name for p in loose)
         detail = "no member has this name yet: an invitation that waits has it"
         raise InvalidArguments(
             "not_found", f"{detail}; did you mean: {names}?" if loose else detail
         )
     if len(loose) > 1:
-        raise InvalidArguments("ambiguous", f"several people match: {names}")
+        raise await ambiguous(
+            loose, f"several people match: {', '.join(p.display_name for p in loose)}"
+        )
     if not loose:
-        raise InvalidArguments("not_found", "nobody in the household has this name")
+        raise InvalidArguments("not_found", nobody)
     return loose[0]
+
+
+async def records_meant(
+    session: AsyncSession, words: str, *, speaker: UUID, now: datetime
+) -> list[Person]:
+    """The records a plural means ("my parents", "Dana's friends and children", "the friends of
+    Dana"): those linked to the speaker, or to the person the words name, by a link that stands
+    (``people.links``), narrowed to the relations the words say when some fit ("my friends" is the
+    records that are "friend of" them), else every one so linked: the assistant chooses among
+    them. Empty when nobody is. Never a record merged into another or forgotten."""
+    key = name_key(words)
+    rest = _without_mine(key)
+    owner = speaker
+    if rest == key:
+        named = _OWNED_FIRST.fullmatch(key)
+        if named is not None:
+            who, rest = named.group(1), named.group(2)
+        elif (named := _OWNED_LAST.fullmatch(key)) is not None:
+            rest, who = named.group(1), named.group(2)
+        else:
+            who = None
+        if who is not None:
+            found_owner = await resolve_person(
+                session, who, now=now, speaker=speaker, among="records"
+            )
+            owner = found_owner.id
+    wanted = {_singular(word) for word in _LISTED.split(rest) if word}
+    linked = await _related_to(session, owner)
+    fitting = [(p, r) for p, r in linked if _singular(_relation_head(r)) in wanted]
+    found: dict[UUID, Person] = {}
+    for person, _ in fitting or linked:
+        found.setdefault(person.id, person)
+    return list(found.values())
 
 
 async def whole_names(
@@ -301,15 +510,17 @@ async def whole_names(
     speaker: UUID | None,
     leave: AbstractSet[str] = frozenset(),
     exact_only: bool = False,
+    among: Among = "household",
 ) -> JsonObject:
     """``arguments`` with each name among the arguments ``names`` (a ``tools.context.NamesPeople``
-    tool's ``person_arguments``) replaced by the whole display name of the one person of the
-    household it means now to the person who speaks (``resolve_person`` with ``speaker``, whose
-    nicknames count; ``None`` for none): "Sam" becomes "Samuel" when Samuel is the one it means. A
-    name that means nobody or several, or whose key (``text.name_key``) is in ``leave`` (someone a
-    chain is about to invite, say), stays as it was given: the tool refuses it, or reads it,
-    itself. With ``exact_only``, only a whole name or a nickname of the speaker is replaced: a
-    first name or a beginning stays as it was given (``resolve_person``). Reads only."""
+    tool's ``person_arguments``) replaced by the whole display name of the one person it means now
+    to the person who speaks (``resolve_person`` with ``speaker``, whose nicknames count; ``None``
+    for none), among the household or the records (``among``): "Sam" becomes "Samuel" when Samuel
+    is the one it means. A name that means nobody or several, or whose key (``text.name_key``) is
+    in ``leave`` (someone a chain is about to invite, say), stays as it was given: the tool refuses
+    it, or reads it, itself. With ``exact_only``, only a whole name or a nickname of the speaker is
+    replaced: a first name or a beginning stays as it was given (``resolve_person``). Reads
+    only."""
     given: JsonObject = dict(arguments)
     for argument in names:
         value = given.get(argument)
@@ -318,7 +529,7 @@ async def whole_names(
         try:
             given[argument] = (
                 await resolve_person(
-                    session, value, now=now, speaker=speaker, exact_only=exact_only
+                    session, value, now=now, speaker=speaker, exact_only=exact_only, among=among
                 )
             ).display_name
         except InvalidArguments:
@@ -398,18 +609,20 @@ async def rename_person(session: AsyncSession, person: Person, name: str, *, now
     return renamed.scalar_one_or_none() is not None
 
 
-def _guest_days(role: MemberRole, guest_days: int | None) -> int | None:
-    """The days of an invitation's stay: ``GUEST_DAYS_DEFAULT`` for a guest who was given none,
-    nothing for anyone else. ``ValueError`` for days out of range, or days given to a role that
-    does not end."""
+def _guest_days(role: MemberRole, guest_days: int | None, *, no_end: bool = False) -> int | None:
+    """The days of an invitation's stay, as it keeps them: ``None`` for no end (``no_end``, and
+    anyone who is not a guest), ``GUEST_DAYS_DEFAULT`` for a guest when nothing was said, the days
+    given otherwise. Its only ``ValueError``s: days below 1, and days for a role that does not
+    end (the caller never gives days and ``no_end`` together)."""
     if role != "guest":
         if guest_days is not None:
             raise ValueError("only a guest's stay has a number of days")
         return None
-    days = GUEST_DAYS_DEFAULT if guest_days is None else guest_days
-    if not 1 <= days <= GUEST_DAYS_CEILING:
-        raise ValueError(f"a guest stays 1 to {GUEST_DAYS_CEILING} days")
-    return days
+    if guest_days is not None and guest_days < 1:
+        raise ValueError("a guest stays 1 day at least")
+    if no_end:
+        return None
+    return GUEST_DAYS_DEFAULT if guest_days is None else guest_days
 
 
 async def _make_invitation(
@@ -418,36 +631,70 @@ async def _make_invitation(
     display_name: str,
     role: MemberRole,
     guest_days: int | None,
-    created_by: UUID,
+    created_by: UUID | None,
     now: datetime,
+    kind: InvitationKind,
     person_id: UUID | None,
     with_token: bool,
     uses_inviter_key: bool | None = None,
+    proposed_username: str | None = None,
+    link_for: UUID | None = None,
+    reason: str | None = None,
+    no_end: bool = False,
 ) -> tuple[Invitation, str | None]:
-    """The invitation of ``create_invitation`` and ``create_return_invitation``, tied to the
-    person it brings back (``person_id``) or to nobody. Without a token (``with_token`` false) it
-    waits for its link (``reveal_link``). Flushed, not committed."""
+    """The invitation of ``create_invitation`` and ``create_return_invitation``, of ``kind``, tied
+    to the record it is for (``person_id``) or to nobody, with the stay ``_guest_days`` resolves.
+    ``created_by`` ``None`` is the assistant's own: it has his ``reason``, and its link is for
+    ``link_for``. Without a token (``with_token`` false) it waits for its link (``reveal_link``).
+    Flushed, not committed."""
     if role not in MEMBER_ROLES:
         raise ValueError("an invitation is for an adult, a child or a guest")
+    if created_by is None and (link_for is None or not reason):
+        raise ValueError("an invitation of the assistant's has his reason and whom its link is for")
     try:
         name = display_name_value(display_name)
     except InvalidDisplayName as refused:
         raise ValueError(f"not a display name ({refused.code})") from None
+    proposed = None if proposed_username is None else username_value(proposed_username)
     token = secrets.token_urlsafe(32) if with_token else None
     invitation = Invitation(
         token_hash=None if token is None else hash_token(token),
         display_name=name,
         role=role,
-        guest_days=_guest_days(role, guest_days),
+        guest_days=_guest_days(role, guest_days, no_end=no_end),
         created_by=created_by,
+        by_domo=created_by is None,
+        reason=None if created_by is not None else reason,
+        kind=kind,
+        proposed_username=proposed,
         created_at=now,
         expires_at=now + INVITATION_TTL,
         person_id=person_id,
         uses_inviter_key=uses_inviter_key,
+        link_for_id=link_for,
     )
     session.add(invitation)
     await session.flush()
     return invitation, token
+
+
+def terms_for_record(
+    record: Person, role: MemberRole, guest_days: int | None, now: datetime, *, no_end: bool = False
+) -> tuple[MemberRole, int | None, bool]:
+    """The role, the days and whether the stay has no end that an invitation for ``record``
+    carries, as its page states them and as the record will have them once it joins: a record that
+    has access now keeps its own role and what is left of its stay, or its stay with no end
+    (joining gives it only an account); any other is given ``role``, ``guest_days`` and
+    ``no_end``."""
+    if not is_active(record, now) or record.role not in MEMBER_ROLES:
+        return role, guest_days, no_end
+    kept: MemberRole = record.role
+    if kept != "guest":
+        return kept, None, False
+    if record.expires_at is None:
+        return kept, None, True
+    left = math.ceil((record.expires_at - now) / timedelta(days=1))
+    return kept, max(left, 1), False
 
 
 @overload
@@ -457,10 +704,15 @@ async def create_invitation(
     display_name: str,
     role: MemberRole,
     guest_days: int | None,
-    created_by: UUID,
+    created_by: UUID | None,
     now: datetime,
     with_token: Literal[True] = True,
     uses_inviter_key: bool | None = None,
+    record: Person | None = None,
+    proposed_username: str | None = None,
+    link_for: UUID | None = None,
+    reason: str | None = None,
+    no_end: bool = False,
 ) -> tuple[Invitation, str]: ...
 
 
@@ -471,10 +723,15 @@ async def create_invitation(
     display_name: str,
     role: MemberRole,
     guest_days: int | None,
-    created_by: UUID,
+    created_by: UUID | None,
     now: datetime,
     with_token: bool,
     uses_inviter_key: bool | None = None,
+    record: Person | None = None,
+    proposed_username: str | None = None,
+    link_for: UUID | None = None,
+    reason: str | None = None,
+    no_end: bool = False,
 ) -> tuple[Invitation, str | None]: ...
 
 
@@ -484,10 +741,15 @@ async def create_invitation(
     display_name: str,
     role: MemberRole,
     guest_days: int | None,
-    created_by: UUID,
+    created_by: UUID | None,
     now: datetime,
     with_token: bool = True,
     uses_inviter_key: bool | None = None,
+    record: Person | None = None,
+    proposed_username: str | None = None,
+    link_for: UUID | None = None,
+    reason: str | None = None,
+    no_end: bool = False,
 ) -> tuple[Invitation, str | None]:
     """Make an invitation, valid until ``now + INVITATION_TTL``, and return it with its raw token.
 
@@ -498,30 +760,53 @@ async def create_invitation(
     ``uses_inviter_key`` is whether the invitee uses the keys of the one who invites them
     (``False``: they bring their own; ``None``: not said, the household's default decides when
     they join, ``accept_invitation``).
+
+    ``created_by`` ``None`` is the assistant's own invitation: it keeps his ``reason``, and its
+    link is for ``link_for`` (who may have it shown: ``link_holder``). With ``record`` the
+    invitation is of kind ``record``: it gives that record an account when it is used, and carries
+    the record's name (``display_name`` is not read) and the terms it will have
+    (``terms_for_record``: its own role and stay when it has access now, else ``role``).
+    ``proposed_username`` is the username the page proposes. A guest's stay is ``guest_days``,
+    ``GUEST_DAYS_DEFAULT`` when nothing was said, or none (``no_end``).
+
     ``ValueError`` for a role that is not an adult's, a child's or a guest's, or days that make no
-    sense (``_guest_days``), or a name that is not a display name (``text.display_name_value``).
-    Flushed, not committed."""
+    sense (``_guest_days``), a name that is not a display name (``text.display_name_value``), or an
+    invitation of the assistant's without his reason or whom its link is for; ``InvalidUsername``
+    for a proposed username that could not be one. Flushed, not committed."""
+    if record is not None:
+        role, guest_days, no_end = terms_for_record(record, role, guest_days, now, no_end=no_end)
     return await _make_invitation(
         session,
-        display_name=display_name,
+        display_name=display_name if record is None else record.display_name,
         role=role,
         guest_days=guest_days,
         created_by=created_by,
         now=now,
-        person_id=None,
+        kind="new" if record is None else "record",
+        person_id=None if record is None else record.id,
         with_token=with_token,
         uses_inviter_key=uses_inviter_key,
+        proposed_username=proposed_username,
+        link_for=link_for,
+        reason=reason,
+        no_end=no_end,
     )
 
 
 async def reveal_link(
-    session: AsyncSession, invitation_id: UUID, person_id: UUID, now: datetime
+    session: AsyncSession,
+    invitation_id: UUID,
+    person_id: UUID,
+    now: datetime,
+    *,
+    by_owner: bool = False,
 ) -> str:
     """Make the token of an invitation that waits for its link, and return it: this once, and
     stored nowhere (only its SHA-256 is).
 
     Only for the one the link waits for (``link_holder``: the one who made the invitation, or the
-    one who asked for it again), while it is open
+    one who asked for it again), or for the owner (``by_owner``, the caller having read the role:
+    the owner's answer of 2026-11-27, it then no longer waits for them), while it is open
     and has no token yet; ``InvitationUnavailable`` otherwise (it is not theirs, it is closed, or
     its link was made already: which of these is not told). The row is locked and checked again,
     so that two requests at once cannot both be given a link. Flushed, not committed."""
@@ -534,7 +819,7 @@ async def reveal_link(
     invitation = locked.scalar_one_or_none()
     if (
         invitation is None
-        or link_holder(invitation) != person_id
+        or (link_holder(invitation) != person_id and not by_owner)
         or not is_open(invitation, now)
         or invitation.token_hash is not None
     ):
@@ -545,33 +830,97 @@ async def reveal_link(
     return token
 
 
-def link_holder(invitation: Invitation) -> UUID:
+# The audit action of a link shown, whose details say whom it waited for when the owner was shown
+# it in their place (``tools.household_admin.InvitationLinkShow``).
+LINK_SHOWN: Final = "household.link_shown"
+
+
+def _shown_to_the_owner_for(person_id: UUID) -> ColumnElement[bool]:
+    """The audit entries of links that waited for ``person_id`` and were shown to the owner."""
+    return (AuditEntry.action == LINK_SHOWN) & (
+        AuditEntry.details["waited_for"].astext == str(person_id)
+    )
+
+
+async def shown_to_the_owner(
+    session: AsyncSession, invitation_id: UUID, person_id: UUID
+) -> UUID | None:
+    """Who, the owner, was shown the link of ``invitation_id`` that waited for ``person_id``,
+    when it was (the audit entry ``household.link_shown`` with ``waited_for``); ``None``
+    otherwise. Reads only."""
+    actor = await session.scalar(
+        select(AuditEntry.actor)
+        .where(
+            _shown_to_the_owner_for(person_id),
+            AuditEntry.details["invitation_id"].astext == str(invitation_id),
+        )
+        .order_by(AuditEntry.ts.desc())
+        .limit(1)
+    )
+    if actor is None or not actor.startswith("person:"):
+        return None
+    return UUID(actor.removeprefix("person:"))
+
+
+async def links_shown_to_the_owner(
+    session: AsyncSession, person_id: UUID, since: datetime | None
+) -> int:
+    """How many links that waited for ``person_id`` were shown to the owner instead, since
+    ``since`` (all of them for ``None``). Reads only."""
+    statement = (
+        select(func.count()).select_from(AuditEntry).where(_shown_to_the_owner_for(person_id))
+    )
+    if since is not None:
+        statement = statement.where(AuditEntry.ts > since)
+    return await session.scalar(statement) or 0
+
+
+def link_holder(invitation: Invitation) -> UUID | None:
     """Whom the link of ``invitation`` is for, when it waits behind the "show the link" button:
-    the one who asked for it again (``link_for_id``), else the one who made it."""
+    the one it was left for (``link_for_id``: who asked for it again, or whom the assistant's own
+    invitation is for), else the one who made it. ``None`` only for an invitation of the
+    assistant's whose person was forgotten since: nobody has its link."""
     return invitation.link_for_id or invitation.created_by
 
 
 @overload
 async def give_link_again(
-    session: AsyncSession, invitation_id: UUID, now: datetime, *, waits_for: None = None
+    session: AsyncSession,
+    invitation_id: UUID,
+    now: datetime,
+    *,
+    waits_for: None = None,
+    shown_to: UUID | None = None,
 ) -> str: ...
 
 
 @overload
 async def give_link_again(
-    session: AsyncSession, invitation_id: UUID, now: datetime, *, waits_for: UUID
+    session: AsyncSession,
+    invitation_id: UUID,
+    now: datetime,
+    *,
+    waits_for: UUID,
+    shown_to: UUID | None = None,
 ) -> None: ...
 
 
 async def give_link_again(
-    session: AsyncSession, invitation_id: UUID, now: datetime, *, waits_for: UUID | None = None
+    session: AsyncSession,
+    invitation_id: UUID,
+    now: datetime,
+    *,
+    waits_for: UUID | None = None,
+    shown_to: UUID | None = None,
 ) -> str | None:
     """Give an invitation that waits a new link. The old link stops working at once; the
     invitation keeps its name, its role, its stay, its word on the keys and its end
     (``expires_at``): only its link changes.
 
     Without ``waits_for``, the new token is made and returned: this once, and stored nowhere (only
-    its SHA-256 is). With it (someone else said yes, or nobody can be shown the link now), no token
+    its SHA-256 is); it is for ``shown_to`` from then on (``link_for_id``; ``None``: the one who
+    made it, which an invitation of the assistant's has not: it keeps whom it was for). With
+    ``waits_for`` (someone else said yes, or nobody can be shown the link now), no token
     is made: the old one is cleared, and the link waits for that person, who makes it, once, with
     the button of their card (``reveal_link``), as an invitation does after someone else's yes.
 
@@ -594,7 +943,8 @@ async def give_link_again(
         return None
     token = secrets.token_urlsafe(32)
     invitation.token_hash = hash_token(token)
-    invitation.link_for_id = None
+    if shown_to is not None or invitation.created_by is not None:
+        invitation.link_for_id = shown_to
     await session.flush()
     return token
 
@@ -607,7 +957,9 @@ async def invitation_of(session: AsyncSession, token: str, now: datetime) -> Inv
     return result.scalar_one_or_none()
 
 
-def _username_from(username: str) -> str:
+def username_value(username: str) -> str:
+    """A username as it is stored (``accounts.usernames.normalize_username``): ``InvalidUsername``
+    when it is empty, longer than ``MAX_USERNAME_LENGTH`` or not one plain line."""
     name = normalize_username(username)
     if not name or len(name) > MAX_USERNAME_LENGTH or not is_plain_line(name):
         raise InvalidUsername
@@ -638,13 +990,19 @@ async def check_joining(
     their password. Reads only, and locks nothing.
 
     ``InvitationUnavailable`` when the link cannot be used (a return link cannot: it is not for
-    joining); ``InvalidUsername``, ``UsernameTaken`` or ``WeakPassword`` otherwise, and the link
-    still works. The name is checked with the rule of every display name (R70)."""
+    joining; nor can the link of a record that could not have an account now,
+    ``record_unavailable``); ``InvalidUsername``, ``UsernameTaken`` or ``WeakPassword``
+    otherwise, and the link still works. The name is checked with the rule of every display name
+    (R70)."""
     invitation = await invitation_of(session, token, now)
-    if invitation is None or invitation.person_id is not None:
+    if invitation is None or invitation.kind == "return":
         # A return link brings someone back (``check_return``): it makes nobody new.
         raise InvitationUnavailable
-    name = _username_from(username)
+    if invitation.kind == "record" and await record_unavailable(session, invitation, now):
+        raise InvitationUnavailable
+    if await nobody_new_since(session, invitation, now):
+        raise InvitationUnavailable
+    name = username_value(username)
     # Characters, not bytes; and not trimmed: spaces may be part of a password.
     if len(password) < MIN_PASSWORD_LENGTH:
         raise WeakPassword
@@ -661,14 +1019,22 @@ async def accept_invitation(
     session: AsyncSession, joining: Joining, password_hash: str, *, now: datetime
 ) -> Person:
     """Join the household as ``check_joining`` found it good, with the hash of the password that
-    was checked: the person (the invitation's name and role, who invited them, and for a guest the
-    end of their stay, ``guest_days`` from ``now``) and their account are created, the keys they
-    use are given (``_keys_of_the_invitee``), and the invitation is marked accepted. Returns the
-    person.
+    was checked, and mark the invitation accepted. Returns the person.
+
+    A link of kind ``new`` creates the person (the invitation's name and role, who invited them,
+    and for a guest the end of their stay, ``guest_days`` from ``now``, or none) and their account;
+    the
+    assistant's own invitation makes a person nobody invited (``invited_by`` empty), opened by him
+    with his reason (``origin`` ``domo``). A link of kind ``record`` creates **only the account**,
+    on the record it is for: the record keeps its memories, its links and its accesses, and one
+    that has no access now is given one with the invitation's role (``people.records.give_access``,
+    by the one who invited, or the assistant). The keys they use are given
+    (``_keys_of_the_invitee``).
 
     The invitation's row is locked first and checked again: ``InvitationUnavailable`` when it was
-    used (or ended) since, ``UsernameTaken`` when the username was taken since. Flushed, not
-    committed: after an exception the caller rolls back.
+    used (or ended) since, when it is a return link, or when its record could not have an account
+    now (``record_unavailable``); ``UsernameTaken`` when the username was taken since. Flushed,
+    not committed: after an exception the caller rolls back.
     """
     locked = await session.execute(
         select(Invitation)
@@ -677,22 +1043,35 @@ async def accept_invitation(
         .execution_options(populate_existing=True)
     )
     invitation = locked.scalar_one_or_none()
-    if invitation is None or not is_open(invitation, now) or invitation.person_id is not None:
+    if invitation is None or not is_open(invitation, now) or invitation.kind == "return":
         # Someone else used it meanwhile (or it ended, or it is a return link).
         raise InvitationUnavailable
-    stay = None
-    if invitation.role == "guest":
-        stay = now + timedelta(days=invitation.guest_days or GUEST_DAYS_DEFAULT)
-    person = Person(
-        display_name=joining.display_name,
-        role=invitation.role,
-        expires_at=stay,
-        invited_by=invitation.created_by,
-        # A stay ends by itself: the last review it is owed once it is over (``memory.review``).
-        last_review_due=stay is not None,
-    )
-    session.add(person)
-    await session.flush()
+    if await nobody_new_since(session, invitation, now):
+        # The owner said since that nobody new is wanted: his word wins over the waiting link.
+        raise InvitationUnavailable
+    if invitation.kind == "record":
+        person = await _the_record_joins(session, invitation, now)
+    else:
+        # The days were resolved when the invitation was made: none is a stay with no end.
+        stay = None
+        if invitation.role == "guest" and invitation.guest_days is not None:
+            stay = now + timedelta(days=invitation.guest_days)
+        person = Person(
+            display_name=joining.display_name,
+            role=invitation.role,
+            is_child=invitation.role == "child",
+            first_access_at=now,
+            expires_at=stay,
+            invited_by=invitation.created_by,
+            # The assistant's own invitation: he opened this record, and keeps why.
+            origin="invitation" if invitation.created_by is not None else "domo",
+            origin_reason=invitation.reason if invitation.created_by is None else None,
+            # A stay ends by itself: the last review it is owed once it is over
+            # (``memory.review``).
+            last_review_due=stay is not None,
+        )
+        session.add(person)
+        await session.flush()
     try:
         async with session.begin_nested():
             session.add(
@@ -706,6 +1085,126 @@ async def accept_invitation(
     invitation.accepted_at = now
     invitation.accepted_person_id = person.id
     await session.flush()
+    return person
+
+
+async def nobody_new_since(session: AsyncSession, invitation: Invitation, now: datetime) -> bool:
+    """Whether the owner's word that nobody new is wanted (or kept), given after ``invitation``
+    was made and in force at ``now``, stops it at joining: a link for someone new (kind ``new``,
+    or a record that never had access). His word wins over a link that already waited (open point
+    7); a link made, given again or sent after it went through the barrier, the owner's own and
+    one the assistant gave again on the owner's exception included: a link dates from the last
+    time it was made, given again or sent (its acts ``invited``, ``link_sent``). Reads only."""
+    # Not at the top: ``people.models`` is read by the policy, which reads this module.
+    from domo_core.people.models import PersonAct
+
+    if invitation.kind == "return":
+        return False
+    if invitation.kind == "record":
+        first = await session.scalar(
+            select(Person.first_access_at).where(Person.id == invitation.person_id)
+        )
+        if first is not None:
+            return False
+    made_at = invitation.expires_at - INVITATION_TTL
+    given_again = await session.scalar(
+        select(func.max(PersonAct.at)).where(
+            PersonAct.invitation_id == invitation.id,
+            PersonAct.act.in_(("invited", "link_sent")),
+        )
+    )
+    if given_again is not None and given_again > made_at:
+        made_at = given_again
+    return any(
+        directive.kind in ("no_new_people", "no_keeping") and directive.set_at > made_at
+        for directive in await directives_now(session, now)
+    )
+
+
+async def tell_the_owner_nobody_new_came(
+    session: AsyncSession, invitation: Invitation, now: datetime
+) -> UUID | None:
+    """Someone tried a link ``nobody_new_since`` stops: the owner is told once per link
+    (``people.acts.tell_owner``; an act ``joining_stopped`` owed to him). His id when his news were
+    kept, ``None`` when he was told of this link already or there is no owner. Flushed."""
+    # Not at the top: ``people.acts`` reads the household's models, the policy reads this module.
+    from domo_core.people.acts import note_act, tell_owner
+    from domo_core.people.models import PersonAct
+
+    told = await session.scalar(
+        select(PersonAct.id)
+        .where(PersonAct.act == "joining_stopped", PersonAct.invitation_id == invitation.id)
+        .limit(1)
+    )
+    if told is not None:
+        return None
+    act = await note_act(
+        session,
+        act="joining_stopped",
+        by="domo",
+        reason=None,
+        turn_of=None,
+        person_id=invitation.person_id,
+        invitation_id=invitation.id,
+        owed_to_owner=True,
+        now=now,
+    )
+    return await tell_owner(session, act, knows=lambda _owner: False, now=now)
+
+
+async def record_unavailable(
+    session: AsyncSession, invitation: Invitation, now: datetime, *, lock: bool = False
+) -> bool:
+    """Whether the record a link of kind ``record`` is for could not be given an account now
+    (Review Focus 5): it is gone (merged into another, forgotten, or no longer there), it has an
+    account already, or the owner's withdrawal or refusal is in force for it, whatever the age of
+    the link. ``lock``: its row is locked for the change."""
+    query = select(Person).where(Person.id == invitation.person_id)
+    if lock:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    person = (await session.execute(query)).scalar_one_or_none()
+    if person is None or person.merged_into_id is not None or person.forgotten_at is not None:
+        return True
+    if await session.scalar(select(Account.id).where(Account.person_id == person.id)) is not None:
+        return True
+    return await under_directive(session, person.id, now) is not None
+
+
+async def _the_record_joins(session: AsyncSession, invitation: Invitation, now: datetime) -> Person:
+    """The record a link of kind ``record`` is for, locked and checked again
+    (``record_unavailable``), with an access now: one that has none (or whose stay is over) is
+    given the invitation's role, by the one who invited (the owner's own invitation is his act),
+    or by the assistant with the reason of his invitation. Flushed."""
+    if await record_unavailable(session, invitation, now, lock=True):
+        raise InvitationUnavailable
+    person = await session.get(Person, invitation.person_id)
+    assert person is not None
+    if is_active(person, now):
+        return person
+    # Not at the top: ``people.records`` reads this module.
+    from domo_core.people import records
+
+    inviter = (
+        None if invitation.created_by is None else await session.get(Person, invitation.created_by)
+    )
+    by = "domo" if invitation.created_by is None else f"person:{invitation.created_by}"
+    try:
+        await records.give_access(
+            session,
+            person,
+            role=cast(MemberRole, invitation.role),
+            made_role=None,
+            standing=None,
+            guest_days=invitation.guest_days,
+            no_end=invitation.role == "guest" and invitation.guest_days is None,
+            by=by,
+            by_owner=inviter is not None and inviter.role == "owner",
+            reason=invitation.reason,
+            turn_of=None,
+            now=now,
+        )
+    except (records.UnderDirective, records.NotPossible):
+        raise InvitationUnavailable from None
     return person
 
 
@@ -725,14 +1224,20 @@ async def _keys_of_the_invitee(
     or a key of their own (a line takes them off the general key). An invitee of the inviter's
     keys follows them on the general key with no line, unless the household's rule is that
     invitees who join never use it (``keys.invitee_general`` ``never``): a line takes them off
-    each general key their inviter did not give. Flushed."""
+    each general key their inviter did not give.
+
+    Someone the assistant invited (no ``created_by``) follows nobody's keys: they use the house's
+    general key, as the assistant does (ruling 19), and no line is written. Flushed."""
+    inviter_id = invitation.created_by
+    if inviter_id is None:
+        return
     settings = await load_policy_settings(session)
     uses_inviter = invitation.uses_inviter_key
     if uses_inviter is None:
         uses_inviter = settings.invitee_default != "own"
     lines: dict[str, bool] = {}
     if uses_inviter:
-        inviter = await session.get(Person, invitation.created_by)
+        inviter = await session.get(Person, inviter_id)
         if inviter is not None and inviter.role != "owner":
             given = select(Provider.id).where(Provider.given_by == inviter.id)
             lines.update(dict.fromkeys((await session.execute(given)).scalars().all(), True))
@@ -740,7 +1245,7 @@ async def _keys_of_the_invitee(
         general = select(Provider.id).where(Provider.is_general)
         if uses_inviter:
             # The inviter's own general key is one of the keys they let the invitee use.
-            general = general.where(Provider.given_by != invitation.created_by)
+            general = general.where(Provider.given_by != inviter_id)
         for provider_id in (await session.execute(general)).scalars().all():
             lines.setdefault(provider_id, False)
     for provider_id, allowed in lines.items():
@@ -750,7 +1255,7 @@ async def _keys_of_the_invitee(
                 scope="person",
                 person_id=person.id,
                 allowed=allowed,
-                set_by=invitation.created_by,
+                set_by=inviter_id,
                 set_at=now,
             )
         )
@@ -774,46 +1279,40 @@ async def cancel_invitation(session: AsyncSession, invitation: Invitation, now: 
     await session.flush()
 
 
-async def set_role(
-    session: AsyncSession,
-    person: Person,
-    role: MemberRole,
-    *,
-    now: datetime,
-    guest_days: int | None = None,
-) -> datetime | None:
-    """Give the person another role (never the owner's: ``ValueError``), at ``now``, and return
-    the end of their stay, if they have one now.
-
-    Someone who becomes a guest stays ``guest_days`` from ``now`` (``GUEST_DAYS_DEFAULT`` when not
-    given), as an invited guest does (R78); someone who gets another role stays for good (their
-    end of stay is cleared). ``ValueError`` for days out of range, or days given to a role that
-    does not end (``_guest_days``). Flushed, not committed."""
-    if role not in MEMBER_ROLES:
-        raise ValueError("a role is given to an adult, a child or a guest")
-    days = _guest_days(role, guest_days)
-    end = None if days is None else now + timedelta(days=days)
-    statement = update(Person).where(Person.id == person.id).values(role=role, expires_at=end)
-    if end is not None:
-        # A stay ends by itself: the last review it is owed once it is over (``memory.review``).
-        statement = statement.values(last_review_due=True)
-    await session.execute(statement)
-    await session.flush()
-    return end
-
-
-async def refuse_requests_of(session: AsyncSession, person_id: UUID, now: datetime) -> int:
+async def refuse_requests_of(
+    session: AsyncSession, person_id: UUID, now: datetime, *, by: UUID | Literal["domo"] = "domo"
+) -> int:
     """Refuse the requests of the person that wait for a yes (nobody can approve them any more,
-    or they were made with an access that is over). Returns how many were refused. Flushed by the
+    or they were made with an access that is over), ``by`` the one who removed them (the person's
+    id, or the assistant). Each one leaves a fact of what went wrong (``refused``, reason
+    ``person_removed``), in this transaction. Returns how many were refused. Flushed by the
     caller."""
+    # Not at the top: ``learning.record`` reaches the policy, which reads this module.
+    from domo_core.learning.record import note_went_wrong
+
     refused = await session.execute(
         update(Confirmation)
         .where(Confirmation.requester_id == person_id, Confirmation.status == "pending")
         .values(status="refused", decided_at=now)
-        .returning(Confirmation.id)
+        .returning(Confirmation)
         .execution_options(synchronize_session=False)
     )
-    return len(refused.all())
+    requests = refused.scalars().all()
+    for c in requests:
+        action_type = c.action.get("action_type")
+        await note_went_wrong(
+            session,
+            kind="refused",
+            action_type=action_type if isinstance(action_type, str) else "",
+            now=now,
+            subject_key=c.subject_key,
+            confirmation_id=c.id,
+            by=by,
+            of_domo=c.by_domo or c.idea_reason is not None,
+            about=c.requester_id,
+            reason="person_removed",
+        )
+    return len(requests)
 
 
 @dataclass(frozen=True)
@@ -825,25 +1324,30 @@ class Removed:
     rights_paused: int
 
 
-async def disable(session: AsyncSession, person: Person, now: datetime, *, by: UUID) -> Removed:
+async def disable(
+    session: AsyncSession, person: Person, now: datetime, *, by: UUID | Literal["domo"]
+) -> Removed:
     """Remove the person from the household at ``now``, ``by`` the one who does it (the person
-    themselves when they leave): their account is disabled (they are not deleted, nor is anything
-    they wrote), every session of theirs ends, their requests that wait for a yes are refused
-    (nobody can approve them any more) and the rights the owner gave them themselves are paused
-    (``policy.rights.pause_rights_and_audit``: the audit entry ``rights.paused`` says whose and
-    how many, ``by`` being its actor, as for the removal's own entry). The tools Domo made stay:
-    they are his; what was set to launch for them waits until they come back
-    (``madetools.triggers``). What was done, in numbers. Flushed, not committed."""
+    themselves when they leave, or ``"domo"`` for the assistant's own act): their record is
+    ``gone`` (``people.records.remove`` is the one that moves it on to ``withdrawn`` when the
+    owner withdrew the access), their account, if they have one, is disabled (they are not
+    deleted, nor is anything they wrote), every session of theirs ends, their requests that wait
+    for a yes are refused (nobody can approve them any more) and the rights the owner gave them
+    themselves are paused (``policy.rights.pause_rights_and_audit``: the audit entry
+    ``rights.paused`` says whose and how many, ``by`` being its actor, as for the removal's own
+    entry). The tools Domo made stay: they are his; what was set to launch for them waits until
+    they come back (``madetools.triggers``). What was done, in numbers. Flushed, not committed."""
     await session.execute(
         update(Person)
         .where(Person.id == person.id, Person.disabled_at.is_(None))
         # Domo owes them one last review now (``memory.review``).
-        .values(disabled_at=now, last_review_due=True)
+        .values(disabled_at=now, state="gone", last_review_due=True)
     )
     await revoke_sessions_of(session, person.id)
     await forget_devices_of(session, person.id, now)
-    refused = await refuse_requests_of(session, person.id, now)
-    paused = await pause_rights_and_audit(session, person.id, now, actor=f"person:{by}")
+    refused = await refuse_requests_of(session, person.id, now, by=by)
+    actor = f"person:{by}" if isinstance(by, UUID) else by
+    paused = await pause_rights_and_audit(session, person.id, now, actor=actor)
     await session.flush()
     return Removed(requests_refused=refused, rights_paused=paused)
 
@@ -878,29 +1382,47 @@ def _told_apart(people: list[Person]) -> str:
     )
 
 
-async def former_persons(session: AsyncSession, now: datetime) -> list[Person]:
+async def former_persons(
+    session: AsyncSession, now: datetime, *, withdrawn: bool = False
+) -> list[Person]:
     """The people who left the household by ``now`` (removed, or a guest whose stay is over), in
-    the order they arrived. The owner never leaves."""
+    the order they arrived. The owner never leaves. Someone only known, or whose access was
+    withdrawn or refused, did not leave; nor is a merged or forgotten record a person to name.
+    ``withdrawn``: those whose access the owner withdrew count too (bringing someone back names
+    them, and the owner's directive then decides)."""
+    left = [Person.state == "gone", and_(Person.state == "has_access", Person.expires_at <= now)]
+    if withdrawn:
+        left.append(Person.state == "withdrawn")
     result = await session.execute(
         select(Person)
-        .where(~active_at(now), Person.role != "owner")
+        .where(known_records(), Person.role != "owner", or_(*left))
         .order_by(Person.created_at, Person.id)
     )
     return list(result.scalars())
 
 
 async def resolve_former_person(
-    session: AsyncSession, name: str, *, now: datetime, left_on: date | None = None
+    session: AsyncSession,
+    name: str,
+    *,
+    now: datetime,
+    left_on: date | None = None,
+    withdrawn: bool = False,
 ) -> Person:
     """The one former member whose display name reads like ``name`` (``text.name_key``), as
-    ``resolve_person`` finds the one person in the household.
+    ``resolve_person`` finds the one person in the household; ``withdrawn``: as
+    ``former_persons`` says.
 
     ``InvalidArguments("not_found")`` when nobody who left has it, with the detail that the person
     is still in the household when someone who is has it. ``InvalidArguments("ambiguous")`` when
     several do: the detail tells them apart by the role they had and the day they left, and
     ``left_on`` (that day) picks one of them; a day that fits nobody is ``not_found``."""
     key = name_key(name)
-    named = [p for p in await former_persons(session, now) if name_key(p.display_name) == key]
+    named = [
+        p
+        for p in await former_persons(session, now, withdrawn=withdrawn)
+        if name_key(p.display_name) == key
+    ]
     if not named:
         if any(name_key(p.display_name) == key for p in await active_persons(session, now)):
             raise InvalidArguments("not_found", "this person is still in the household")
@@ -928,9 +1450,12 @@ async def create_return_invitation(
     role: MemberRole,
     guest_days: int | None,
     display_name: str,
-    created_by: UUID,
+    created_by: UUID | None,
     now: datetime,
     with_token: Literal[True] = True,
+    link_for: UUID | None = None,
+    reason: str | None = None,
+    no_end: bool = False,
 ) -> tuple[Invitation, str]: ...
 
 
@@ -942,9 +1467,12 @@ async def create_return_invitation(
     role: MemberRole,
     guest_days: int | None,
     display_name: str,
-    created_by: UUID,
+    created_by: UUID | None,
     now: datetime,
     with_token: bool,
+    link_for: UUID | None = None,
+    reason: str | None = None,
+    no_end: bool = False,
 ) -> tuple[Invitation, str | None]: ...
 
 
@@ -955,14 +1483,18 @@ async def create_return_invitation(
     role: MemberRole,
     guest_days: int | None,
     display_name: str,
-    created_by: UUID,
+    created_by: UUID | None,
     now: datetime,
     with_token: bool = True,
+    link_for: UUID | None = None,
+    reason: str | None = None,
+    no_end: bool = False,
 ) -> tuple[Invitation, str | None]:
     """Make the return link of a person who left the household: an invitation like
     ``create_invitation`` (the same delay, the same raw token returned once and stored nowhere, or
     none when someone else said yes: ``with_token``), tied to ``person``, with the role, the days
-    and the display name they come back with.
+    (``GUEST_DAYS_DEFAULT`` for a guest when nothing was said, none with ``no_end``) and the
+    display name they come back with.
 
     ``ValueError`` for someone who has not left (or the owner), as for the cases of
     ``create_invitation``. The caller checks that the name is free (``name_in_use``). Flushed, not
@@ -976,8 +1508,12 @@ async def create_return_invitation(
         guest_days=guest_days,
         created_by=created_by,
         now=now,
+        kind="return",
         person_id=person.id,
         with_token=with_token,
+        link_for=link_for,
+        reason=reason,
+        no_end=no_end,
     )
 
 
@@ -987,7 +1523,7 @@ async def open_return_invitation_of(
     """The return link of the person that still waits (open), if there is one."""
     result = await session.execute(
         select(Invitation)
-        .where(Invitation.person_id == person_id, open_at(now))
+        .where(Invitation.person_id == person_id, Invitation.kind == "return", open_at(now))
         .order_by(Invitation.created_at, Invitation.id)
         .limit(1)
     )
@@ -1000,7 +1536,7 @@ async def returning_account(
     """The account of the person a return link is for, if the invitation is one and the person is
     still away at ``now`` (not in the household): the one whose username the page shows and whose
     password the link replaces. Nothing is locked."""
-    if invitation.person_id is None:
+    if invitation.kind != "return":
         return None
     found = await session.execute(
         select(Person, Account)
@@ -1036,7 +1572,7 @@ async def check_return(
     coming back), or the person is no longer away. ``WeakPassword`` otherwise, and the link still
     works."""
     invitation = await invitation_of(session, token, now)
-    if invitation is None or invitation.person_id is None:
+    if invitation is None or invitation.kind != "return" or invitation.person_id is None:
         raise InvitationUnavailable
     account = await returning_account(session, invitation, now)
     if account is None:
@@ -1064,7 +1600,7 @@ async def accept_return(
     The link's row and the person's are locked and checked again: ``InvitationUnavailable`` when
     the link was used (or ended) since, or the person is in the household again (a link brings
     back someone who is away). Then the person is back at ``now``: ``disabled_at`` is emptied; the
-    role, the end of the stay (``guest_days`` from ``now`` for a guest, none otherwise) and the
+    role, the end of the stay (``guest_days`` from ``now`` for a guest, else none) and the
     display name are the link's; the password is replaced; their passkeys are deleted (they may
     add new ones); every session of theirs ends, and the requests of theirs that waited for a yes
     are refused: of the old access, nothing is left. The rights the owner had given to them
@@ -1084,6 +1620,7 @@ async def accept_return(
     if (
         invitation is None
         or not is_open(invitation, now)
+        or invitation.kind != "return"
         or invitation.person_id != returning.person_id
     ):
         raise InvitationUnavailable
@@ -1100,11 +1637,25 @@ async def accept_return(
     person, account = row
     if person.role == "owner" or is_active(person, now):
         raise InvitationUnavailable
+    # Whatever the age of the link: the owner's withdrawal or refusal gives nothing back.
+    if await under_directive(session, person.id, now) is not None:
+        raise InvitationUnavailable
     person.disabled_at = None
+    person.state = "has_access"
     person.role = invitation.role
+    # The role made for the household they carry comes back with them while it exists and its base
+    # is the link's role; otherwise they leave it. (Not at the top: ``people.records`` reads this
+    # module.)
+    from domo_core.people import made_roles, records
+
+    if await made_roles.kept_at_return(session, person, invitation.role) is None:
+        await records.leave_role(session, person, now=now)
+    # A return link never lifts the mark of a child: only the owner's own act does.
+    person.is_child = person.is_child or invitation.role == "child"
+    # The days were resolved when the link was made: none is a stay with no end.
     person.expires_at = (
-        now + timedelta(days=invitation.guest_days or GUEST_DAYS_DEFAULT)
-        if invitation.role == "guest"
+        now + timedelta(days=invitation.guest_days)
+        if invitation.role == "guest" and invitation.guest_days is not None
         else None
     )
     if person.expires_at is not None:
@@ -1129,7 +1680,7 @@ async def accept_return(
     await revoke_sessions_of(session, person.id)
     # A guest whose stay ended, and whom the upkeep has not swept yet, still has their devices.
     await forget_devices_of(session, person.id, now)
-    await refuse_requests_of(session, person.id, now)
+    await refuse_requests_of(session, person.id, now, by="domo")
     invitation.accepted_at = now
     invitation.accepted_person_id = person.id
     await session.flush()
@@ -1154,7 +1705,7 @@ class Transferred:
     left_the_successors: int
 
 
-async def _off_the_successors(session: AsyncSession, person_id: UUID) -> int:
+async def off_the_successors(session: AsyncSession, person_id: UUID) -> int:
     """Take the person off the owner's list of successors, if they are on it, and close the gap:
     the places after theirs move up one rank, so that the ranks go on from 1 without a gap (as
     ``household.succession`` keeps them). Returns how many places were taken off (1 or 0). Whoever
@@ -1207,11 +1758,22 @@ async def transfer_ownership(
         raise ValueError("only the current owner hands the role over")
     if new is None or new.role != "adult" or not is_active(new, now):
         raise ValueError("the role goes to an adult who is in the household")
+    # The owner is the one who can prove who he is: an account, and never the mark of a child.
+    has_account = await session.scalar(select(Account.id).where(Account.person_id == new.id))
+    if has_account is None or new.is_child:
+        raise ValueError("the role goes to an adult with an account, never a child")
     old_id, new_id, old_name, new_name = old.id, new.id, old.display_name, new.display_name
+    # Not at the top: ``people.records`` reads this module. A made role does not go with the
+    # owner's: he leaves it.
+    from domo_core.people.records import leave_role
+
+    await leave_role(session, new, now=now)
     # In this order: the index allows one owner, so the old one stops being it first.
     await session.execute(update(Person).where(Person.id == old_id).values(role="adult"))
     await session.execute(
-        update(Person).where(Person.id == new_id).values(role="owner", expires_at=None)
+        update(Person)
+        .where(Person.id == new_id)
+        .values(role="owner", expires_at=None, standing="lives_here")
     )
     # The new owner's requests that waited for the owner's yes: the owner does not say yes to their
     # own request on someone's behalf, and there is no other owner. They wait for their own yes.
@@ -1228,7 +1790,7 @@ async def transfer_ownership(
     )
     moved = len(rerouted.all())
     paused = await pause_personal_rights(session, new_id, now)
-    left = await _off_the_successors(session, new_id)
+    left = await off_the_successors(session, new_id)
     # Last, just before the commit: identifiers, names and numbers.
     await append_audit(
         session,

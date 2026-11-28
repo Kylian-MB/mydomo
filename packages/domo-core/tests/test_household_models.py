@@ -79,6 +79,7 @@ async def test_a_person_keeps_when_they_stop_and_who_invited_them(session, owner
         invited_by=owner.id,
         expires_at=until,
         disabled_at=utc_in(days=1),
+        state="gone",
     )
     session.add(guest)
     await session.flush()
@@ -131,8 +132,8 @@ async def test_an_invitation_that_is_not_for_a_guest_has_no_guest_days(session, 
     assert invitation.guest_days is None
 
 
-@pytest.mark.parametrize("days", [1, 2, 30])
-async def test_a_guest_invitation_has_one_to_thirty_days(session, owner, days):
+@pytest.mark.parametrize("days", [1, 2, 30, 366, 5000, None])
+async def test_a_guest_invitation_has_a_day_or_more_with_no_ceiling_or_no_end(session, owner, days):
     invitation = an_invitation(owner, role="guest", guest_days=days)
     session.add(invitation)
     await session.flush()
@@ -140,10 +141,10 @@ async def test_a_guest_invitation_has_one_to_thirty_days(session, owner, days):
     assert invitation.guest_days == days
 
 
-@pytest.mark.parametrize("days", [-1, 0, 366])
-async def test_guest_days_outside_one_to_the_ceiling_are_refused(session, owner, days):
-    """The table keeps a technical ceiling only: the household's rule (30 days unless the owner
-    chose otherwise) is a limit of the catalog (``test_policy_limits.py``)."""
+@pytest.mark.parametrize("days", [-1, 0])
+async def test_guest_days_below_one_are_refused(session, owner, days):
+    """The table keeps a stay of a day at least, with no ceiling (audit POL-5): a limit on its
+    length is the owner's own (``test_policy_limits.py``)."""
     session.add(an_invitation(owner, role="guest", guest_days=days))
     with pytest.raises(IntegrityError):
         await session.flush()

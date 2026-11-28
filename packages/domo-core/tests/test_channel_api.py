@@ -31,6 +31,7 @@ from chat_support import (
     wait_for_status,
 )
 from domo_common.i18n import t
+from domo_common.meanings import holes
 from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import SESSION_COOKIE
 from domo_core.channels import turns
@@ -702,16 +703,18 @@ def test_the_cards_of_a_form_left_for_its_reader_are_said_in_words_here():
 def test_a_card_that_points_at_a_button_is_said_in_words_here(key):
     """The page says these cards with the button under them; this channel has none: their
     sentence says where the person finds it, in their texts, wherever it is said."""
-    page_sentence = REFERENCE(key)
+    # A card that names someone keeps their name, and its end, in its sentence in words.
+    params = {hole: f"<{hole}>" for hole in holes(key)}
+    page_sentence = REFERENCE(key, **params)
     assert api_render.in_words(f"Done. {page_sentence}", REFERENCE) == (
-        f"Done. {REFERENCE(f'{key}.in_words')}"
+        f"Done. {REFERENCE(f'{key}.in_words', **params)}"
     )
-    assert api_render.sentence_of_card({"key": key, "params": {}}, REFERENCE) == REFERENCE(
-        f"{key}.in_words"
+    assert api_render.sentence_of_card({"key": key, "params": params}, REFERENCE) == REFERENCE(
+        f"{key}.in_words", **params
     )
     for language in ("en", "fr"):
         for word in ("button", "bouton"):
-            assert word not in t(f"{key}.in_words", language).lower()
+            assert word not in t(f"{key}.in_words", language, **params).lower()
 
 
 async def test_the_exact_words_of_a_note_are_said_in_full_on_the_api(

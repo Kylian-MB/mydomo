@@ -1,6 +1,6 @@
 [project]
 name = "domo-speech"
-version = "0.14.2"
+version = "0.15.0"
 description = "The assistant speech service: sound to text, text to sound, sound to voice print."
 readme = "README.md"
 requires-python = ">=3.12"

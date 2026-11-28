@@ -19,9 +19,10 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
-from chat_support import ChatServer
+from chat_support import ChatServer, an_actor
 from domo_common.i18n import t
 from domo_common.meanings import keys_of_group
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.audit.models import AuditEntry
 from domo_core.confirmations.describe import describe_for_people
@@ -38,7 +39,7 @@ from domo_core.llm.types import (
     ToolDefinition,
 )
 from domo_core.policy.catalog import DEFAULT_POLICY
-from domo_core.policy.roles import Actor, as_role
+from domo_core.policy.roles import Actor
 from domo_core.texts.languages import known_languages
 from domo_core.texts.models import WrittenText
 from domo_core.texts.scheduler import reads_another_language
@@ -150,7 +151,7 @@ def acting_as(tool_context: ToolContext, server: ChatServer, person: Person) -> 
     background as in a turn."""
     return replace(
         tool_context,
-        actor=Actor(person.id, as_role(person.role)),
+        actor=actor_of(person),
         person=person,
         text_writing=server.app.state.text_writing,
     )
@@ -459,7 +460,7 @@ async def test_someone_elses_texts_need_a_right(
     row = await person_row(sam)
     assert (row.language, row.writing_note) == (None, None)
     assert "texts_for_someone" not in [
-        tool.name for tool in tools_for("adult", TOOLS, DEFAULT_POLICY)
+        tool.name for tool in tools_for(an_actor("adult"), TOOLS, DEFAULT_POLICY)
     ]
 
     # With a right of the owner, Alex may.
@@ -559,10 +560,10 @@ async def test_only_the_owner_rewrites_a_language_version_by_default(
         {"tool": "texts_rewrite_language", "status": "refused", "reason": "not_allowed"}
     ]
     assert "texts_rewrite_language" in [
-        tool.name for tool in tools_for("owner", TOOLS, DEFAULT_POLICY)
+        tool.name for tool in tools_for(an_actor("owner"), TOOLS, DEFAULT_POLICY)
     ]
     assert "texts_rewrite_language" not in [
-        tool.name for tool in tools_for("adult", TOOLS, DEFAULT_POLICY)
+        tool.name for tool in tools_for(an_actor("adult"), TOOLS, DEFAULT_POLICY)
     ]
 
     reply = await owner_chat.say_with_tool("texts_rewrite_language", arguments, judge="do")

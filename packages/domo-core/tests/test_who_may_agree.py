@@ -19,6 +19,7 @@ from domo_core.policy.actions import DescribedAction
 from domo_core.policy.barrier import Allow
 from domo_core.policy.catalog import DEFAULT_POLICY, an_adult_agrees_for
 from domo_core.policy.models import PolicyRight
+from domo_core.policy.rights import NO_RIGHTS
 from domo_core.policy.roles import Actor, domo_actor
 from domo_core.tools.chain import _the_rest_waits
 from domo_core.tools.context import ToolContext, ToolOutcome
@@ -60,7 +61,7 @@ async def test_the_owner_s_rule_on_his_act_in_the_owner_s_own_turn_is_the_owner_
     [request] = await _requests(session_factory)
     # His request, the owner's to answer: never one nobody may say yes to.
     assert (request.by_domo, request.approver_kind) == (True, "owner")
-    assert may_decide(request, alex, LIVE)
+    assert may_decide(request, alex, LIVE, rights=NO_RIGHTS, policy=DEFAULT_POLICY)
 
 
 async def test_the_owner_s_rule_on_his_act_in_dana_s_turn_takes_the_owner_s_yes_alone(
@@ -73,7 +74,9 @@ async def test_the_owner_s_rule_on_his_act_in_dana_s_turn_takes_the_owner_s_yes_
     await handle_tool_call(run_by_hand(), ctx=ctx, reply_id=reply_id)
     [request] = await _requests(session_factory)
     assert (request.by_domo, request.approver_kind) == (True, "owner")
-    assert may_decide(request, alex, LIVE) and not may_decide(request, dana, LIVE)
+    assert may_decide(
+        request, alex, LIVE, rights=NO_RIGHTS, policy=DEFAULT_POLICY
+    ) and not may_decide(request, dana, LIVE, rights=NO_RIGHTS, policy=DEFAULT_POLICY)
 
 
 class TakeBackMoving:
@@ -155,13 +158,15 @@ async def test_his_chain_sent_back_for_a_plain_yes_waits_for_the_owner(session_f
     [request] = await _requests(session_factory)
     assert request.id == request_id
     assert (request.by_domo, request.approver_kind) == (True, "owner")
-    assert may_decide(request, alex, LIVE) and not may_decide(request, dana, LIVE)
+    assert may_decide(
+        request, alex, LIVE, rights=NO_RIGHTS, policy=DEFAULT_POLICY
+    ) and not may_decide(request, dana, LIVE, rights=NO_RIGHTS, policy=DEFAULT_POLICY)
 
 
 def test_one_rule_says_when_an_adult_agrees_for_a_child():
-    assert an_adult_agrees_for("child", "household.invite")
-    assert not an_adult_agrees_for("child", "device.remove")
-    assert not an_adult_agrees_for("adult", "household.invite")
+    assert an_adult_agrees_for(True, "household.invite")
+    assert not an_adult_agrees_for(True, "device.remove")
+    assert not an_adult_agrees_for(False, "household.invite")
     # Neither the barrier nor who answers for a thing branch on a role's name for it.
     for module in ("policy/barrier.py", "policy/subjects.py"):
         assert 'role == "child"' not in (SOURCE / module).read_text(encoding="utf-8"), module

@@ -44,6 +44,7 @@ from typing import Final, Literal
 import httpx
 from sqlalchemy import or_, select, update
 
+from domo_core.accounts.actors import actor_of as sure_actor_of
 from domo_core.accounts.models import Person
 from domo_core.channels.voice.abilities import VOICE
 from domo_core.channels.voice.deps import VoiceDeps
@@ -70,7 +71,7 @@ from domo_core.llm.person_picker import person_picker
 from domo_core.llm.picker import ModelPicker
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.open_catalog import load_policy
-from domo_core.policy.roles import Actor, as_role
+from domo_core.policy.rights import load_rights
 from domo_core.proofs.kinds import MAX_HEARD_LENGTH, ProofPlace, phrase_ref
 from domo_core.proofs.service import (
     NotAnAnswer,
@@ -206,7 +207,11 @@ async def request_waits(
     """Whether the request ``confirmation_id`` still waits for a proof that ``person`` may give."""
     async with deps.turn.session_factory() as session:
         c = (await confirmations_by_id(session, [confirmation_id])).get(confirmation_id)
-        if c is None or c.status != "pending" or not may_decide(c, person, now):
+        if c is None or c.status != "pending":
+            return False
+        rights = await load_rights(session)
+        policy = await load_policy(session, deps.turn.policy)
+        if not may_decide(c, person, now, rights=rights, policy=policy):
             return False
         try:
             return ask_of(c) == "proof"
@@ -318,7 +323,7 @@ async def _the_judge_lets_it(
                 await request_told(session, c, before=(), after=(), now=now),
                 yes=YesTold(when="just now", by="the person", how="proof"),
             )
-        actor = actor_of(speaker, as_role(person.role))
+        actor = actor_of(speaker, person)
         ctx = replace(
             context,
             actor=actor,
@@ -370,7 +375,7 @@ async def _moment_of_the_decision(
     notify: Callable[[uuid.UUID], None] = Conversation(turn).notify
     return ToolContext(
         session_factory=turn.session_factory,
-        actor=Actor(person_id=person.id, role=as_role(person.role)),
+        actor=sure_actor_of(person),
         person=person,
         conversation_id=confirmation_id,  # replaced by the request's own conversation
         origin=origin,

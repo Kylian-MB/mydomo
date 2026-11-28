@@ -79,6 +79,7 @@ from domo_core.household.service import resolve_person
 from domo_core.identity.clues import keep_manner_clue
 from domo_core.llm.types import JsonObject, ToolDefinition
 from domo_core.policy.actions import DescribedAction
+from domo_core.policy.rights import NO_RIGHTS, load_rights
 from domo_core.policy.roles import Actor
 from domo_core.proofs.kinds import phrase_ref
 from domo_core.proofs.service import means_of, remove
@@ -392,6 +393,7 @@ async def _whose_phrase(
     wish of whoever asks (``whose_judged``). The person's own: as before (their own words, the
     speaker them). Someone else's: only the owner's, or an adult's for a child, request, and always
     weighed (the owner, 2026-11-27); anyone else is refused."""
+    from domo_core.accounts.actors import actor_of, is_child
     from domo_core.confirmations.who_agrees import may_agree_for_a_child
 
     name = _phrase_named(arguments)
@@ -399,13 +401,19 @@ async def _whose_phrase(
     _themself(ctx)
     asker = ctx.person
     whose = asker
+    rights = NO_RIGHTS
     if name is not None:
         async with ctx.session_factory() as session:
             whose = await resolve_person(session, name, now=ctx.clock(), speaker=asker.id)
+            rights = await load_rights(session)
     is_self = whose.id == asker.id
     if not is_self:
+        # A child is whoever their record marks as one (``accounts.actors.is_child``), whatever
+        # their role. Who may agree for them is read from the asker's record: a doubt on who
+        # speaks is weighed by the barrier and the judge, never a refusal of the tool.
         has_a_say = asker.role == "owner" or (
-            whose.role == "child" and may_agree_for_a_child(asker.role, asker.id, whose.id)
+            is_child(whose)
+            and may_agree_for_a_child(actor_of(asker), whose.id, rights=rights, policy=ctx.policy)
         )
         if not has_a_say:
             raise InvalidArguments("not_possible", _NOT_YOURS_TO_REMOVE)

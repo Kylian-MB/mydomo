@@ -105,7 +105,7 @@ from domo_core.db import SessionFactory, create_engine, load_models, make_sessio
 from domo_core.deliveries.service import DeliveryNotes
 from domo_core.gatekeeper_client import GatekeeperClient, load_core_token, new_http_client
 from domo_core.household import routes as household_routes
-from domo_core.household.upkeep import departures_pass
+from domo_core.household.upkeep import departures_pass, merge_traces_pass, unused_roles_pass
 from domo_core.llm.speech.at_home import AtHome
 from domo_core.llm.speech.client import SpeechClient
 from domo_core.llm.speech.home import speech_home_pass
@@ -116,6 +116,7 @@ from domo_core.memory.embedder import LocalEmbedder
 from domo_core.memory.review import review_pass
 from domo_core.naming import DEFAULT_NAME, name_shown
 from domo_core.notes.upkeep import notes_pass
+from domo_core.people.hooks import RecordListeners
 from domo_core.plans.upkeep import plans_pass
 from domo_core.policy.settings import load_policy_settings
 from domo_core.sandbox_client import SandboxClient
@@ -332,6 +333,8 @@ def create_app(settings: CoreSettings) -> FastAPI:
         passes = [
             notes_pass(app.state.session_factory),
             departures_pass(app.state.session_factory),
+            unused_roles_pass(app.state.session_factory),
+            merge_traces_pass(app.state.session_factory),
             corners_pass(app.state.session_factory, tools_admin),
             arrivals_pass(arrival_deps(app), app.state.wakes),
             # The requests past their lifetime are expired as they lapse, and the assistant
@@ -421,6 +424,8 @@ def create_app(settings: CoreSettings) -> FastAPI:
     app.state.streaming_replies = set()
     # What people wrote while a turn of theirs ran, for that turn or the one after it.
     app.state.kept = KeptMessages()
+    # The channels told of what happens to the records (``people.hooks``): one for the application.
+    app.state.record_listeners = RecordListeners()
     app.state.wakes = Wakes()
     # The arrival turns that run, by their reply: a message the person says stops theirs.
     app.state.arrival_turns = ArrivalTurns()

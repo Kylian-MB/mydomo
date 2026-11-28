@@ -57,6 +57,7 @@ from pydantic import JsonValue
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domo_core.accounts.actors import VISITING, is_child, is_visiting
 from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import active_at
 from domo_core.audit.log import append_audit
@@ -168,16 +169,19 @@ async def _writer_context(ctx: ToolContext, now: datetime) -> tuple[WriterContex
     with anyio.fail_after(_STEP_SECONDS):
         async with ctx.session_factory() as session:
             people = await session.execute(
-                select(Person.id, Person.display_name, Person.role)
+                select(Person.id, Person.display_name, Person.role, Person.is_child, VISITING)
                 .where(active_at(now))
                 .order_by(Person.created_at, Person.id)
             )
+            found = people.all()
             persons: tuple[tuple[uuid.UUID, str, Role], ...] = tuple(
-                (pid, name, as_role(role)) for pid, name, role in people.all()
+                (row[0], row[1], as_role(row[2])) for row in found
             )
+            # Whose access the owner withdrew left too: their rights are the owner's to take away.
+            gone = await former_persons(session, now, withdrawn=True)
             former: tuple[tuple[uuid.UUID, str, Role, str], ...] = tuple(
                 (left.id, left.display_name, as_role(left.role), left_on(left).isoformat())
-                for left in await former_persons(session, now)
+                for left in gone
             )
             rights = await load_rights(session)
             paused = await paused_rights(session)
@@ -200,6 +204,12 @@ async def _writer_context(ctx: ToolContext, now: datetime) -> tuple[WriterContex
         time_zone_set=time_zone is not None,
         facts_for=facts_for,
         former=former,
+        child_ids=frozenset(
+            [row[0] for row in found if row[3]] + [p.id for p in gone if is_child(p)]
+        ),
+        visiting_ids=frozenset(
+            [row[0] for row in found if row[4]] + [p.id for p in gone if is_visiting(p)]
+        ),
         # What the tools always refuse, whatever the rights (Ruling R19): their own words.
         fixed_refusals={
             tool.action_type: tool.fixed_refusal
@@ -283,7 +293,9 @@ class RightsPropose:
             "draft in this same answer, then tell them what changed, with one example. Only when "
             "you are not sure you understood, or the draft does more than they said, tell them "
             "its rights and examples first and ask. If the result is a question, ask it to them "
-            "and call again with their answer added."
+            "and call again with their answer added. A rule for a role made for the household "
+            "('the nannies may not open the garage') is not drafted here: change that role "
+            "itself (role_change), so that it holds for whoever has it, now and later."
         ),
         parameters={
             "type": "object",

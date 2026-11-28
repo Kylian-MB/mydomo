@@ -2,12 +2,15 @@
 database, no web: the calls are handled by a function of the test); and what the descriptions of
 the core's tools would make Domo say to the person who reads him."""
 
+import ast
 import json
 import logging
 import re
 from collections.abc import AsyncGenerator, Iterator, Sequence
+from pathlib import Path
 from typing import cast
 
+import domo_core
 import pytest
 from domo_core.chat.agent import (
     ActionRecord,
@@ -30,7 +33,9 @@ from domo_core.llm.types import (
     ToolDefinition,
     ToolResult,
 )
-from domo_core.policy.catalog import OWNER_ONLY_ACTIONS
+from domo_core.people import whose
+from domo_core.policy.catalog import OWNER_ONLY_ACTIONS, PEOPLE_GESTURES
+from domo_core.tools.people_tools import BETWEEN_PEOPLE
 from domo_core.tools.registry import TOOLS as REGISTRY
 from fakes import DEFAULT_USAGE, FakeChatModel, FixedModels
 
@@ -489,3 +494,106 @@ def test_what_is_shown_once_is_not_in_the_repr_of_an_action():
     )
     assert "ABCD-EFGH-JKLM" not in repr(record)
     assert record.card_once is not None
+
+
+# --- what the people tools tell the assistant (Task 25) ---------------------------------------
+
+# The modules of the tools that make, change and look at the people of the house.
+_PEOPLE_TOOL_MODULES = (
+    "people_tools",
+    "link_tools",
+    "role_tools",
+    "promise_tools",
+    "directive_tools",
+    "merge_tools",
+    "invitation_send",
+    "household_admin",
+    "household_return",
+    "household_read",
+    "nickname_tools",
+    "memory_tools",
+    "profile",
+)
+# The keys of a result that would hold a sentence to say, rather than data.
+_SENTENCE_KEYS = frozenset({"message", "say", "text", "sentence", "reply", "tell"})
+_CORE = Path(domo_core.__file__).parent
+
+
+def test_every_tool_has_a_description():
+    missing = [name for name, tool in REGISTRY.items() if not tool.definition.description.strip()]
+    assert missing == []
+
+
+def test_every_people_gesture_ends_with_the_same_sentence_on_his_own_ideas():
+    """A gesture on people nobody asked for is the assistant's own idea: every tool of
+    ``PEOPLE_GESTURES`` says it last, in one sentence written once (``whose.HIS_OWN_IDEA``)."""
+    gestures = {
+        name: tool for name, tool in REGISTRY.items() if tool.action_type in PEOPLE_GESTURES
+    }
+    assert {tool.action_type for tool in gestures.values()} == PEOPLE_GESTURES
+    assert "act_on_my_own" in whose.HIS_OWN_IDEA
+    wrong = [
+        name
+        for name, tool in gestures.items()
+        if not tool.definition.description.endswith(whose.HIS_OWN_IDEA)
+        or tool.definition.description.count(whose.HIS_OWN_IDEA) != 1
+    ]
+    assert wrong == []
+
+
+def test_what_is_never_said_between_people_is_written_once():
+    """Spec 6.8, on the two tools that show records: one sentence (``BETWEEN_PEOPLE``)."""
+    for name in ("record_look", "household_list"):
+        assert REGISTRY[name].definition.description.endswith(BETWEEN_PEOPLE), name
+
+
+def test_no_tool_result_holds_a_sentence_for_a_person():
+    """What a people tool gives back is data for the assistant, who writes every text: no key of
+    a dictionary those modules build (a literal, an assignment or ``dict(...)``) is named for a
+    sentence to say."""
+    found: list[str] = []
+    for module in _PEOPLE_TOOL_MODULES:
+        source = (_CORE / "tools" / f"{module}.py").read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(source)):
+            keys: list[ast.expr | None] = []
+            if isinstance(node, ast.Dict):
+                keys = list(node.keys)
+            elif isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store):
+                keys = [node.slice]
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "dict"
+            ):
+                keys = [ast.Constant(word.arg) for word in node.keywords]
+            for key in keys:
+                if isinstance(key, ast.Constant) and key.value in _SENTENCE_KEYS:
+                    found.append(f"{module} {key.value}")
+    assert found == []
+
+
+def _core_texts() -> Iterator[tuple[str, str]]:
+    for path in sorted(_CORE.rglob("*.py")):
+        yield str(path.relative_to(_CORE)), " ".join(path.read_text(encoding="utf-8").split())
+
+
+def test_no_docstring_still_says_only_a_person_invites():
+    """The assistant invites, removes and changes roles too, and a person is a record with or
+    without a login: no docstring of the core still says otherwise."""
+    stale = (
+        "a member of the household they invited",
+        "made by the owner or whoever has the right",
+        "The owner, or whoever the owner gave the right, invites",
+        "nobody but the owner, and he, may change such an invitation",
+        "stays the owner's, or the right of whoever the owner gave it to",
+        "``role`` is ``owner``, ``adult``, ``child`` or ``guest``",
+    )
+    found = [(where, said) for where, text in _core_texts() for said in stale if said in text]
+    assert found == []
+
+
+def test_no_docstring_still_says_a_yes_is_always_asked():
+    """TLP-11: the judge decides whether a yes is asked; no docstring promises one every time."""
+    stale = ("waits for an explicit yes every time", "still confirmed, as always")
+    found = [(where, said) for where, text in _core_texts() for said in stale if said in text]
+    assert found == []

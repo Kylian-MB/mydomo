@@ -48,9 +48,9 @@ from domo_core.policy.catalog import (
 )
 from domo_core.policy.decision import decide_now
 from domo_core.policy.facts import facts_of
-from domo_core.policy.models import PolicySetting
+from domo_core.policy.models import PolicyRight, PolicySetting
 from domo_core.policy.rights import NO_RIGHTS, Right, RightsTable
-from domo_core.policy.roles import ROLES, Actor, Role, Standing, as_role
+from domo_core.policy.roles import ROLES, Actor, Role, Standing
 from domo_core.policy.settings import VOICE_UNSURE_KEY, InvalidSetting, validate_setting
 from domo_core.tools.context import ToolContext, ToolOutcome
 from domo_core.tools.registry import TOOLS
@@ -179,11 +179,16 @@ def test_a_missing_right_refuses_before_any_judgement() -> None:
 
 
 def test_an_owners_ask_me_first_still_asks_beside_the_judge() -> None:
+    # Since "Domo makes the people", an adult invites by the owner's right only.
     adult = Actor(uuid.uuid4(), "adult", standing="unsure")
-    rights = RightsTable((_right(role="adult", action_type="household.invite", ask="proof"),))
+    rights = RightsTable(
+        (_right(role="adult", action_type="household.invite", access="allow", ask="proof"),)
+    )
     assert _decide(adult, INVITE, rights=rights) == Allow("proof", judge_identity=True)
     # An approver the owner names is still his to give, and the judge weighs who asks too.
-    rights = RightsTable((_right(role="adult", action_type="household.invite", approver="owner"),))
+    rights = RightsTable(
+        (_right(role="adult", action_type="household.invite", access="allow", approver="owner"),)
+    )
     decided = _decide(adult, INVITE, rights=rights)
     assert isinstance(decided, NeedsApproval) and decided.approver == "owner"
     assert decided.judge_identity
@@ -322,14 +327,14 @@ def _heard(alex: Person, *, short: bool, proofs: tuple[Clue, ...] = ()) -> Speak
 def test_a_short_yes_alone_is_unsure_for_what_is_sensitive_only() -> None:
     alex = Person(id=uuid.uuid4(), display_name="Alex", role="owner")
     for proofs in ((), (PROOF,)):
-        alone = actor_of(_heard(alex, short=True, proofs=proofs), "owner")
+        alone = actor_of(_heard(alex, short=True, proofs=proofs), alex)
         assert _decide(alone, INVITE) == Allow(judge_identity=True)
         # An ordinary ask is served as by the page, even when the owner has ordinary things
         # judged: the page is sure of who it is.
         assert _decide(alone, RENAME) == Allow()
         assert _decide(alone, RENAME, ordinary_when_unsure="judge") == Allow()
     # Right after the person's own long sentence, joined to it: not short, sure.
-    joined = actor_of(_heard(alex, short=False), "owner")
+    joined = actor_of(_heard(alex, short=False), alex)
     assert _decide(joined, INVITE) == Allow()
     assert _decide(joined, RENAME) == Allow()
 
@@ -375,7 +380,7 @@ def _unsure_ctx(session_factory: Any, person: Person, conversation: Conversation
     speaker = Speaker(person.id, "voice", clues=(session, COLD), microphone="mic")
     return ToolContext(
         session_factory=session_factory,
-        actor=actor_of(speaker, as_role(person.role)),
+        actor=actor_of(speaker, person),
         person=person,
         conversation_id=conversation.id,
         origin="",
@@ -611,7 +616,11 @@ async def test_an_unsure_persons_side_reaches_the_stricter_decision_of_an_idea(
     ctx = _unsure_ctx(session_factory, alex, conversation)
     mark = ToolCall("m", "act_on_my_own", json.dumps({"reason": "Tom comes tonight"}))
     await handle_tool_call(mark, ctx=ctx, reply_id=reply_id)
-    await handle_tool_call(_invite(), ctx=ctx, reply_id=reply_id)
+    # A gesture of his own on people carries its reason (``memory.review``'s rule too).
+    invite = ToolCall(
+        "i", "household_invite", json.dumps({**INVITE_TOM, "reason": "Alex said Tom comes"})
+    )
+    await handle_tool_call(invite, ctx=ctx, reply_id=reply_id)
     assert seen
     person, decided = seen[0]
     assert person.judge_identity and decided.judge_identity
@@ -630,7 +639,7 @@ def test_a_sound_with_no_usable_print_is_too_short_to_tell() -> None:
         now=LIVE,
     )
     assert speaker.voice_too_short
-    assert _decide(actor_of(speaker, "owner"), INVITE) == Allow(judge_identity=True)
+    assert _decide(actor_of(speaker, alex), INVITE) == Allow(judge_identity=True)
 
 
 async def test_a_print_that_cannot_be_read_says_so(session_factory: Any) -> None:
@@ -946,8 +955,8 @@ def test_a_voice_to_learn_again_is_unsure_for_what_is_sensitive_only() -> None:
         now=LIVE,
     )
     assert speaker.person_id == alex.id and speaker.voice_too_short
-    assert _decide(actor_of(speaker, "owner"), INVITE) == Allow(judge_identity=True)
-    assert _decide(actor_of(speaker, "owner"), RENAME) == Allow()
+    assert _decide(actor_of(speaker, alex), INVITE) == Allow(judge_identity=True)
+    assert _decide(actor_of(speaker, alex), RENAME) == Allow()
 
 
 # --- someone at another person's page, the judge silent (final fix wave, case 7) ----------------
@@ -960,6 +969,18 @@ async def test_at_someone_elses_page_a_silent_judge_lets_the_ordinary_be_done(
     async with session_factory() as writer:
         dana = Person(display_name="Dana", role="adult")
         writer.add(dana)
+        # Since "Domo makes the people", an adult invites by the owner's right only: Dana's
+        # rules count here too.
+        writer.add(
+            PolicyRight(
+                role="adult",
+                action_type="household.invite",
+                access="allow",
+                summary="Adults may invite",
+                owner_words="adults may invite",
+                created_by=alex.id,
+            )
+        )
         await writer.commit()
     _judge(monkeypatch, fallback("error"))
     ctx = _unsure_ctx(session_factory, alex, conversation)

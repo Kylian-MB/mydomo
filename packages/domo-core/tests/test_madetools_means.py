@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 from domo_common.sandbox_api import JsonObject, RunRequest
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.madetools import means as means_module
 from domo_core.madetools.asks import (
@@ -44,7 +45,6 @@ from domo_core.madetools.means import (
 from domo_core.madetools.models import MadeTool, MadeToolTrigger
 from domo_core.madetools.risks import read_operations
 from domo_core.madetools.settings import SETTINGS, set_for_tool
-from domo_core.policy.roles import Actor, as_role
 from domo_core.prompts import ToolWake
 from domo_core.sandbox_client import SandboxUnavailable
 from domo_core.toolsdb.spaces import ToolsSpace
@@ -720,7 +720,7 @@ async def test_a_dry_run_judges_nothing_and_launches_nothing(
         tool_name="a",
         tool_id=a.id,
         for_whom=ForWhom(dana),
-        actor=Actor(dana.id, as_role(dana.role)),
+        actor=actor_of(dana),
         depth=0,
         chain=Chain(),
         waited=False,

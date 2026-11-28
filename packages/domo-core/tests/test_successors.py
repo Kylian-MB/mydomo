@@ -19,7 +19,7 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
-from chat_support import Card
+from chat_support import Card, an_actor
 from domo_common.i18n import t
 from domo_core.accounts.models import Person
 from domo_core.confirmations.describe import describe_for_people
@@ -325,9 +325,9 @@ async def test_only_the_owner_sees_or_changes_the_list(
         assert reply.actions == [{"tool": tool, "status": "refused", "reason": "not_allowed"}]
     # Neither an adult nor a child is offered any of the four.
     for role in ("adult", "child"):
-        offered = {tool.name for tool in tools_for(role, TOOLS, DEFAULT_POLICY)}
+        offered = {tool.name for tool in tools_for(an_actor(role), TOOLS, DEFAULT_POLICY)}
         assert not offered & {SHOW, SET, DEATH, UNDO}, role
-    assert {tool.name for tool in tools_for("owner", TOOLS, DEFAULT_POLICY)} >= {
+    assert {tool.name for tool in tools_for(an_actor("owner"), TOOLS, DEFAULT_POLICY)} >= {
         SHOW,
         SET,
         DEATH,
@@ -801,18 +801,22 @@ async def test_a_transfer_to_someone_who_is_not_on_the_list_changes_nothing_of_i
     assert entry.details["left_the_successors"] == 0
 
 
-async def test_the_service_says_whether_the_new_owner_left_the_list(session, add_person, clock):
+async def test_the_service_says_whether_the_new_owner_left_the_list(
+    session, add_person, add_account, clock
+):
     owner = await add_person("Owner", "owner")
+    await add_account(owner, "owner")
     alex = await add_person("Alex", "adult")
-    kim = await add_person("Kim", "adult")
-    await replace_successors(session, [member(alex), member(kim)], clock())
+    await add_account(alex, "alex")
+    dana = await add_person("Dana", "adult")
+    await replace_successors(session, [member(alex), member(dana)], clock())
     done = await transfer_ownership(session, old_owner=owner, new_owner=alex, now=clock())
     assert done.left_the_successors == 1
-    assert [(s.name, s.rank) for s in await list_successors(session, clock())] == [("Kim", 1)]
+    assert [(s.name, s.rank) for s in await list_successors(session, clock())] == [("Dana", 1)]
     # The old owner is not put on the list: nothing is automatic.
     back = await transfer_ownership(session, old_owner=alex, new_owner=owner, now=clock())
     assert back.left_the_successors == 0
-    assert [s.name for s in await list_successors(session, clock())] == ["Kim"]
+    assert [s.name for s in await list_successors(session, clock())] == ["Dana"]
 
 
 async def test_the_old_owner_does_not_read_the_list_on_a_request_they_left_waiting(

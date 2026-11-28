@@ -6,8 +6,10 @@ from datetime import datetime
 from typing import Final, Literal
 from uuid import UUID
 
+from domo_core.accounts.actors import actor_of as accounts_actor_of
+from domo_core.accounts.models import Person
 from domo_core.llm.types import JsonObject
-from domo_core.policy.roles import Actor, Role, Standing
+from domo_core.policy.roles import Actor, Standing
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,8 @@ class Clue:
 @dataclass(frozen=True)
 class Speaker:
     """Who speaks. ``channel`` is data for the judge and the audit, never branched on.
+    ``person_id`` is a record of ``persons``, with or without an account: the one who speaks gives
+    the rights and the discussion, by their id alone.
 
     ``nobody_spoke`` is set for a turn the assistant started, that answers no words (a wake, an
     arrival, a plan): who it is for stays as the clues say, but nobody is said to speak.
@@ -213,14 +217,16 @@ def joined_by(
     )
 
 
-def actor_of(speaker: Speaker, role: Role) -> Actor:
-    """The speaker as the barrier sees them: their ``standing``, and whether their voice was too
-    short to tell (``Speaker.voice_too_short``)."""
+def actor_of(speaker: Speaker, person: Person) -> Actor:
+    """The speaker as the barrier sees them, with the marks of their record ``person`` (their
+    role, made role, child mark and where they stand, account or not:
+    ``accounts.actors.actor_of``): their ``standing``, and whether their voice was too short to
+    tell (``Speaker.voice_too_short``). Someone nobody knows (``unknown``) is refused everything
+    (rule 1 of ``barrier.decide``)."""
     if speaker.person_id is None:
         raise ValueError("Nobody is known to speak")
-    return Actor(
-        speaker.person_id,
-        role,
+    return replace(
+        accounts_actor_of(person),
         standing=standing(speaker),
         voice_too_short=speaker.voice_too_short,
         page_person_id=speaker.page_person_id,

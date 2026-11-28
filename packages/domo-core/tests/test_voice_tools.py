@@ -13,7 +13,7 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
-from domo_core.accounts.models import Person
+from domo_core.accounts.models import Account, Person
 from domo_core.audit.models import AuditEntry
 from domo_core.channels.page.abilities import PAGE
 from domo_core.channels.voice.live import LIVE_VOICES
@@ -123,10 +123,18 @@ async def refusal(name: str, ctx: ToolContext, arguments: dict[str, Any] | None 
 
 
 async def alex_and_dana(session_factory: SessionFactory) -> tuple[Person, Person]:
+    """Alex and Dana, each with an account: a turn can reach them (``people.reach``)."""
     async with session_factory() as writer:
         alex = Person(display_name="Alex", role="owner")
         dana = Person(display_name="Dana", role="adult")
         writer.add_all([alex, dana])
+        await writer.flush()
+        writer.add_all(
+            [
+                Account(person_id=alex.id, username="alex", password_hash="x"),
+                Account(person_id=dana.id, username="dana", password_hash="x"),
+            ]
+        )
         await writer.commit()
     return alex, dana
 
@@ -528,6 +536,35 @@ async def test_an_adult_may_ask_their_childs_phrase_removed(session_factory):
     assert outcome.status == "done"
     assert vault.removed == [phrase_ref(paul.id)]
     assert len(await words_left(session_factory, paul)) == 1
+
+
+async def test_an_adult_may_ask_the_phrase_of_a_record_marked_as_a_child_removed(session_factory):
+    # Paul's record is marked as a child, his role an adult's (the merge of "Domo makes the
+    # people"): an adult has the same say as for a child of the child role.
+    _, dana, paul, _ = await the_house(session_factory)
+    async with session_factory() as writer:
+        row = await writer.get(Person, paul.id)
+        assert row is not None
+        row.role, row.is_child = "adult", True
+        await writer.commit()
+    vault = FakeVault()
+    ctx = context(dana, session_factory, vault=vault)
+    outcome = await call("spoken_phrase_remove", ctx, {"person": "Paul"})
+    assert outcome.status == "done"
+    assert vault.removed == [phrase_ref(paul.id)]
+
+
+async def test_an_unsure_adult_asking_a_childs_phrase_removed_is_judged_not_refused(
+    session_factory,
+):
+    # The voice's rule: who asks is weighed by the barrier and the judge, never refused by the
+    # tool for a doubt on who speaks.
+    _, dana, paul, _ = await the_house(session_factory)
+    unsure = Speaker(dana.id, "voice", clues=(Clue("voice", "for", "weak", "code", NOW),))
+    ctx = context(dana, session_factory, speaker=unsure)
+    ctx.actor = replace(ctx.actor, standing="unsure")
+    described = await TOOLS["spoken_phrase_remove"].describe({"person": "Paul"}, ctx.actor, ctx)
+    assert (described.target, described.whose_judged) == (f"person:{paul.id}", True)
 
 
 async def test_nobody_else_may_ask_another_persons_phrase_removed(session_factory):

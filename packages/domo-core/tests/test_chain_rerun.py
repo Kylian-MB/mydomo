@@ -155,14 +155,16 @@ async def test_chain_continue_reruns_a_step_refused_by_the_barrier_under_the_sam
     )
     cid = reply.pending_confirmation_id
     await revoke_right(right)
-    # An adult invites by default: taking it away is saying no.
+    # Taking it away and saying no.
     no = await grant("household.invite", person=adult_chat.person, access="deny")
     assert (await adult_chat.confirm_last(reply)).status == "failed"
     rows = await steps_rows(cid)
     assert steps_of_rows(rows) == [(0, "failed"), (1, "stopped")]
     assert rows[0].result is not None and rows[0].result["reason"] == "not_allowed"
-    # The owner gives the right again: the step that was refused runs first, under Alex's yes.
+    # The owner gives the right again (inviting is in no role, ruling 14): the step that was
+    # refused runs first, under Alex's yes.
     await revoke_right(no)
+    await grant("household.invite", person=adult_chat.person, access="allow")
     again = await adult_chat.say_with_tool(CONTINUE, {"request_id": str(cid)}, judge="do")
     assert again.actions == [{"tool": CONTINUE, "status": "done"}]
     assert await confirmation_status(cid) == "executed"
@@ -201,6 +203,7 @@ async def test_a_continued_chain_whose_record_of_a_step_runs_out_of_time_is_not_
     no = await grant("household.invite", person=adult_chat.person, access="deny")
     assert (await adult_chat.confirm_last(reply)).status == "failed"
     await revoke_right(no)
+    await grant("household.invite", person=adult_chat.person, access="allow")
     real_mark_step = chain_run.mark_step
 
     async def stalls_when_done(session, request_id, position, **kwargs):

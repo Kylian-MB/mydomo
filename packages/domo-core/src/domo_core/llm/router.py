@@ -18,6 +18,13 @@ A key is used only with the agreement of the one who gave it, the owner included
   has no key), so that whoever they invited keeps the general key; a line on the invitee is the
   way to take it away. An invitee never has more than their host.
 
+The owner's rule "guests come with their own key" (``keys.guests_bring_own``) is read at each
+turn, here (``usable_keys``): while it is set, someone visiting (``accounts.actors.is_visiting``)
+uses no general key but one they gave themself, or one the owner himself let them use by a line
+for them (his word for that person wins over his rule). Someone who lives here is never touched,
+and nothing is written: once the rule is off, or they come to live here, the general key is
+theirs again as the lines say. With no key left, they meet what anyone without a key meets.
+
 The keys of a person come in this order (``usable_keys``): their own, then the ones others let
 them use (of who invited them first), then the general key; the oldest first within each. The
 keys a person can think with (``text_keys``) are the same without the house's speech service,
@@ -50,6 +57,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domo_core.accounts.actors import is_visiting
 from domo_core.accounts.models import Person
 from domo_core.llm.catalog import Catalog, Prices
 from domo_core.llm.choice import candidates, fit_for, pick_model
@@ -58,6 +66,7 @@ from domo_core.llm.levels import LEVELS, Level, level_rank
 from domo_core.llm.models import ModelLevel, Provider, ProviderModel, ProviderUser
 from domo_core.llm.speech.home_key import HOME_SPEECH_ID
 from domo_core.llm.tasks import TASKS, TaskKind
+from domo_core.policy.settings import load_policy_settings
 
 # The order in which the lines of access of a key apply: the most precise first.
 _SCOPES = ("person", "invitees", "household")
@@ -133,9 +142,29 @@ async def household_people(session: AsyncSession) -> dict[UUID, Person]:
     return {someone.id: someone for someone in (await session.execute(select(Person))).scalars()}
 
 
+def _the_owner_lets(
+    users: Sequence[ProviderUser], person: Person, people: Mapping[UUID, Person]
+) -> bool:
+    """Whether the owner himself wrote a line that lets ``person`` use the key whose lines are
+    ``users``: his word for that person, which wins over his rule that guests bring their own
+    key."""
+    for line in users:
+        writer = people.get(line.set_by)
+        if (
+            line.scope == "person"
+            and line.person_id == person.id
+            and line.allowed
+            and writer is not None
+            and writer.role == "owner"
+        ):
+            return True
+    return False
+
+
 async def usable_keys(session: AsyncSession, person: Person) -> list[Provider]:
     """The keys ``person`` may use, in order: their own, then those of others they may use (of
-    who invited them first), then the general key; within each, the oldest first."""
+    who invited them first), then the general key; within each, the oldest first. The owner's
+    rule that guests bring their own key is read here (see the module docstring)."""
     keys = (
         (await session.execute(select(Provider).order_by(Provider.created_at, Provider.id)))
         .scalars()
@@ -146,6 +175,14 @@ async def usable_keys(session: AsyncSession, person: Person) -> list[Provider]:
         lines[line.provider_id].append(line)
     people = await household_people(session)
     permitted = [key for key in keys if allowed(key, lines[key.id], person, people=people)]
+    if is_visiting(person) and (await load_policy_settings(session)).guests_bring_own:
+        permitted = [
+            key
+            for key in permitted
+            if not key.is_general
+            or key.given_by == person.id
+            or _the_owner_lets(lines[key.id], person, people)
+        ]
     own = [key for key in permitted if key.given_by == person.id]
     general = [key for key in permitted if key.is_general and key.given_by != person.id]
     others = [key for key in permitted if not key.is_general and key.given_by != person.id]

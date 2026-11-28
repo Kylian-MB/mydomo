@@ -35,6 +35,7 @@ from domo_core.household.service import (
     transfer_ownership,
 )
 from domo_core.llm.types import ToolCall
+from domo_core.people.models import MadeRole
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.catalog import DEFAULT_POLICY
 from domo_core.policy.models import PolicyRight
@@ -612,8 +613,8 @@ async def test_there_is_always_exactly_one_owner(
     session_factory, add_member, live_clock, count_owners, role_of
 ):
     owner = await add_member("Owner", "owner")
-    alex = await add_member("Alex", "adult")
-    kim = await add_member("Kim", "adult")
+    alex = await add_member("Alex", "adult", username="alex")
+    dana = await add_member("Dana", "adult", username="dana")
     assert await count_owners() == 1  # before
 
     async with session_factory() as one, session_factory() as two:
@@ -621,7 +622,7 @@ async def test_there_is_always_exactly_one_owner(
         assert isinstance(done, Transferred)
         assert await count_owners() == 1  # during: the first has not committed yet
         racing = asyncio.create_task(
-            transfer_ownership(two, old_owner=owner, new_owner=kim, now=live_clock())
+            transfer_ownership(two, old_owner=owner, new_owner=dana, now=live_clock())
         )
         async with asyncio.timeout(10):
             while not await _a_writer_waits_for_a_lock(session_factory):
@@ -634,14 +635,15 @@ async def test_there_is_always_exactly_one_owner(
         await two.rollback()
 
     assert await count_owners() == 1  # after
-    assert [await role_of(p) for p in (owner, alex, kim)] == ["adult", "owner", "adult"]
+    assert [await role_of(p) for p in (owner, alex, dana)] == ["adult", "owner", "adult"]
 
 
 async def test_the_service_gives_the_role_in_one_step_and_says_what_it_moved(
-    session, add_person, clock
+    session, add_person, add_account, clock
 ):
     owner = await add_person("Owner", "owner")
     alex = await add_person("Alex", "adult")
+    await add_account(alex, "alex")
     done = await transfer_ownership(session, old_owner=owner, new_owner=alex, now=clock())
     assert done == Transferred(
         old_owner_id=owner.id,
@@ -677,11 +679,40 @@ async def test_the_service_checks_who_gives_and_who_receives_again(
     new = old if oneself else await add_person("New", new_role)
     if left:
         new.disabled_at = clock()
+        new.state = "gone"
         await session.flush()
     before = await _everyones_role(session)
     with pytest.raises(ValueError):
         await transfer_ownership(session, old_owner=old, new_owner=new, now=clock())
     assert await _everyones_role(session) == before
+
+
+async def test_the_role_goes_only_to_an_adult_with_an_account_and_no_child_mark(
+    session, add_person, add_account, clock
+):
+    """Alex: "hand my role to Dana". Dana with no account, or carrying the child mark, cannot
+    be the owner; Dana with an account becomes it, leaves her made role and lives here."""
+    owner = await add_person("Alex", "owner")
+    dana = await add_person("Dana", "adult")
+    before = await _everyones_role(session)
+    with pytest.raises(ValueError):
+        await transfer_ownership(session, old_owner=owner, new_owner=dana, now=clock())
+    await add_account(dana, "dana")
+    dana.is_child = True
+    await session.flush()
+    with pytest.raises(ValueError):
+        await transfer_ownership(session, old_owner=owner, new_owner=dana, now=clock())
+    assert await _everyones_role(session) == before
+    dana.is_child = False
+    dana.standing = "visiting"
+    role = MadeRole(name="Nanny", name_key="nanny", base="adult", created_by="domo", reason="x")
+    session.add(role)
+    await session.flush()
+    dana.made_role_id = role.id
+    await session.flush()
+    await transfer_ownership(session, old_owner=owner, new_owner=dana, now=clock())
+    dana = await session.get(Person, dana.id, populate_existing=True)
+    assert (dana.role, dana.made_role_id, dana.standing) == ("owner", None, "lives_here")
 
 
 async def test_a_guest_whose_stay_is_over_cannot_receive_the_role(session, add_person, clock):

@@ -213,12 +213,6 @@ _SAMPLES: Final[Mapping[FactType, object]] = {
 }
 
 
-# A number is ``null`` when it does not apply (``catalog.ACTION_FACTS``). For a number that applies
-# only with one value of another fact, that fact and that value: the days of a stay are a guest's
-# (with the action's ``role`` ``guest``, they are always given).
-_APPLIES_ONLY_WITH: Final[Mapping[str, tuple[str, str]]] = {"days": ("role", "guest")}
-
-
 def _declared(action_type: str, kinds: Mapping[str, OpenKind]) -> Mapping[str, FactType]:
     """The facts of ``action_type``: the code's (``catalog.ACTION_FACTS``), else those of its
     open kind among ``kinds``. ``KeyError`` for a type neither knows."""
@@ -265,16 +259,13 @@ def _missing_numbers(
     action_type: str, kinds: Mapping[str, OpenKind]
 ) -> Iterator[tuple[str, dict[str, object]]]:
     """For each number fact of ``action_type``, facts of the action with that one missing
-    (``None``) and its facts of kind role taking every value they may have then: every role, but
-    the one with which the number always applies (``_APPLIES_ONLY_WITH``)."""
+    (``None``: it does not apply, ``catalog.ACTION_FACTS``) and its facts of kind role taking every
+    value they may have then: every role, a guest's too (a guest's stay may have no end)."""
     declared = _declared(action_type, kinds)
     roles = [name for name, kind in declared.items() if kind == "role"]
     for number in (name for name, kind in declared.items() if kind == "number"):
-        applies_with = _APPLIES_ONLY_WITH.get(number)
         for chosen in itertools.product(ROLES, repeat=len(roles)):
             by_name: dict[str, object] = dict(zip(roles, chosen, strict=True))
-            if applies_with is not None and by_name.get(applies_with[0]) == applies_with[1]:
-                continue
             yield number, {**by_name, number: None}
 
 
@@ -322,6 +313,6 @@ def check_limit(
         except LimitError as error:
             raise InvalidLimit(
                 f"the limit fails when action.facts.{number} is null (it does not apply, as a "
-                "guest's stay for anyone else): read it only when it is there, as in "
+                "stay with no end): read it only when it is there, as in "
                 f"action.facts.{number} != null && ...: {error}"
             ) from None

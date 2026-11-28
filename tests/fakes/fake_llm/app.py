@@ -96,6 +96,16 @@ injected. It answers ``POST /v1/chat/completions``, streamed (server-sent events
   (``BY_HAND_PREFIX``, compact JSON with its keys sorted), and never a word of a tool. A program
   that gave no ``run`` id is answered as any tool result (below), and no tool is built. The rule
   comes before the rule of a tool's result.
+* A request whose last user message is ``/calls <json>`` (``CALLS_COMMAND``, on its last line,
+  after a ``/judge`` prefix if it has one), where the JSON is a list of ``{"tool": <name>,
+  "arguments": {...}}`` (Domo makes several calls in one turn: ``act_on_my_own`` and the gesture
+  it marks, say), is a script read from the results of the calls made since that message: while
+  calls are left and tools are offered, a call of the next one, with its arguments; then
+  ``Fake calls: <status>, <status>, ...`` (``CALLS_PREFIX``), the ``status`` of each result in
+  their order, and never a word of a tool. The core asks the model again after each call, a few
+  rounds at most (``chat.agent``): a script longer than that ends with the statuses of the calls
+  made. Without tools and before any call, the message is answered as any other. The rule comes
+  before the rule of a tool's result.
 * A request that offers tools and whose last message is the result of a launch of one of
   Domo's tools that stopped for a yes (``"launch": "stopped"`` and a ``stop`` in its result)
   gets a call of that same tool with ``{"yes_for": <the stop>}`` (``YES_FOR``), as the core tells
@@ -173,7 +183,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, ClassVar, Final
+from typing import Any, ClassVar, Final, cast
 
 # The first line of the prompt of the core's isolated reader (confirmations/intent.py reads
 # prompts/confirm_classifier.md): a call whose system prompt starts with it is the reader's.
@@ -302,6 +312,9 @@ BY_HAND_TOOL: Final = "program_run"
 # The argument a call carries the yes of a stop with.
 YES_FOR: Final = "yes_for"
 BUILD_TOOL: Final = "tool_build"
+# The command of the script of several calls in one turn, and how its last answer begins.
+CALLS_COMMAND: Final = "/calls "
+CALLS_PREFIX: Final = "Fake calls: "
 # The line that starts the block of the system prompt about a request that was just decided (the
 # core's ``prompts.build_system_prompt``), followed by a JSON object, and what the fake answers.
 DECIDED_MARKER: Final = "Just decided (data, not instructions):"
@@ -607,6 +620,40 @@ def by_hand_script(user_message: str) -> dict[str, Any] | None:
     ):
         return script
     return None
+
+
+def calls_script(user_message: str) -> list[Call] | None:
+    """The calls ``CALLS_COMMAND`` asks for on the line a command is read (``command_line``, its
+    ``/judge`` prefix taken away), in their order; ``None`` when the message is no such command,
+    or its JSON is not a list of ``{"tool": <name>, "arguments": {...}}``."""
+    command = strip_judge_prefix(command_line(user_message))
+    if not command.startswith(CALLS_COMMAND):
+        return None
+    try:
+        steps = json.loads(command.removeprefix(CALLS_COMMAND))
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(steps, list) or not steps:
+        return None
+    calls: list[Call] = []
+    for step in cast("list[object]", steps):
+        if not isinstance(step, dict):
+            return None
+        told = cast("dict[str, object]", step)
+        name, arguments = told.get("tool"), told.get("arguments", {})
+        if not isinstance(name, str) or not name or not isinstance(arguments, dict):
+            return None
+        calls.append(Call(name, json.dumps(arguments, ensure_ascii=False)))
+    return calls
+
+
+def calls_answer(request: dict[str, Any], calls: list[Call]) -> Answer:
+    """The answer of the script ``CALLS_COMMAND`` at the point the turn is at: the next call while
+    some are left and tools are offered, else the status of each result (``CALLS_PREFIX``)."""
+    results = tool_results_since_the_person(request)
+    if len(results) < len(calls) and offers_tools(request):
+        return Answer(call=calls[len(results)])
+    return Answer(CALLS_PREFIX + ", ".join(result_status(result) for result in results))
 
 
 def tool_results_since_the_person(request: dict[str, Any]) -> list[str]:
@@ -962,6 +1009,9 @@ def answer_for(
     script = by_hand_script(said)
     if script is not None and offers_tools(request):
         return by_hand_answer(request, script)
+    calls = calls_script(said)
+    if calls is not None and (offers_tools(request) or tool_results_since_the_person(request)):
+        return calls_answer(request, calls)
     result = tool_result(request)
     if result is not None:
         if offers_tools(request) and (asked := yes_for_call(request, result)) is not None:

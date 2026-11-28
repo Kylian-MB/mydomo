@@ -1,9 +1,9 @@
 """The tables of the voice (spec 6.5, 6.10, 6.11): voice references, their prints, moments.
 
 A voice reference (``voice_refs``) is ours and opaque (``v-`` and 16 hexadecimal digits): it exists
-from the first sentence of a voice nobody knows, and ``person_id`` is the link to a person (set
-through ``channels.voice.people.claim_reference``, which stands in for the people's records until
-they are merged). A print (``voice_prints``) is a vector and
+from the first sentence of a voice nobody knows, and ``person_id`` is the link to a person, set
+by ``prints`` when a voice is learnt; the voice keeps this store of its own and claims nothing in
+``person_channel_refs`` (see ``channels.voice.people``). A print (``voice_prints``) is a vector and
 never sound: by reference, by microphone and by print model (a print of one model is never
 compared to a print of another), of a kind: ``base`` (moves slowly), ``recent`` (follows the voice),
 ``passing`` (a cold: dies at ``expires_at``) or ``candidate`` (not learnt yet: ``utterances`` and

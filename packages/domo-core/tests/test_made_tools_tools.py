@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 from chat_support import ChatPilot
 from domo_common.i18n import t
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.audit.log import append_audit
 from domo_core.audit.models import AuditEntry
@@ -94,7 +95,7 @@ PRIVATE_WORDS = "grandma's secret recipe for the harbour fair"
 def context(person: Person, session_factory: SessionFactory) -> ToolContext:
     return ToolContext(
         session_factory=session_factory,
-        actor=Actor(person.id, person.role),  # type: ignore[arg-type]
+        actor=actor_of(person),  # type: ignore[arg-type]
         person=person,
         conversation_id=uuid.uuid4(),
         origin="",
@@ -1227,7 +1228,7 @@ async def may_launch(session_factory: SessionFactory, person: Person, name: str)
     async with session_factory() as reader:
         policy = await load_policy(reader)
         rights = await load_rights(reader)
-    return rights.resolve(Actor(person.id, person.role), f"made.{name}", policy).allowed  # type: ignore[arg-type]
+    return rights.resolve(actor_of(person), f"made.{name}", policy).allowed  # type: ignore[arg-type]
 
 
 async def test_someone_a_tool_is_closed_to_may_not_change_remove_or_time_it(

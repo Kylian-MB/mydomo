@@ -67,8 +67,8 @@ async def leave(ctx, recipient: str, text: str = "Hi", **more):
 async def test_on_his_own_a_note_is_domo_s_and_audited_as_his(
     add_member, session_factory, live_clock, stored_notes, last_audit_entry
 ):
-    owner = await add_member("Alex", "owner")
-    dana = await add_member("Dana", "adult")
+    owner = await add_member("Alex", "owner", username="alex")
+    dana = await add_member("Dana", "adult", username="dana")
     outcome = await leave(alone(call_context(owner, session_factory, live_clock)), "Dana")
     assert outcome.status == "done"
     assert outcome.card == {"key": "action.card.done.note.leave.his", "params": {"name": "Dana"}}
@@ -83,8 +83,8 @@ async def test_on_his_own_a_note_is_domo_s_and_audited_as_his(
 async def test_in_a_person_s_turn_a_note_is_theirs(
     add_member, session_factory, live_clock, stored_notes, last_audit_entry
 ):
-    dana = await add_member("Dana", "adult")
-    sam = await add_member("Sam", "child")
+    dana = await add_member("Dana", "adult", username="dana")
+    sam = await add_member("Sam", "child", username="sam")
     outcome = await leave(call_context(dana, session_factory, live_clock), "Sam")
     assert outcome.card == {"key": "action.card.done.note.leave", "params": {"name": "Sam"}}
     [note] = await stored_notes()
@@ -95,8 +95,8 @@ async def test_in_a_person_s_turn_a_note_is_theirs(
 async def test_from_me_makes_it_domo_s_and_never_keeps_the_person_s_words(
     add_member, session_factory, live_clock, stored_notes, last_audit_entry
 ):
-    dana = await add_member("Dana", "adult")
-    sam = await add_member("Sam", "child")
+    dana = await add_member("Dana", "adult", username="dana")
+    sam = await add_member("Sam", "child", username="sam")
     said = "Tell Sam the bus is late"
     ctx = call_context(dana, session_factory, live_clock, said=said)
     outcome = await leave(ctx, "Sam", "The bus is late.", exact=said, **FROM_ME)
@@ -111,8 +111,8 @@ async def test_from_me_makes_it_domo_s_and_never_keeps_the_person_s_words(
 
 @pytest.mark.parametrize("given", ["Dana", "you", "", "ME", None, True])
 async def test_from_says_me_or_nothing(add_member, session_factory, live_clock, given, count_notes):
-    dana = await add_member("Dana", "adult")
-    await add_member("Sam", "child")
+    dana = await add_member("Dana", "adult", username="dana")
+    await add_member("Sam", "child", username="sam")
     with pytest.raises(InvalidArguments) as refused:
         await leave(call_context(dana, session_factory, live_clock), "Sam", **{"from": given})
     assert refused.value.code == "invalid"
@@ -123,8 +123,8 @@ async def test_from_me_is_judged_as_the_person_and_also_as_domo(
     add_member, session_factory, live_clock
 ):
     # Ruling R29: the person's own judgement stays whole; Domo's is added to it.
-    dana = await add_member("Dana", "adult")
-    await add_member("Sam", "child")
+    dana = await add_member("Dana", "adult", username="dana")
+    await add_member("Sam", "child", username="sam")
     ctx = call_context(dana, session_factory, live_clock)
     tool = TOOLS["note_leave"]
     arguments = {"recipient": "Sam", "text": "Hi"}
@@ -239,7 +239,7 @@ async def test_from_me_after_a_wait_is_judged_on_his_side_when_the_chain_is_plan
 
 
 async def test_a_note_names_exactly_one_author(add_member, session_factory):
-    dana = await add_member("Dana", "adult")
+    dana = await add_member("Dana", "adult", username="dana")
     for author_id, by_domo in ((dana.id, True), (None, False)):
         async with session_factory() as writer:
             writer.add(Note(author_id=author_id, by_domo=by_domo, recipient_id=dana.id, text="x"))
@@ -251,8 +251,8 @@ async def test_a_note_names_exactly_one_author(add_member, session_factory):
 
 
 async def test_a_note_of_his_is_told_to_its_reader_as_his(add_member, session_factory, live_clock):
-    owner = await add_member("Alex", "owner")
-    dana = await add_member("Dana", "adult")
+    owner = await add_member("Alex", "owner", username="alex")
+    dana = await add_member("Dana", "adult", username="dana")
     await leave(alone(call_context(owner, session_factory, live_clock)), "Dana", "Bins tonight.")
     await leave(call_context(owner, session_factory, live_clock), "Dana", "From Alex.")
     async with session_factory() as session:
@@ -277,8 +277,8 @@ def test_the_context_says_a_note_marked_yours_is_his_own():
 
 
 async def test_told_and_shown_a_note_of_his_is_his(add_member, session_factory, live_clock):
-    owner = await add_member("Alex", "owner")
-    dana = await add_member("Dana", "adult")
+    owner = await add_member("Alex", "owner", username="alex")
+    dana = await add_member("Dana", "adult", username="dana")
     await leave(alone(call_context(owner, session_factory, live_clock)), "Dana", "Bins tonight.")
     async with session_factory() as session:
         [note] = await notes_to_tell(session, dana.id)
@@ -294,8 +294,8 @@ async def test_told_and_shown_a_note_of_his_is_his(add_member, session_factory, 
 
 
 async def test_a_person_s_note_is_never_shown_as_his(add_member, session_factory, live_clock):
-    alex = await add_member("Alex", "owner")
-    dana = await add_member("Dana", "adult")
+    alex = await add_member("Alex", "owner", username="alex")
+    dana = await add_member("Dana", "adult", username="dana")
     await leave(call_context(alex, session_factory, live_clock), "Dana", "From Alex.")
     async with session_factory() as session:
         [note] = await notes_to_tell(session, dana.id)
@@ -311,8 +311,8 @@ async def test_a_person_s_note_is_never_shown_as_his(add_member, session_factory
 async def test_on_his_own_he_finds_takes_back_and_keeps_his_notes_alone(
     add_member, session_factory, live_clock, last_audit_entry
 ):
-    owner = await add_member("Alex", "owner")
-    guest = await add_member("Robin", "guest")
+    owner = await add_member("Alex", "owner", username="alex")
+    guest = await add_member("Robin", "guest", username="robin")
     mine = alone(call_context(owner, session_factory, live_clock))
     await leave(mine, "Robin", "His.")
     await leave(call_context(owner, session_factory, live_clock), "Robin", "Alex's.")
@@ -341,8 +341,8 @@ async def test_on_his_own_he_finds_takes_back_and_keeps_his_notes_alone(
 
 
 async def test_a_person_never_reaches_a_note_of_his(add_member, session_factory, live_clock):
-    dana = await add_member("Dana", "adult")
-    await add_member("Robin", "guest")
+    dana = await add_member("Dana", "adult", username="dana")
+    await add_member("Robin", "guest", username="robin")
     theirs = call_context(dana, session_factory, live_clock)
     # Left in Dana's turn, in his own name.
     await leave(theirs, "Robin", "His.", **FROM_ME)
@@ -576,7 +576,9 @@ async def test_a_role_changed_while_the_judge_answers_is_the_one_judged(
 
     async def made_a_child():
         async with session_factory() as writer:
-            await writer.execute(update(Person).where(Person.id == person.id).values(role="child"))
+            await writer.execute(
+                update(Person).where(Person.id == person.id).values(role="child", is_child=True)
+            )
             await writer.commit()
 
     call = ToolCall(
@@ -658,7 +660,8 @@ async def test_his_note_after_a_programs_text_is_from_an_unknown_source(
     add_member, session_factory, live_clock, stored_notes
 ):
     owner = await add_member("Alex", "owner")
-    await add_member("Dana", "adult")
+    # A note is for someone who can answer: an account (``people.reach``).
+    await add_member("Dana", "adult", username="dana")
     plain = alone(call_context(owner, session_factory, live_clock))
     await leave(plain, "Dana", "First")
     await leave(replace(plain, tool_woke=True), "Dana", "Second")
@@ -671,7 +674,7 @@ async def test_a_persons_note_never_is_from_an_unknown_source(
     add_member, session_factory, live_clock, stored_notes
 ):
     dana = await add_member("Dana", "adult")
-    await add_member("Sam", "child")
+    await add_member("Sam", "child", username="sam")
     await leave(replace(call_context(dana, session_factory, live_clock), tool_woke=True), "Sam")
     [note] = await stored_notes()
     assert (note.by_domo, note.from_unknown) == (False, False)

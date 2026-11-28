@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from domo_common.i18n import t
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.confirmations.judge import RightsSay
 from domo_core.conversation.execution import consult_the_judge
@@ -43,7 +44,6 @@ from domo_core.llm.spending_models import ExchangeRate, ModelCall, SpendingLimit
 from domo_core.llm.types import ChatMessage, ModelCallError
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.catalog import DEFAULT_POLICY
-from domo_core.policy.roles import Actor, as_role
 from domo_core.tools.context import ToolContext
 from domo_core.tools.registry import TOOLS
 from fakes import FakeChatModel, FakeModelLister, fake_factory
@@ -406,7 +406,7 @@ async def test_the_judge_on_a_key_at_its_limit_is_not_called_and_asks_nothing(
     )
     ctx = ToolContext(
         session_factory=session_factory,
-        actor=Actor(owner.id, as_role(owner.role)),
+        actor=actor_of(owner),
         person=owner,
         conversation_id=uuid.uuid4(),
         origin="https://domo.example.com/",
@@ -980,6 +980,7 @@ async def test_a_guest_who_left_still_counts_with_the_guests(
         row = await writer.get(Person, robin.id)
         assert row is not None
         row.disabled_at = clock()
+        row.state = "gone"
         await writer.commit()
 
     # Robin left the household, a guest still: what he spent this month was spent.

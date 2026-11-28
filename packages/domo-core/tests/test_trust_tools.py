@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 from chat_support import ChatPilot
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.audit.models import AuditEntry
 from domo_core.conversation.execution import execute_allowed
@@ -27,7 +28,6 @@ from domo_core.llm.types import ToolCall
 from domo_core.memory.models import Memory
 from domo_core.memory.service import SOURCE_UNSURE_VOICE, keep, source_of
 from domo_core.policy.catalog import DEFAULT_POLICY, is_silent, needs_the_judge
-from domo_core.policy.roles import Actor
 from domo_core.tools.context import InvalidArguments, NamesPeople, ToolContext, ToolOutcome
 from domo_core.tools.registry import TOOLS
 from domo_core.trust import service
@@ -43,7 +43,7 @@ def context(person: Person, session_factory: SessionFactory) -> ToolContext:
     """A turn that answers a message of ``person``, with nothing from outside."""
     return ToolContext(
         session_factory=session_factory,
-        actor=Actor(person.id, person.role),  # type: ignore[arg-type]
+        actor=actor_of(person),  # type: ignore[arg-type]
         person=person,
         conversation_id=uuid.uuid4(),
         origin="",

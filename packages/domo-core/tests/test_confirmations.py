@@ -49,6 +49,7 @@ from domo_core.llm.types import ChatMessage, ToolCall
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.asks import Asked
 from domo_core.policy.catalog import DEFAULT_POLICY
+from domo_core.policy.rights import NO_RIGHTS
 from domo_core.policy.roles import Actor
 from domo_core.policy.settings import PolicySettings
 from domo_core.prompts import (
@@ -679,7 +680,7 @@ async def test_a_removed_person_can_no_longer_decide(
     reply = await adult_chat.say_with_tool("profile_rename", {"name": "Alex B"})
     async with chat_server.session_factory() as writer:
         await writer.execute(
-            text("UPDATE persons SET disabled_at = now() WHERE id = :id"),
+            text("UPDATE persons SET disabled_at = now(), state = 'gone' WHERE id = :id"),
             {"id": adult_chat.person.id},
         )
         await writer.commit()
@@ -766,7 +767,7 @@ async def test_a_yes_after_another_exchange_does_not_answer_an_older_request(
 ):  # R74 (b)
     reply = await adult_chat.say_with_tool("profile_rename", {"name": "Alex B"})
     adult_chat.use_model(
-        FakeChatModel(tool_script=["unclear", "Je sais lister le foyer. Tu veux ?"])
+        FakeChatModel(tool_script=["unclear", "Je sais lister la maison. Tu veux ?"])
     )
     await adult_chat.say("qu'est-ce que tu sais faire ?")
     model = adult_chat.use_model(FakeChatModel(["Voilà qui est là."]))
@@ -913,7 +914,7 @@ async def test_a_request_whose_requester_left_can_no_longer_be_carried_out(
     reply = await child_chat.say_with_tool("profile_rename", {"name": "Sam B"})
     async with chat_server.session_factory() as writer:
         await writer.execute(
-            text("UPDATE persons SET disabled_at = now() WHERE id = :id"),
+            text("UPDATE persons SET disabled_at = now(), state = 'gone' WHERE id = :id"),
             {"id": child_chat.person.id},
         )
         await writer.commit()
@@ -1043,7 +1044,9 @@ def _pending_in(system: str) -> list[dict]:
 
 def test_the_reason_domo_is_not_sure_is_told_in_the_language_of_the_page():
     c = Confirmation(ask="yes", asked_by="domo", ask_why=NOT_SURE_REASON)
-    asked = confirmation_routes._asked(c, Person(role="adult"), CatalogTexts("en"))
+    asked = confirmation_routes._asked(
+        c, Person(role="adult"), CatalogTexts("en"), rights=NO_RIGHTS, policy=DEFAULT_POLICY
+    )
     assert asked == t(
         "confirmation.asked.domo.yes", "en", reason=t("confirmation.asked.domo.not_sure", "en")
     )
@@ -1056,7 +1059,9 @@ def test_the_reason_domo_is_not_sure_is_told_in_the_language_of_the_page():
         found={key: f"(fr) {meaning(key)}" for key in keys},
         personal=frozenset(),
     )
-    asked = confirmation_routes._asked(c, Person(role="adult"), french)
+    asked = confirmation_routes._asked(
+        c, Person(role="adult"), french, rights=NO_RIGHTS, policy=DEFAULT_POLICY
+    )
     assert asked == in_language(
         "fr",
         "confirmation.asked.domo.yes",

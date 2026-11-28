@@ -17,7 +17,6 @@ from uuid import UUID, uuid4
 import pytest
 from domo_common.i18n import t
 from domo_core.confirmations.describe import describe_example, describe_rights_draft
-from domo_core.household.service import GUEST_DAYS_CEILING
 from domo_core.llm.types import (
     ChatChunk,
     ChatMessage,
@@ -38,7 +37,7 @@ from domo_core.policy.catalog import (
     DOMO_DEVICE_ACTIONS,
     DOMO_HOUSEHOLD_ACTIONS,
     DOMO_NOT_BY_DEFAULT,
-    GUEST_DAYS_RULE,
+    JUDGED_FACTS,
     NOT_ON_HIS_OWN,
     OWNER_ONLY_ACTIONS,
     RIGHTS_OF,
@@ -79,9 +78,9 @@ PEOPLE: tuple[tuple[UUID, str, Role], ...] = (
     (SAM, "Sam", "child"),
 )
 NAMES = {person_id: name for person_id, name, _ in PEOPLE}
-# Kim left the household: removed on the 30th of December (id, name, the role they had, the day).
-KIM = UUID("00000000-0000-0000-0000-00000000000d")
-FORMER: tuple[tuple[UUID, str, Role, str], ...] = ((KIM, "Kim", "adult", "2029-12-30"),)
+# Paul left the household: removed on the 30th of December (id, name, the role they had, the day).
+PAUL = UUID("00000000-0000-0000-0000-00000000000d")
+FORMER: tuple[tuple[UUID, str, Role, str], ...] = ((PAUL, "Paul", "adult", "2029-12-30"),)
 
 # What the tools always refuse, whatever the rights: their own words (Ruling R19).
 FIXED_REFUSALS = {
@@ -90,8 +89,12 @@ FIXED_REFUSALS = {
     if isinstance(tool, RefusesWhateverTheRights)
 }
 
-# Alex may invite guests, three days at most (the spec's example, 5.5).
-THREE_DAYS = 'action.facts.role == "guest" && action.facts.days <= 3 ? "allow" : "refuse"'
+# Alex may invite guests, three days at most (the spec's example, 5.5); a guest's stay may have no
+# end, so the days are read only when they are there.
+THREE_DAYS = (
+    'action.facts.role == "guest" && action.facts.days != null && action.facts.days <= 3 '
+    '? "allow" : "refuse"'
+)
 WORDS = "Alex peut inviter des invités, 3 jours au plus"
 # The time each call to the writer has (the owner's setting, ``rights_writer.seconds``, is 60).
 SECONDS = 60.0
@@ -161,20 +164,27 @@ def invite(
     return Example(
         person_id=by,
         action_type="household.invite",
-        facts={"role": role, "days": days, "display_name": "Dana", "owner_first": owner_first},
+        facts={
+            "role": role,
+            "days": days,
+            "no_end": False,
+            "display_name": "Dana",
+            "owner_first": owner_first,
+        },
         expected=expected,  # type: ignore[arg-type]
         role=as_role,
     )
 
 
 # The draft of the spec's example, as the code expects it: three examples, one that passes, and
-# one the default limit (30 days at most) refuses, whose outcome shows it still holds.
+# one the default limit stops (it sends to the owner an invitation the assistant judged should wait
+# for his yes), whose outcome shows whether it still holds.
 GOOD_DRAFT = Draft(
     changes=(change(),),
     examples=(
         invite("guest", 2, "domo_judges"),
         invite("adult", None, "refused"),
-        invite("guest", 40, "refused"),
+        invite("guest", 2, "domo_judges", owner_first=True),
     ),
 )
 
@@ -350,8 +360,8 @@ async def test_a_limit_that_goes_through_a_list_is_sent_back_with_why():  # Ruli
 
 
 async def test_a_limit_that_replaces_a_default_one_shows_a_case_the_default_refuses():
-    # Ruling R10: Alex's limit replaces the household's 30 days. Without an example of a stay the
-    # default refuses, the owner could not see whether it still holds.
+    # Ruling R10: Alex's limit replaces the default one of inviting. Without an example the default
+    # stops, the owner could not see whether it still holds.
     assert "household.invite" in DEFAULT_LIMITS
     without = dataclasses.replace(
         GOOD_DRAFT,
@@ -364,7 +374,7 @@ async def test_a_limit_that_replaces_a_default_one_shows_a_case_the_default_refu
     errors = await check_draft(without, context())
     assert errors == [
         "change 1: its limit replaces the default limit of its action type: an example must "
-        "show a case the default limit refuses"
+        "show a case the default limit stops (refuses, or sends to the owner)"
     ]
     # A change without a limit keeps the default: no such example is needed.
     no_limit = Draft(
@@ -400,7 +410,7 @@ async def test_an_example_whose_outcome_the_code_does_not_find_is_an_error():
         examples=(
             invite("guest", 2, "asks_them"),  # nothing is imposed: Domo judges
             invite("adult", None, "refused"),
-            invite("guest", 40, "refused"),
+            invite("guest", 2, "domo_judges", owner_first=True),
         ),
     )
     assert await check_draft(wrong, context()) == [
@@ -523,6 +533,7 @@ async def test_an_example_whose_outcome_the_code_does_not_find_is_an_error():
                         {
                             "role": "captain",
                             "days": 2,
+                            "no_end": False,
                             "display_name": "Dana",
                             "owner_first": False,
                         },
@@ -552,14 +563,14 @@ async def test_a_right_can_be_taken_away_or_given_back():
         None,
         "Alex invites.",
     )
-    # (An adult invites by default since 0.9.1: without the right, the catalog decides again.)
+    # (Inviting is in no role, ruling 14: without the right, the catalog refuses it again.)
     removal = Draft(
         (
             change(
                 remove=True, access=None, limit_expression=None, summary="Alex no longer invites."
             ),
         ),
-        (invite("guest", 2, "domo_judges"),),
+        (invite("guest", 2, "refused"),),
     )
     assert await check_draft(removal, context(rights=RightsTable((old,)))) == []
     # A paused right may be taken away too, or given back by writing it again.
@@ -595,9 +606,14 @@ def _right(action_type: str, **fields: Any) -> Right:
     ("example", "rights", "outcome"),
     [
         (Example(ALEX, "household.list", {}, "domo_judges"), (), "domo_judges"),
-        # Adults invite by default (0.9.1), and Domo may send it to the owner first.
-        (invite("guest", 2, "domo_judges"), (), "domo_judges"),
-        (invite("guest", 2, "domo_judges", owner_first=True), (), "asks_the_owner"),
+        # Inviting is in no role (ruling 14): an adult invites by the owner's right for them, and
+        # Domo may send it to the owner first.
+        (invite("guest", 2, "refused"), (), "refused"),
+        (
+            invite("guest", 2, "domo_judges", owner_first=True),
+            (_right("household.invite", person_id=ALEX, access="allow"),),
+            "asks_the_owner",
+        ),
         (invite("guest", 2, "domo_judges", by=SAM), (), "refused"),  # a child does not
         (invite("guest", 2, "domo_judges", by=OWNER), (), "domo_judges"),
         (
@@ -633,7 +649,8 @@ def _right(action_type: str, **fields: Any) -> Right:
             (_right("note.leave", role="adult", approver="adult"),),
             "asks_an_adult",
         ),
-        (invite("guest", 40, "refused", by=OWNER), (), "refused"),  # the default limit
+        # No default limit reads a stay (audit POL-5).
+        (invite("guest", 400, "domo_judges", by=OWNER), (), "domo_judges"),
         # A limit that sends to the owner, for the owner himself: asking is his yes.
         (
             invite("guest", 2, "domo_judges", by=OWNER),
@@ -699,8 +716,8 @@ async def test_the_draft_is_laid_over_the_rights_in_force():
     assert await example_outcome(example, Draft((), ()), ctx) == "asks_the_owner"
     assert await example_outcome(example, GOOD_DRAFT, ctx) == "domo_judges"
     removal = Draft((change(remove=True, access=None, limit_expression=None),), ())
-    # (Without a right, the catalog's: an adult invites by default since 0.9.1.)
-    assert await example_outcome(example, removal, ctx) == "domo_judges"
+    # (Without a right, the catalog's: inviting is in no role, ruling 14.)
+    assert await example_outcome(example, removal, ctx) == "refused"
 
 
 # --- what the owner wants asked, or never asked (0.5.0) ------------------------------------------
@@ -724,9 +741,36 @@ def rule(**fields: Any) -> RightChange:
     )
 
 
+# What a role, a removal and a return say of the record they act on: a built-in role alone, an
+# account, and where it stands.
+ON_A_RECORD: dict[str, Any] = {"made_role": None, "has_account": True, "state": "has_access"}
+
+
+def on_a_record(action_type: str, facts: dict[str, Any]) -> dict[str, Any]:
+    """``facts`` with what an action of ``action_type`` says of the record it acts on, if any (one
+    who left, for a return), and whether a stay it gives has no end (``no_end``, false unless
+    ``facts`` say), for a type that says it."""
+    if "no_end" in ACTION_FACTS.get(action_type, {}):
+        facts = {"no_end": False, **facts}
+    if action_type not in ("household.change_role", "household.remove", "household.bring_back"):
+        return facts
+    gone = {"state": "gone"} if action_type == "household.bring_back" else {}
+    # Whether someone passing by now lives here, and what it changes (answer g, declared).
+    living = (
+        dict.fromkeys(
+            ("comes_to_live", "off_the_guests_key_rule", "may_then_agree_for_a_child"), False
+        )
+        if action_type == "household.change_role"
+        else {}
+    )
+    return {**living, **facts, **ON_A_RECORD, **gone}
+
+
 def removes(person: UUID, expected: str, *, by: UUID = OWNER) -> Example:
     role = next(role for pid, _, role in PEOPLE if pid == person)
-    facts = {"person": f"person:{person}", "current_role": role, "is_self": False}
+    facts = on_a_record(
+        "household.remove", {"person": f"person:{person}", "current_role": role, "is_self": False}
+    )
     return Example(by, "household.remove", facts, expected)  # type: ignore[arg-type]
 
 
@@ -763,7 +807,10 @@ async def test_the_writer_writes_a_rule_when_the_owner_says_what_to_ask():
             {
                 "person_id": str(OWNER),
                 "action_type": "household.remove",
-                "facts": {"person": f"person:{ALEX}", "current_role": "adult", "is_self": False},
+                "facts": on_a_record(
+                    "household.remove",
+                    {"person": f"person:{ALEX}", "current_role": "adult", "is_self": False},
+                ),
                 "expected": "asks_them",
             }
         ],
@@ -991,7 +1038,13 @@ def test_the_example_sentence_comes_from_the_facts_not_from_the_writer():
         "moment",
         "for_domo",
     }
-    facts = {"role": "guest", "days": 2, "display_name": "Dana", "owner_first": False}
+    facts = {
+        "role": "guest",
+        "days": 2,
+        "no_end": False,
+        "display_name": "Dana",
+        "owner_first": False,
+    }
     for lang in ("en", "fr"):
         assert describe_example(
             "household.invite", facts, who="Alex", names={}, texts=CatalogTexts(lang)
@@ -1001,6 +1054,7 @@ def test_the_example_sentence_comes_from_the_facts_not_from_the_writer():
             who="Alex",
             role=t("household.role.guest", lang),
             days=t("policy.duration.days", lang, count="2"),
+            no_end=t("rights.example.no", lang),
             display_name="Dana",
             owner_first=t("rights.example.no", lang),
         )
@@ -1020,7 +1074,12 @@ def test_every_action_type_has_an_example_sentence():
     for action_type in DEFAULT_POLICY.known:
         key = f"rights.example.{action_type}"
         # Every fact of the type has its place in the sentence, and the person who asks too.
-        names = {"who": "W", **{name: f"<{name}>" for name in ACTION_FACTS[action_type]}}
+        # (The exception of a directive is the assistant's call, never what a right is about.)
+        facts = ACTION_FACTS[action_type]
+        names = {
+            "who": "W",
+            **{name: f"<{name}>" for name in facts if name not in JUDGED_FACTS},
+        }
         sentence = t(key, "en", **names)
         assert all(value in sentence for value in names.values()), key
     for outcome in EXAMPLE_OUTCOMES:
@@ -1052,7 +1111,7 @@ def test_the_card_of_a_draft_says_each_right_and_each_example_in_the_readers_lan
         assert [example.outcome for example in lines.examples] == [
             t("rights.example.outcome.domo_judges", lang),
             t("rights.example.outcome.refused", lang),
-            t("rights.example.outcome.refused", lang),
+            t("rights.example.outcome.domo_judges", lang),
         ]
         assert lines.examples[0].situation == describe_example(
             "household.invite",
@@ -1113,6 +1172,7 @@ async def test_the_writer_is_one_isolated_call_with_the_words_and_the_context():
     assert invite_type["facts"] == {
         "role": "role",
         "days": "number",
+        "no_end": "boolean",
         "display_name": "text",
         "owner_first": "boolean",
     }
@@ -1169,24 +1229,24 @@ async def test_the_writer_is_told_the_rights_in_force_and_those_that_are_paused(
 # --- the people who left (spec 5.7) -------------------------------------------------------------
 
 
-def kims_right(**fields: Any) -> Right:
-    """A right of Kim's, paused when they left."""
+def pauls_right(**fields: Any) -> Right:
+    """A right of Paul's, paused when they left."""
     return _right(
-        "household.invite", person_id=KIM, access="allow", summary="Kim invites.", **fields
+        "household.invite", person_id=PAUL, access="allow", summary="Paul invites.", **fields
     )
 
 
-def kim_loses_the_right() -> Draft:
-    """The draft of "Kim left, take away the right to invite": one change that removes, and an
+def paul_loses_the_right() -> Draft:
+    """The draft of "Paul left, take away the right to invite": one change that removes, and an
     example about somebody who is here (the owner asks, and invites a guest for two days)."""
     return Draft(
         changes=(
             change(
-                person_id=KIM,
+                person_id=PAUL,
                 remove=True,
                 access=None,
                 limit_expression=None,
-                summary="Kim n'invite plus.",
+                summary="Paul n'invite plus.",
             ),
         ),
         examples=(invite("guest", 2, "domo_judges", by=OWNER),),
@@ -1194,69 +1254,69 @@ def kim_loses_the_right() -> Draft:
 
 
 def test_the_writer_is_told_who_left_and_may_only_take_their_rights_away():
-    paused = kims_right()
+    paused = pauls_right()
     shown = writer_context_json(context(paused=(paused,), former=FORMER))
     # Marked as having left, with the role they had and the day, apart from the people here.
     assert shown["former_people"] == [
-        {"id": str(KIM), "name": "Kim", "role": "adult", "left_on": "2029-12-30"}
+        {"id": str(PAUL), "name": "Paul", "role": "adult", "left_on": "2029-12-30"}
     ]
-    assert str(KIM) not in {person["id"] for person in shown["people"]}
+    assert str(PAUL) not in {person["id"] for person in shown["people"]}
     # Their paused right is told by their name, not as the right of nobody.
-    assert shown["paused_rights"][0]["name"] == "Kim"
+    assert shown["paused_rights"][0]["name"] == "Paul"
     assert writer_context_json(context())["former_people"] == []
     # The context knows them by id (to store a draft with their name), still not as present.
-    assert context(former=FORMER).person(KIM) == ("Kim", "adult")
-    assert context().person(KIM) is None
+    assert context(former=FORMER).person(PAUL) == ("Paul", "adult")
+    assert context().person(PAUL) is None
 
 
 async def test_a_right_of_someone_who_left_is_taken_away_and_nothing_else():
-    here = context(paused=(kims_right(),), former=FORMER)
-    assert await check_draft(kim_loses_the_right(), here) == []
+    here = context(paused=(pauls_right(),), former=FORMER)
+    assert await check_draft(paul_loses_the_right(), here) == []
     # Only taken away: giving, changing or giving back a right is for the people who are here.
     for given in (
-        change(person_id=KIM, limit_expression=None),
-        change(person_id=KIM, limit_expression=None, access=None, ask="yes"),
+        change(person_id=PAUL, limit_expression=None),
+        change(person_id=PAUL, limit_expression=None, access=None, ask="yes"),
     ):
         draft = Draft(changes=(given,), examples=(invite("guest", 2, "domo_judges", by=OWNER),))
         assert await check_draft(draft, here) == [
             "change 1: a right for someone who left the household is only taken away"
         ]
     # A right they never had cannot be taken away; somebody nobody knows is nobody.
-    assert await check_draft(kim_loses_the_right(), context(former=FORMER)) == [
+    assert await check_draft(paul_loses_the_right(), context(former=FORMER)) == [
         "change 1: there is no right of this subject for this action type to remove"
     ]
     nobody = Draft(
         changes=(change(person_id=uuid4(), remove=True, access=None, limit_expression=None),),
-        examples=kim_loses_the_right().examples,
+        examples=paul_loses_the_right().examples,
     )
     unknown = await check_draft(nobody, here)
     assert unknown[0].startswith("change 1: person_id is the id of a person of the household")
 
 
 async def test_an_example_about_someone_who_left_is_refused():
-    here = context(paused=(kims_right(),), former=FORMER)
+    here = context(paused=(pauls_right(),), former=FORMER)
     draft = Draft(
-        changes=kim_loses_the_right().changes,
-        examples=(invite("guest", 2, "domo_judges", by=KIM),),
+        changes=paul_loses_the_right().changes,
+        examples=(invite("guest", 2, "domo_judges", by=PAUL),),
     )
     [problem] = await check_draft(draft, here)
     assert problem.startswith("example 1: person_id is the id of a person of the household")
 
 
 async def test_the_draft_of_someone_who_left_is_stored_with_their_name():
-    here = context(paused=(kims_right(),), former=FORMER)
-    stored = draft_as_json(kim_loses_the_right(), here)
-    assert stored["names"] == {str(KIM): "Kim", str(OWNER): "Owner"}
+    here = context(paused=(pauls_right(),), former=FORMER)
+    stored = draft_as_json(paul_loses_the_right(), here)
+    assert stored["names"] == {str(PAUL): "Paul", str(OWNER): "Owner"}
 
 
 async def test_the_writer_is_sent_back_once_for_a_right_given_to_someone_who_left():
-    wrong = as_arguments(Draft(changes=(change(person_id=KIM),), examples=GOOD_DRAFT.examples))
-    right = as_arguments(kim_loses_the_right())
+    wrong = as_arguments(Draft(changes=(change(person_id=PAUL),), examples=GOOD_DRAFT.examples))
+    right = as_arguments(paul_loses_the_right())
     writer = Writer(submit(wrong, "w1"), submit(right, "w2"))
     draft = await write_draft(
-        writer, "Kim est partie", context(paused=(kims_right(),), former=FORMER), seconds=SECONDS
+        writer, "Paul est parti", context(paused=(pauls_right(),), former=FORMER), seconds=SECONDS
     )
-    assert draft == kim_loses_the_right()
+    assert draft == paul_loses_the_right()
     answer = writer.calls[1].messages[-1]
     assert isinstance(answer, ToolResult)
     assert "only taken away" in answer.content
@@ -1378,6 +1438,7 @@ GUESTS_DRAFT = Draft(
         invite("guest", 2, "domo_judges", by=None, as_role="guest"),
         invite("adult", None, "refused", by=None, as_role="guest"),
         invite("guest", 40, "refused", by=None, as_role="guest"),
+        invite("guest", 2, "domo_judges", by=None, as_role="guest", owner_first=True),
     ),
 )
 
@@ -1387,10 +1448,12 @@ async def test_a_rule_for_guests_is_shown_while_there_is_no_guest():
     assert "guest" in ctx.roles_without_people()
     assert await check_draft(GUESTS_DRAFT, ctx) == []
     # Both outcomes are worked out, for a made-up guest.
-    passes, stopped, longer = GUESTS_DRAFT.examples
+    passes, stopped, longer, first = GUESTS_DRAFT.examples
     assert await example_outcome(passes, GUESTS_DRAFT, ctx) == "domo_judges"
     assert await example_outcome(stopped, GUESTS_DRAFT, ctx) == "refused"
     assert await example_outcome(longer, GUESTS_DRAFT, ctx) == "refused"
+    # The right's limit replaces the default one of inviting: the owner sees it no longer holds.
+    assert await example_outcome(first, GUESTS_DRAFT, ctx) == "domo_judges"
     # Without the draft, a guest may not invite at all.
     assert await example_outcome(passes, Draft((), ()), ctx) == "refused"
     # The writer gives it the same way, and the card names the role.
@@ -1423,7 +1486,7 @@ async def test_a_made_up_person_has_no_rights_of_its_own():
 
     example = invite("guest", 2, "domo_judges", by=None, as_role="guest")
     await example_outcome(example, GUESTS_DRAFT, dataclasses.replace(ctx, facts_for=facts_for))
-    assert seen == [Actor(MADE_UP_PERSON, "guest")]
+    assert seen == [Actor(MADE_UP_PERSON, "guest", visiting=True)]
     assert MADE_UP_PERSON not in NAMES
 
 
@@ -1573,8 +1636,8 @@ ALWAYS_REFUSED = "this situation is always refused, whatever the rights: choose 
 
 
 def a_change_of_role(by: UUID, person: UUID, current_role: str, role: str) -> Example:
-    facts = {"person": f"person:{person}", "current_role": current_role, "role": role,
-             "days": None}  # fmt: skip
+    facts = on_a_record("household.change_role", {"person": f"person:{person}",
+             "current_role": current_role, "role": role, "days": None})  # fmt: skip
     return Example(by, "household.change_role", facts, "domo_judges")
 
 
@@ -1647,7 +1710,7 @@ async def test_an_example_giving_the_owner_role_is_sent_back():
     ],
 )  # fmt: skip
 async def test_what_the_tools_always_refuse_is_never_an_example(action_type, facts, refused):
-    example = Example(ALEX, action_type, facts, "refused")
+    example = Example(ALEX, action_type, on_a_record(action_type, facts), "refused")
     draft = Draft((change(),), (*GOOD_DRAFT.examples, example))
     found = f"example 4: {ALWAYS_REFUSED}" in await check_draft(draft, context())
     assert found is refused
@@ -1849,11 +1912,11 @@ async def test_an_hour_is_imagined_only_once_the_time_zone_is_set():
     ]
 
 
-def test_the_writers_text_says_the_stays_of_the_code():  # M6
+def test_the_writers_text_names_no_length_of_stay():  # M6, audit POL-5
     prompt = writer_prompt()
     assert prompt.splitlines()[0] == WRITER_FIRST_LINE
-    assert f"a guest stays {GUEST_DAYS_RULE} days at most" in prompt
-    assert f"a guest's stay of {GUEST_DAYS_CEILING} days at most" in prompt
+    assert "days at most" not in prompt and "365" not in prompt
+    assert "no length of stay is limited" in prompt
     assert "{" not in prompt and "}" not in prompt
 
 
@@ -2081,6 +2144,7 @@ GOING_OUT_FACTS = {
         "outward": False,
         "removed_by_owner": True,
         "removed_on": "2030-01-01",
+        "removed_at": "2030-01-01T09:00:00+00:00",
     },
 }
 
@@ -2222,10 +2286,14 @@ _FACT_OF_KIND: dict[str, object] = {
 
 def his_example(action_type: str, expected: str) -> Example:
     """The assistant acting on his own on ``action_type``, with every fact of a plausible kind."""
-    facts = {name: _FACT_OF_KIND[kind] for name, kind in ACTION_FACTS.get(action_type, {}).items()}
-    # Sam (a child) is the one the people types are about; Kim, who left, is brought back.
+    facts = {
+        name: _FACT_OF_KIND[kind]
+        for name, kind in ACTION_FACTS.get(action_type, {}).items()
+        if name not in JUDGED_FACTS
+    }
+    # Sam (a child) is the one the people types are about; Paul, who left, is brought back.
     if "person" in facts:
-        facts["person"] = f"person:{KIM if action_type == 'household.bring_back' else SAM}"
+        facts["person"] = f"person:{PAUL if action_type == 'household.bring_back' else SAM}"
     if "current_role" in facts:
         facts["current_role"] = "child"
     if action_type == "device.remove":
@@ -2486,3 +2554,23 @@ def test_an_example_of_domo_names_him():
         lines = describe_rights_draft(draft_as_json(draft, context()), CatalogTexts(lang))
         assert lines is not None
         assert lines.examples[0].situation.startswith(t("rights.example.as_domo", lang))
+
+
+def _leaves(by: UUID | None, role: Role | None) -> Example:
+    return Example(by, "household.leave", {"current_role": "child"}, "asks_an_adult", role=role)
+
+
+async def test_a_made_up_child_asking_to_leave_is_shown_as_asking_an_adult():
+    # The child mark is kept in what the owner is shown: it predicts the barrier's decision.
+    outcome = await example_outcome(_leaves(None, "child"), Draft((), ()), context())
+    assert outcome == "asks_an_adult"
+
+
+async def test_a_real_child_marked_person_asking_to_leave_is_shown_as_asking_an_adult():
+    tom = UUID("00000000-0000-0000-0000-0000000000e1")
+    ctx = dataclasses.replace(
+        context(),
+        persons=(*PEOPLE, (tom, "Tom", "adult")),
+        child_ids=frozenset({tom}),
+    )
+    assert await example_outcome(_leaves(tom, None), Draft((), ()), ctx) == "asks_an_adult"

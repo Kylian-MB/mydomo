@@ -13,6 +13,7 @@ from typing import Any
 import domo_core.tools.chain as chain_tool
 import pytest
 from chat_support import ChatPilot, status_of
+from domo_core.accounts.actors import actor_of
 from domo_core.chat.models import Conversation, Message, MessageAction
 from domo_core.confirmations.chain import WAITING_FOR_ANOTHER_YES
 from domo_core.confirmations.service import (
@@ -23,7 +24,7 @@ from domo_core.confirmations.service import (
 )
 from domo_core.confirmations.store import awaiting_approval, conversation_made_in
 from domo_core.policy.catalog import DEFAULT_POLICY
-from domo_core.policy.roles import Actor, as_role
+from domo_core.policy.rights import NO_RIGHTS
 from domo_core.policy.settings import load_policy_settings
 from domo_core.tools.context import ToolContext, judged_actor_of
 from domo_core.tools.registry import TOOLS
@@ -54,7 +55,7 @@ async def decide_as(
     person = pilot.person
     base = ToolContext(
         session_factory=pilot.server.session_factory,
-        actor=Actor(person.id, as_role(person.role)),
+        actor=actor_of(person),
         person=person,
         conversation_id=confirmation_id,
         origin=pilot.server.base_url,
@@ -113,7 +114,9 @@ async def test_a_let_through_chain_that_meets_an_adult_s_agreement_waits_for_tha
     assert rows_of(await steps_rows(cid)) == [(0, "done"), (1, "planned"), (2, "planned")]
     assert sorted(n.text for n in await stored_notes()) == ["a"]
     now = child_chat.clock()
-    assert may_decide(c, adult_member.person, now) and not may_decide(c, sam, now)
+    assert may_decide(
+        c, adult_member.person, now, rights=NO_RIGHTS, policy=DEFAULT_POLICY
+    ) and not may_decide(c, sam, now, rights=NO_RIGHTS, policy=DEFAULT_POLICY)
     async with session_factory() as reader:
         settings = await load_policy_settings(reader)
         listed, _ = await awaiting_approval(reader, adult_member.person, settings, now, limit=20)
@@ -337,7 +340,7 @@ async def test_a_chain_run_at_once_in_a_turn_of_his_own_leaves_a_request_of_his(
     for on_his_own in (True, False):
         ctx = ToolContext(
             session_factory=session_factory,
-            actor=Actor(owner.id, as_role(owner.role)),
+            actor=actor_of(owner),
             person=owner,
             conversation_id=conversation_id,
             origin=owner_chat.server.base_url,

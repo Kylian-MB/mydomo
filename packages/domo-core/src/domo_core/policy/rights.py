@@ -19,7 +19,11 @@ him as to anyone. A right of his is no rule for everyone: it reaches nobody else
 Resolution (``RightsTable.resolve``), part by part: the person's own right, else their role's,
 else the catalog (``policy.catalog.PolicyTables``, which the web dependency ``get_policy`` hands
 in, and tests replace). So a person's right that only says who agrees keeps the access of their
-role's right. The limit goes the same way, down to the catalog's own limit for the
+role's right. A role the assistant made (``people.made_roles``) sits between the base role's right
+and the catalog for the access alone, never above its ceiling (``catalog.ROLE_CEILING``); and a
+child-marked person gets nothing beyond a child's but by the owner's right for them or for the
+role "child" (ruling 16).
+The limit goes the same way, down to the catalog's own limit for the
 action type (``catalog.DEFAULT_LIMITS``): a right's limit replaces it, and a right whose limit is
 ``"allow"`` lifts it. What to ask is not one right's: it is the most demanding of the person's,
 their role's and everyone's (``asks.most_demanding``). The owner's "never ask me" is the nearest
@@ -51,8 +55,10 @@ The functions here do not commit: the caller does. They write no audit entry eit
 ``pause_rights_and_audit``, the one place where a pause is made and said.
 """
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
+from types import MappingProxyType
 from typing import Final, Literal
 from uuid import UUID
 
@@ -60,11 +66,15 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domo_core.audit.log import append_audit
+from domo_core.people.models import MadeRole, RoleAccess
 from domo_core.policy.asks import Ask, NeverAsk, RuleAsk, as_rule_ask, most_demanding
 from domo_core.policy.catalog import (
     OWNER_ONLY_ACTIONS,
+    ROLE_CEILING,
+    ROLE_MAY_DENY,
     Limit,
     PolicyTables,
+    an_adult_agrees_for,
     rights_type,
 )
 from domo_core.policy.models import PolicyRight
@@ -177,11 +187,54 @@ def _asks(action_type: str, rights: tuple[Right | None, ...]) -> tuple[Ask | Non
     return None, NeverAsk(when=lifting.ask_when, at_all=at_all)
 
 
+_NO_MADE_ROLES: Final[Mapping[UUID, Mapping[str, Access]]] = MappingProxyType({})
+_NO_MADE_LINES: Final[Mapping[UUID, Mapping[str, Right]]] = MappingProxyType({})
+
+
 @dataclass(frozen=True)
 class RightsTable:
-    """The rights in force at one moment (``load_rights``)."""
+    """The rights in force at one moment (``load_rights``), and what each role the assistant
+    made gives or denies (``made``, by the role's id: its accesses, by action type)."""
 
     rights: tuple[Right, ...]
+    made: Mapping[UUID, Mapping[str, Access]] = field(default=_NO_MADE_ROLES)
+    # The owner's lines on the roles the assistant made that say more than allow or deny (a
+    # limit, an approver, what to ask), by role and action type: read as his right for the role.
+    made_lines: Mapping[UUID, Mapping[str, Right]] = field(default=_NO_MADE_LINES)
+
+    def _made_line(self, actor: Actor, action_type: str) -> Right | None:
+        """The owner's line for the role the assistant made for ``actor``, on ``action_type``,
+        when it says more than allow or deny (never above the ceiling)."""
+        if actor.made_role is None or action_type in ROLE_CEILING:
+            return None
+        return self.made_lines.get(actor.made_role, {}).get(action_type)
+
+    def _made_access(self, actor: Actor, action_type: str) -> Access | None:
+        """What the role the assistant made for ``actor`` says of ``action_type``, if it says
+        anything: never above the ceiling (``catalog.ROLE_CEILING``), whatever its row says, but
+        the deny of what a made role may take away (``catalog.ROLE_MAY_DENY``)."""
+        if actor.made_role is None:
+            return None
+        said = self.made.get(actor.made_role, {}).get(action_type)
+        if action_type in ROLE_CEILING and not (said == "deny" and action_type in ROLE_MAY_DENY):
+            return None
+        return said
+
+    def said_for(self, actor: Actor, action_type: str) -> Access | None:
+        """What is said for ``actor`` on ``action_type`` beyond the catalog: the owner's right
+        for that person, else his right for their base role, else the access of the role the
+        assistant made for them (never above the ceiling); ``None`` when none says anything. Who
+        may agree for a child reads it (``confirmations.who_agrees``), in the order ``resolve``
+        reads them."""
+        if actor.subject == "domo":
+            return None
+        for right in (
+            self._own_right(actor, action_type),
+            self._role_right(actor.role, action_type),
+        ):
+            if right is not None and right.access is not None:
+                return right.access
+        return self._made_access(actor, action_type)
 
     def _own_right(self, actor: Actor, action_type: str) -> Right | None:
         """The right given to ``actor`` themselves: the person's, or Domo's (``for_domo``)."""
@@ -240,9 +293,13 @@ class RightsTable:
 
     def resolve(self, actor: Actor, action_type: str, policy: PolicyTables) -> Resolved:
         """What applies to ``actor`` for ``action_type``, part by part: their own right, else
-        their role's, else the catalog ``policy``; and what to ask, from their own right, their
-        role's and everyone's (see the module docstring). For Domo (``Actor.subject``), his own
-        right, else the catalog's ``policy.domo``: no role's right reaches him."""
+        their base role's, else, for the access, the role the assistant made for them (never
+        above ``catalog.ROLE_CEILING``), else the catalog ``policy``; and what to ask, from their
+        own right, their role's and everyone's (see the module docstring). A child-marked actor
+        gets what a child does not have only from the owner's right for them or for the role
+        "child", an adult agreeing first unless that right says otherwise. For Domo
+        (``Actor.subject``), his own right, else the catalog's ``policy.domo``: no role's right
+        reaches him."""
         if action_type not in policy.known:
             return Resolved(False, None, None, None, None)
         # Giving an invitation's link again is inviting: read on the type it follows.
@@ -255,23 +312,44 @@ class RightsTable:
         )
         mine = self._own_right(actor, action_type)
         role = None if is_domo else self._role_right(actor.role, action_type)
-        ask, never_ask = _asks(action_type, (mine, role, self._everyone_right(action_type)))
+        made = None if is_domo else self._made_line(actor, action_type)
+        ask, never_ask = _asks(action_type, (mine, made, role, self._everyone_right(action_type)))
         if action_type in OWNER_ONLY_ACTIONS:
             # The foundation: no right moves it, and it is the owner's alone. Only what to ask
             # is read on it (F4): the owner's own rules about his own yes.
             return Resolved(actor.role == "owner" and in_catalog, None, None, ask, never_ask)
+        own_access = None if mine is None else mine.access
         access = _first(
-            None if mine is None else mine.access,
+            own_access,
             None if role is None else role.access,
+            None if is_domo else self._made_access(actor, action_type),
         )
-        return Resolved(
-            allowed=in_catalog if access is None else access == "allow",
-            approver=_first(
+        approver: Approver | None = _first(
+            None if mine is None else mine.approver,
+            None if made is None else made.approver,
+            None if role is None else role.approver,
+        )
+        allowed = in_catalog if access is None else access == "allow"
+        if actor.child and action_type not in policy.allowed.get("child", frozenset()):
+            # Ruling 16, socle 3: a child-marked person gets nothing beyond what a child has from
+            # the role they carry (its base, a right for that base, a role the assistant made);
+            # only the owner's right for them, or his right for the role "child", opens it, and
+            # an adult still agrees first unless that right names someone else.
+            children = self._role_right("child", action_type)
+            allowed = _first(own_access, None if children is None else children.access) == "allow"
+            approver = _first(
                 None if mine is None else mine.approver,
-                None if role is None else role.approver,
-            ),
+                None if children is None else children.approver,
+                # The catalog's adult for a child, where it is due anyway, stays the barrier's
+                # (left to the judge first); elsewhere the code names one.
+                None if an_adult_agrees_for(True, action_type) else "adult",
+            )
+        return Resolved(
+            allowed=allowed,
+            approver=approver,
             limit=_first(
                 None if mine is None else mine.limit,
+                None if made is None else made.limit,
                 None if role is None else role.limit,
                 policy.limits.get(action_type),
             ),
@@ -330,9 +408,63 @@ async def _rights_where(session: AsyncSession, *, paused: bool) -> tuple[Right, 
     return tuple(_right_of(row) for row in result.scalars())
 
 
+async def _made_roles(session: AsyncSession) -> Mapping[UUID, Mapping[str, Access]]:
+    """What each role the assistant made, and did not delete, gives or denies."""
+    rows = await session.execute(
+        select(RoleAccess.role_id, RoleAccess.action_type, RoleAccess.access)
+        .join(MadeRole, MadeRole.id == RoleAccess.role_id)
+        .where(MadeRole.deleted_at.is_(None))
+    )
+    made: dict[UUID, dict[str, Access]] = {}
+    for role_id, action_type, stored in rows.all():
+        access: Access | None = _one_of(stored, _ACCESS, "access")
+        if access is not None:
+            made.setdefault(role_id, {})[action_type] = access
+    return MappingProxyType({role_id: MappingProxyType(given) for role_id, given in made.items()})
+
+
+async def _made_lines(session: AsyncSession) -> Mapping[UUID, Mapping[str, Right]]:
+    """The owner's lines on the roles the assistant made, and did not delete, that say more than
+    allow or deny, as rights for the role (``RightsTable.made_lines``)."""
+    rows = await session.scalars(
+        select(RoleAccess)
+        .join(MadeRole, MadeRole.id == RoleAccess.role_id)
+        .where(
+            MadeRole.deleted_at.is_(None),
+            RoleAccess.by_owner.is_(True),
+            (RoleAccess.limit_expression.is_not(None))
+            | (RoleAccess.approver.is_not(None))
+            | (RoleAccess.ask.is_not(None)),
+        )
+    )
+    lines: dict[UUID, dict[str, Right]] = {}
+    for row in rows:
+        summary = row.summary or row.action_type
+        lines.setdefault(row.role_id, {})[row.action_type] = Right(
+            id=row.role_id,
+            person_id=None,
+            role=None,
+            action_type=row.action_type,
+            access=_one_of(row.access, _ACCESS, "access"),
+            approver=_one_of(row.approver, _APPROVERS, "approver"),
+            limit=None
+            if row.limit_expression is None
+            else Limit(row.limit_expression, row.judge_question, summary),
+            ask=as_rule_ask(row.ask),
+            ask_when=None,
+            summary=summary,
+        )
+    return MappingProxyType({key: MappingProxyType(value) for key, value in lines.items()})
+
+
 async def load_rights(session: AsyncSession) -> RightsTable:
-    """The rights in force, as the database holds them now: neither revoked nor paused."""
-    return RightsTable(await _rights_where(session, paused=False))
+    """The rights in force, as the database holds them now: neither revoked nor paused; what
+    the roles the assistant made give or deny; and the owner's lines on those roles."""
+    return RightsTable(
+        await _rights_where(session, paused=False),
+        await _made_roles(session),
+        await _made_lines(session),
+    )
 
 
 async def paused_rights(session: AsyncSession) -> tuple[Right, ...]:

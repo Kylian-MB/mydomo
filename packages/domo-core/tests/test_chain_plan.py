@@ -26,6 +26,7 @@ from unittest.mock import ANY
 import pytest
 from chat_support import confirmation_cards, status_of
 from domo_common.i18n import t
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.confirmations.describe import describe_for_people
 from domo_core.confirmations.models import Confirmation, ConfirmationStep
@@ -229,7 +230,7 @@ async def test_a_chains_plan_says_whose_accord_it_needs_and_its_rule(
     assert alone.never_ask == NeverAsk(None, at_all=True)
     # A child's chain that leaves needs an adult.
     sam = child_member.person
-    child = replace(tool_context, actor=Actor(sam.id, "child"), person=sam)
+    child = replace(tool_context, actor=Actor(sam.id, "child", child=True), person=sam)
     leaving = await tool.plan(
         chain(("note_leave", {"recipient": "Owner", "text": "x"}), ("household_leave", {})),
         child.actor,
@@ -281,7 +282,7 @@ async def test_a_refused_step_refuses_the_whole_chain_with_its_reason(
 async def test_the_chain_is_the_members_and_a_guest_is_refused_it(guest_chat, count_confirmations):
     reply = await guest_chat.say_with_tool(
         TOOL,
-        chain(("profile_rename", {"name": "Robin B"}), ("profile_rename", {"name": "Robin C"})),
+        chain(("profile_rename", {"name": "Tom"}), ("profile_rename", {"name": "Paul"})),
     )
     assert reply.model_results[-1] == {
         "status": "refused",
@@ -464,8 +465,8 @@ async def test_a_step_that_cannot_be_described_yet_is_checked_in_its_turn_only_i
     # A call its tool does not accept is never checked in its turn, whomever it names: no earlier
     # step can make it right.
     for malformed in (
-        ("household_remove", {"person": "Owner", "reason": "x"}),
-        ("household_change_role", {"person": "Owner", "role": "captain"}),
+        ("household_remove", {"person": "Owner", "why": "x"}),
+        ("household_change_role", {"person": "Owner", "role": 3}),
     ):
         refused = await owner_chat.say_with_tool(
             TOOL, chain(("household_transfer_ownership", {"person": "Alex"}), malformed)
@@ -585,6 +586,9 @@ async def test_whom_an_invitation_acts_on_is_the_open_invitation_of_that_name(
     assert isinstance(invite, ActsOn)
     named = {"display_name": " dana ", "role": "adult"}
     assert await invite.acts_on(named, tool_context) == f"invitation:{made.id}"
+    # The assistant's own call carries its reason (``people.whose``): it names the same one.
+    his = {**named, "reason": "Dana moves in"}
+    assert await invite.acts_on(his, tool_context) == f"invitation:{made.id}"
     # A free name, the name of a person of the household, or arguments the tool does not accept
     # act on nothing.
     for arguments in (
@@ -593,7 +597,7 @@ async def test_whom_an_invitation_acts_on_is_the_open_invitation_of_that_name(
         {"display_name": "Dana"},
         {"display_name": "Dana", "role": "captain"},
         {"display_name": 3, "role": "adult"},
-        {"display_name": "Dana", "role": "adult", "reason": "x"},
+        {"display_name": "Dana", "role": "adult", "colour": "x"},
     ):
         assert await invite.acts_on(arguments, tool_context) is None, arguments
     # An invitation that was cancelled no longer holds its name.
@@ -963,7 +967,7 @@ def test_the_household_tools_that_name_someone_say_whom_they_act_on():
 def _context(person, session_factory, clock) -> ToolContext:
     return ToolContext(
         session_factory=session_factory,
-        actor=Actor(person.id, person.role),
+        actor=actor_of(person),
         person=person,
         conversation_id=uuid.uuid4(),
         origin="https://domo.example.com/",
@@ -995,13 +999,16 @@ async def test_whom_a_call_acts_on_is_found_by_the_name_alone(
         {},
         {"x": "Alex"},
         # Arguments the tool does not accept act on nobody.
-        {"person": "Owner", "reason": "x"},
+        {"person": "Owner", "why": "x"},
     ):
         assert await remove.acts_on(arguments, ctx) is None, arguments
     change = TOOLS["household_change_role"]
     assert isinstance(change, ActsOn)
     assert await change.acts_on({"person": "Alex", "role": "child"}, ctx) == f"person:{alex.id}"
-    assert await change.acts_on({"person": "Alex", "role": "captain"}, ctx) is None
+    # A role made for the household may be made by an earlier step: only a role that is no name
+    # at all makes the call act on nobody.
+    assert await change.acts_on({"person": "Alex", "role": "captain"}, ctx) == f"person:{alex.id}"
+    assert await change.acts_on({"person": "Alex", "role": 3}, ctx) is None
     transfer = TOOLS["household_transfer_ownership"]
     assert isinstance(transfer, ActsOn)
     assert await transfer.acts_on({"person": "Alex"}, ctx) == f"person:{alex.id}"

@@ -76,6 +76,16 @@ Chacun est livré d'un bloc : une branche, une conception, un plan, une fusion.
 - L'assistant se regarde lui-même : il lit son propre code et ses journaux, sans rien y changer, et écrit un rapport de panne que le développeur reprend. Il ne change jamais seul le code du cœur (le propriétaire, 2026-11-14).
 - Un rapport de panne, n'importe qui peut le lui demander. Il peut l'envoyer au dépôt git du projet quand il y en aura un, et le faire de lui-même quand il voit un bogue, avec l'accord du propriétaire. Un rapport qui sort de la maison ne contient aucun nom, aucune discussion, aucun secret, et sort par le gardien (l'envoi demande aussi G).
 
+### Chantier « Domo crée les personnes » — L'assistant tient lui-même les personnes du foyer
+
+*Demandé le 2026-11-23, conception `2026-11-23-domo-cree-les-personnes-design.md`. Sa place dans l'ordre et son numéro de version sont fixés à la fusion.*
+
+- L'assistant tient lui-même les personnes du foyer : une fiche par personne, avec ou sans compte ; un accès n'est pas un compte. Il ouvre, complète, réunit, sépare (90 jours), efface et oublie les fiches, note les liens entre les gens, crée des rôles sous un plafond tenu par le code, donne, reprend et promet des accès.
+- Le propriétaire a ses consignes, appliquées avant tout jugement (ne plus créer de nouvelles personnes, ne plus les retenir, retirer les accès de quelqu'un, refuser quelqu'un), et deux règles à lui : être prévenu de chaque nouvel accès donné par l'assistant, et « les invités viennent avec leur propre clé ».
+- **Construit sur la branche `claude/feat-domo-makes-people-1ebc54`** (relectures en cours, pas encore fusionné).
+- Ce qu'elle remplace dans les conceptions passées (sa partie 6.14) : « le propriétaire relie chaque identité de canal à une personne du foyer » (architecture, 10.3) ; inviter et retirer comme droits d'administration donnés par le propriétaire, prolonger un séjour comme changement de rôle, « un adulte ne touche jamais à ton invitation » (droits 5.2, sans refus 5.5 et 5.9, suites du 2026-11-17) : l'assistant juge ; la liste fermée des quatre rôles ; « un invité n'a pas d'accès hors des pièces communes », devenu le point de départ d'un rôle de passage. La limite de 30 jours d'un séjour n'est plus qu'une fin par défaut.
+- Ce qu'elle laisse à la voix (chantier D) : voir ce chantier.
+
 ### Chantier D — Parler à l'assistant à la voix sur un ordinateur
 
 *Demandé le 2026-11-12. Le premier canal vocal.*
@@ -84,6 +94,7 @@ Chacun est livré d'un bloc : une branche, une conception, un plan, une fusion.
 - C'est le cas le plus simple pour commencer : le micro et les haut-parleurs sont déjà là, et la personne est déjà connectée, donc son identité est sûre sans reconnaissance de la voix.
 - Tout ce qui se fait aujourd'hui par une carte doit pouvoir se dire et s'entendre.
 - Demande le chantier A. La reconnaissance et la synthèse de la parole passent par le gardien ou par des modèles locaux : à décider en conception.
+- Là où la voix se branche est prêt (chantier « Domo crée les personnes », partie 6.12 de sa conception), sans rien qui écoute : une personne sans compte peut être celle qui parle (un canal la présente avec ses indices) ; un inconnu peut devenir une fiche, à laquelle le canal rattache sa propre référence pour le reconnaître ; réunir, séparer, effacer et oublier une fiche préviennent le canal. Le seul interrupteur de « qui l'assistant peut atteindre » s'élargit le jour où une voix peut répondre. Reste à décider ici, avec le propriétaire, avant de brancher la règle de ce qu'une personne mal reconnue peut faire (écrite, appelée nulle part) : un outil de l'assistant qui ne déclare qu'un geste physique (une porte) ou lit un secret, et ce que vaut une voix reconnue pour réutiliser une preuve donnée plus tôt. Avant la voix, quelqu'un sans compte passe par une personne du foyer.
 - À rappeler au propriétaire (demandé le 2026-11-12) : refaire à la voix l'essai du deuxième canal du chantier A (même assistant, même discussion, ce qu'une carte montre est dit en mots). Les actions pour convenir d'un moyen de preuve ou en retirer un arrivent ici, avec le mot de passe vocal.
 
 ### Chantier D bis — L'application Android
@@ -147,6 +158,7 @@ A, B, C, D, E, F, G. G peut passer avant E et F pour tout ce qui ne touche pas l
 - D peut passer juste après A si le propriétaire veut entendre l'assistant plus tôt : il ne dépend ni de B ni de C.
 - D bis (l'application Android) a été ajouté le 2026-11-22, juste après D, avec l'accord du propriétaire : à commencer dès que D est fusionné.
 - C avant E et F : les connecteurs de la maison et l'interface de chacun sont des outils, écrits par le projet ou par l'assistant.
+- « Domo crée les personnes » a été ajouté le 2026-11-23 ; sa place dans l'ordre est fixée à la fusion. Il prépare l'endroit où la voix (D, E) se branche.
 
 ## 6. Ce qui ne change pas
 

@@ -137,7 +137,9 @@ async def test_an_unconfirmed_memory_comes_with_the_trust_of_who_said_it(
     # Sam leaves the household: her word is still hers, without a figure anywhere.
     async with adult_chat.server.session_factory() as writer:
         await writer.execute(
-            update(Person).where(Person.id == sam.id).values(disabled_at=datetime.now(UTC))
+            update(Person)
+            .where(Person.id == sam.id)
+            .values(disabled_at=datetime.now(UTC), state="gone")
         )
         await writer.commit()
     line = line_of(await context_of(adult_chat), memory_id)

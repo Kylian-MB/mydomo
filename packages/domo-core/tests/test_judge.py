@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 import fakes
 import pytest
 from chat_support import last_audit
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person, WebSession
 from domo_core.channels.page.speaker import page_speaker
 from domo_core.chat.models import Conversation, Message, MessageAction
@@ -67,7 +68,7 @@ from domo_core.policy.actions import DescribedAction
 from domo_core.policy.asks import Asked, NeverAsk
 from domo_core.policy.catalog import DEFAULT_POLICY, WARNED_FACTS
 from domo_core.policy.facts import PersonHistory, person_history
-from domo_core.policy.roles import Actor, as_role, domo_actor
+from domo_core.policy.roles import Actor, domo_actor
 from domo_core.texts.view import CatalogTexts
 from domo_core.tools.context import OwnIdea, ToolContext
 from domo_core.tools.registry import TOOLS
@@ -331,7 +332,13 @@ async def test_the_judge_sees_only_the_persons_words_of_this_conversation(
     shown = json.dumps(case.as_json(), ensure_ascii=False)
     assert "The assistant says 2" not in shown and "The assistant was woken" not in shown
     assert "another conversation" not in shown and "Sam's" not in shown
-    assert case.person == {"name": "Alex", "role": "adult"}
+    assert case.person == {
+        "name": "Alex",
+        "role": "adult",
+        "made_role": None,
+        "child": False,
+        "standing": "lives_here",
+    }
     assert case.action == {
         "type": "household.invite",
         "target": None,
@@ -582,7 +589,7 @@ async def test_the_judge_writes_its_reason_in_the_askers_language(
     async def case_of_sam() -> JudgeCase:
         return await build_case(
             session,
-            actor=Actor(sam.id, "child"),
+            actor=Actor(sam.id, "child", child=True),
             asks=sam,
             action=INVITE,
             says="Invite Robin as a guest for 2 days.",
@@ -675,7 +682,9 @@ async def test_the_case_names_who_is_in_the_household_and_tells_a_waiting_note_w
     await add_person("Owner", "owner")
     alex = await add_person("Alex", "adult")
     await add_person("Dana", "adult")
-    session.add(Person(display_name="Gone", role="adult", disabled_at=datetime.now(UTC)))
+    session.add(
+        Person(display_name="Gone", role="adult", disabled_at=datetime.now(UTC), state="gone")
+    )
     conversation = await add_conversation(sam)
     note = DescribedAction(
         "core",
@@ -715,7 +724,7 @@ async def test_the_case_names_who_is_in_the_household_and_tells_a_waiting_note_w
 
     case = await build_case(
         session,
-        actor=Actor(sam.id, "child"),
+        actor=Actor(sam.id, "child", child=True),
         asks=sam,
         action=INVITE,
         says="Invite Robin.",
@@ -1712,7 +1721,7 @@ def _ctx(
 ) -> ToolContext:
     ctx = ToolContext(
         session_factory=session_factory,
-        actor=Actor(person.id, as_role(person.role)),
+        actor=actor_of(person),
         person=person,
         conversation_id=conversation.id,
         origin="",
@@ -1836,7 +1845,13 @@ async def test_a_person_s_case_and_his_own_are_built_by_the_same_function(
     his = (await case_of(domo_actor(), None, IdeaTold("domo", "it is time"))).as_json()
     assert set(his) == set(theirs)
     assert theirs["words"] == ["put the TV on"] and his["words"] == []
-    assert theirs["person"] == {"name": "Alex", "role": "owner"}
+    assert theirs["person"] == {
+        "name": "Alex",
+        "role": "owner",
+        "made_role": None,
+        "child": False,
+        "standing": "lives_here",
+    }
     assert his["person"] == {"name": "Domo", "role": "adult"}
     assert his["owner_said"] == theirs["owner_said"]
     assert his["idea"] == {
@@ -1875,7 +1890,13 @@ async def test_an_act_of_his_in_a_person_s_turn_reads_their_words(
     )
     [case] = cases
     assert case.words == ("open the TV for the match",)
-    assert case.person == {"name": "Dana", "role": "adult"}
+    assert case.person == {
+        "name": "Dana",
+        "role": "adult",
+        "made_role": None,
+        "child": False,
+        "standing": "lives_here",
+    }
     assert case.idea == IdeaTold("person")
 
 
@@ -1957,7 +1978,13 @@ async def test_a_gathering_that_fails_still_gives_a_case(session_factory, monkey
     assert judgement == Judgement("do")
     assert case.missing == ("everything",)
     assert case.as_json()["missing"] == ["everything"]
-    assert case.person == {"name": "Alex", "role": "adult"}
+    assert case.person == {
+        "name": "Alex",
+        "role": "adult",
+        "made_role": None,
+        "child": False,
+        "standing": "lives_here",
+    }
 
 
 # --- a step of a chain is judged on what is known of it ------------------------------------------
@@ -1993,7 +2020,7 @@ async def _judge_the_chain(
     monkeypatch.setattr(execution_module, "_REMEMBERED_SECONDS", 120.0)
     await consult_the_judge(
         _ctx(session_factory, person, conversation),
-        actor=Actor(person.id, as_role(person.role)),
+        actor=actor_of(person),
         action=THE_CHAIN,
         says="Close a site, then leave a note.",
         rights=ALLOWED,

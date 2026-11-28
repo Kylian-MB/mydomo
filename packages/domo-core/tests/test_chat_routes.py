@@ -702,7 +702,10 @@ async def test_the_model_gets_the_prompt_the_history_and_the_limit(
         **turn_tools("owner"),
         successors=[],
         today=today_of(clock(), None),
-        household=(HouseholdLine("Owner", "owner", is_you=True),),
+        household=(
+            # The owner's turns see where each stands and who has an account.
+            HouseholdLine("Owner", "owner", is_you=True, standing="lives_here", has_account=True),
+        ),
         # No model of meanings in the pilots: the search works by words alone.
         memory=MemoryBlock(search="words_only"),
         models=CHAT_TALK,

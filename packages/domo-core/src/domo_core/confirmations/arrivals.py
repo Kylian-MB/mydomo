@@ -63,6 +63,7 @@ import anyio
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import is_active
 from domo_core.audit.log import append_audit
@@ -93,7 +94,6 @@ from domo_core.policy.asks import Ask, Asked, most_demanding, most_demanding_ask
 from domo_core.policy.catalog import PolicyTables
 from domo_core.policy.decision import ChainBasis
 from domo_core.policy.rights import load_rights
-from domo_core.policy.roles import Actor, as_role
 from domo_core.tools.chain import (
     UnderTheSameYes,
     run_under_the_same_yes,
@@ -327,7 +327,7 @@ async def _resume(
             return "arrived", None, taken.decider
     ctx = ToolContext(
         session_factory=deps.session_factory,
-        actor=Actor(person_id=requester.id, role=as_role(requester.role)),
+        actor=actor_of(requester),
         person=requester,
         conversation_id=c.conversation_id,
         # No link is made in a resumed chain: each step leaves what it makes behind its button.
@@ -342,6 +342,7 @@ async def _resume(
         text_writing=deps.text_writing,
         # A note a step leaves is news for its recipient.
         notify=notifier(deps),
+        record_listeners=deps.record_listeners,
     )
     _, record = await run_under_the_same_yes(ctx, c.id, taken)
     if paused(record):
@@ -371,7 +372,7 @@ async def _asked_at_the_arrival(
     if not left:
         return None
     rights = await load_rights(session)
-    actor = Actor(person_id=requester.id, role=as_role(requester.role))
+    actor = actor_of(requester)
     rules: list[Ask | None] = [rights.resolve(actor, row.action_type, policy).ask for row in left]
     rule = most_demanding(*rules)
     if rule is None:

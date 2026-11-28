@@ -9,6 +9,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.audit.models import AuditEntry
 from domo_core.chat.store import ConversationStore
@@ -16,7 +17,6 @@ from domo_core.db import SessionFactory
 from domo_core.deliveries.service import delivered
 from domo_core.devices.models import Device
 from domo_core.policy.catalog import DEFAULT_POLICY, is_silent, needs_the_judge
-from domo_core.policy.roles import Actor
 from domo_core.tools.context import NamesPeople, ToolContext
 from domo_core.tools.registry import TOOLS
 from sqlalchemy import select
@@ -27,7 +27,7 @@ NOW = datetime(2030, 1, 7, 9, 0, tzinfo=UTC)
 def context(person: Person, session_factory: SessionFactory) -> ToolContext:
     return ToolContext(
         session_factory=session_factory,
-        actor=Actor(person.id, person.role),  # type: ignore[arg-type]
+        actor=actor_of(person),  # type: ignore[arg-type]
         person=person,
         conversation_id=uuid.uuid4(),
         origin="",

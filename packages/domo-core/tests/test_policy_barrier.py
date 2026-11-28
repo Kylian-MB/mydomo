@@ -114,11 +114,11 @@ def right(
 def test_an_action_a_person_may_do_is_allowed_and_the_judge_decides_the_rest():
     assert decide(Actor(uuid4(), "owner"), INVITE) == Allow()
     assert decide(Actor(uuid4(), "adult"), NOTE) == Allow()
-    assert decide(Actor(uuid4(), "child"), LIST) == Allow()
+    assert decide(Actor(uuid4(), "child", child=True), LIST) == Allow()
 
 
 def test_a_childs_leave_needs_an_adult_and_a_childs_note_does_not():
-    child = Actor(uuid4(), "child")
+    child = Actor(uuid4(), "child", child=True)
     assert decide(child, LEAVE) == NeedsApproval("adult", judge_first=True)
     assert decide(child, NOTE) == Allow()
     assert decide(child, RENAME) == Allow()
@@ -135,11 +135,11 @@ def test_a_childs_leave_needs_an_adult_and_a_childs_note_does_not():
     ],
 )
 def test_leaving_the_household_is_everyones_with_an_adult_for_a_child(role, expected):  # §5.9
-    assert decide(Actor(uuid4(), role), LEAVE) == expected
+    assert decide(Actor(uuid4(), role, child=role == "child"), LEAVE) == expected
     # Removing someone stays the owner's: nobody else may, without a right.
     remove = described("household.remove", "person:x", "permissions")
     if role != "owner":
-        assert decide(Actor(uuid4(), role), remove) == Refuse("not_allowed")
+        assert decide(Actor(uuid4(), role, child=role == "child"), remove) == Refuse("not_allowed")
 
 
 def test_a_right_naming_an_approver_needs_their_accord():
@@ -185,17 +185,21 @@ def test_a_judge_limit_on_what_needs_an_adult_anyway_goes_to_the_owner():
     # judge, whose do would spare the adult too. It goes to the owner, as before.
     limit = Limit('"judge"', "Is it the holidays?", "a limit")
     rights = RightsTable((right(role="child", action_type="household.leave", limit=limit),))
-    assert decide(Actor(uuid4(), "child"), LEAVE, DEFAULT_POLICY, rights) == NeedsApproval(
-        "owner", "Is it the holidays?"
-    )
+    assert decide(
+        Actor(uuid4(), "child", child=True), LEAVE, DEFAULT_POLICY, rights
+    ) == NeedsApproval("owner", "Is it the holidays?")
 
 
 def test_an_approver_a_right_names_is_never_left_to_the_judge():
     # The catalog's adult for a child is the judge's first; an adult a right names is the
     # owner's word.
     named = RightsTable((right(role="child", action_type="household.leave", approver="adult"),))
-    assert decide(Actor(uuid4(), "child"), LEAVE, DEFAULT_POLICY, named) == NeedsApproval("adult")
-    assert decide(Actor(uuid4(), "child"), LEAVE) == NeedsApproval("adult", judge_first=True)
+    assert decide(
+        Actor(uuid4(), "child", child=True), LEAVE, DEFAULT_POLICY, named
+    ) == NeedsApproval("adult")
+    assert decide(Actor(uuid4(), "child", child=True), LEAVE) == NeedsApproval(
+        "adult", judge_first=True
+    )
 
 
 def test_the_owners_rule_travels_with_the_decision():
@@ -208,9 +212,9 @@ def test_the_owners_rule_travels_with_the_decision():
         )
     )
     assert decide(adult, INVITE, DEFAULT_POLICY, opened) == Allow(rule="proof")
-    assert decide(Actor(uuid4(), "child"), LEAVE, DEFAULT_POLICY, opened) == NeedsApproval(
-        "adult", None, "proof", judge_first=True
-    )
+    assert decide(
+        Actor(uuid4(), "child", child=True), LEAVE, DEFAULT_POLICY, opened
+    ) == NeedsApproval("adult", None, "proof", judge_first=True)
     # A rule alone does not open the type: the adult may still not change a role (they invite
     # by default since 0.9.1).
     change = described("household.change_role", "person:x", "permissions")
@@ -241,8 +245,9 @@ def test_someone_unsure_does_the_ordinary_and_the_judge_weighs_the_sensitive(): 
     # Never refused out of hand: renaming oneself and the list are ordinary, done as anyone;
     # inviting and a note are sensitive, the judge weighs who asks (spec 6.5 of the voice).
     for role in ROLES:
-        unsure = Actor(uuid4(), role, standing="unsure")
-        sure = Actor(unsure.person_id, role)
+        child = role == "child"
+        unsure = Actor(uuid4(), role, standing="unsure", child=child)
+        sure = Actor(unsure.person_id, role, child=child)
         assert decide(unsure, RENAME) == decide(sure, RENAME) == Allow()
         assert decide(unsure, LIST) == decide(sure, LIST)
         for action in (INVITE, NOTE):
@@ -255,7 +260,7 @@ def test_someone_unsure_does_the_ordinary_and_the_judge_weighs_the_sensitive(): 
 
 
 def test_a_right_that_opens_a_type_to_a_child_keeps_the_adult_unless_it_says_self():  # F1
-    child = Actor(uuid4(), "child")
+    child = Actor(uuid4(), "child", child=True)
     opened = RightsTable(
         (right(person_id=child.person_id, action_type="household.invite", access="allow"),)
     )
@@ -276,26 +281,29 @@ def test_a_right_that_opens_a_type_to_a_child_keeps_the_adult_unless_it_says_sel
 
 def test_approval_needed_is_the_one_rule_the_barrier_and_the_chain_share():
     nothing = Resolved(True, None, None, None, None)
-    assert approval_needed(Actor(uuid4(), "child"), nothing, "household.leave") == NeedsApproval(
-        "adult"
-    )
+    assert approval_needed(
+        Actor(uuid4(), "child", child=True), nothing, "household.leave"
+    ) == NeedsApproval("adult")
     assert approval_needed(Actor(uuid4(), "adult"), nothing, "note.leave") is None
-    assert approval_needed(Actor(uuid4(), "child"), nothing, "note.leave") is None
+    assert approval_needed(Actor(uuid4(), "child", child=True), nothing, "note.leave") is None
     to_the_owner = Resolved(True, "owner", None, "explicit_yes", None)
     assert approval_needed(Actor(uuid4(), "adult"), to_the_owner, "note.leave") == NeedsApproval(
         "owner", None, "explicit_yes"
     )
     assert approval_needed(Actor(uuid4(), "owner"), to_the_owner, "note.leave") is None
     by_themselves = Resolved(True, "self", None, None, NeverAsk("x"))
-    assert approval_needed(Actor(uuid4(), "child"), by_themselves, "household.leave") is None
+    assert (
+        approval_needed(Actor(uuid4(), "child", child=True), by_themselves, "household.leave")
+        is None
+    )
 
 
 def test_the_types_a_child_needs_an_adult_for_are_the_ones_that_were_not_free():
     for action_type in sorted(ADULT_AGREES_FOR_A_CHILD):
         resolved = Resolved(True, None, None, None, None)
-        assert approval_needed(Actor(uuid4(), "child"), resolved, action_type) == NeedsApproval(
-            "adult"
-        )
+        assert approval_needed(
+            Actor(uuid4(), "child", child=True), resolved, action_type
+        ) == NeedsApproval("adult")
 
 
 def test_the_target_and_the_connector_do_not_change_the_decision():
@@ -334,7 +342,7 @@ def test_decision_for_every_role_and_action(role, action_type):
         expected = NeedsApproval("adult", judge_first=True)
     else:
         expected = Allow()
-    assert decide(Actor(uuid4(), role), action) == expected
+    assert decide(Actor(uuid4(), role, child=role == "child"), action) == expected
 
 
 # --- who asks, when the code is not sure of them ------------------------------------------
@@ -400,6 +408,10 @@ def test_the_rules_are_changed_by_the_owner_alone():
                 "models.set_level",
                 # Who a house account serves besides the household (ruling P2).
                 "account.share",
+                # The owner's directives on the people of the house.
+                "people.directive_set",
+                "people.directive_lift",
+                "people.directives_look",
             }
         )
         == OWNER_ONLY_ACTIONS
@@ -411,8 +423,10 @@ def test_the_rules_are_changed_by_the_owner_alone():
 def test_changing_the_rules_is_the_owners_whatever_the_tables_say(action_type, role):
     everyone = PolicyTables(KNOWN_ACTIONS, {r: frozenset({action_type}) for r in ROLES})
     action = DescribedAction("core", action_type, None, "permissions", "household")
-    assert decide(Actor(uuid4(), role), action, everyone) == Refuse("not_allowed")
-    assert decide(Actor(uuid4(), role), action) == Refuse("not_allowed")
+    assert decide(Actor(uuid4(), role, child=role == "child"), action, everyone) == Refuse(
+        "not_allowed"
+    )
+    assert decide(Actor(uuid4(), role, child=role == "child"), action) == Refuse("not_allowed")
 
 
 @pytest.mark.parametrize("action_type", sorted(OWNER_ONLY_ACTIONS))
@@ -427,10 +441,11 @@ def test_the_owner_is_not_stopped_by_the_foundation(action_type):
 def test_nobody_known_is_refused_first_and_the_owners_own_stay_his(action_type, role):
     everyone = PolicyTables(KNOWN_ACTIONS, {r: frozenset({action_type}) for r in ROLES})
     action = DescribedAction("core", action_type, None, "permissions", "household")
-    assert decide(Actor(uuid4(), role, standing="unknown"), action, everyone) == Refuse(
-        "untrusted_identity"
-    )
-    unsure = decide(Actor(uuid4(), role, standing="unsure"), action, everyone)
+    child = role == "child"
+    assert decide(
+        Actor(uuid4(), role, standing="unknown", child=child), action, everyone
+    ) == Refuse("untrusted_identity")
+    unsure = decide(Actor(uuid4(), role, standing="unsure", child=child), action, everyone)
     if role == "owner":
         # The owner's own are sensitive: the judge weighs who asks.
         assert isinstance(unsure, Allow | NeedsApproval) and unsure.judge_identity
@@ -442,7 +457,7 @@ def test_nobody_known_is_refused_first_and_the_owners_own_stay_his(action_type, 
 def test_the_transfer_is_the_owners_whatever_the_tables_say(role):
     """Nothing the owner wrote, and no table, gives the owner's role away: asked by anyone else
     than the owner it is refused, rights and approvers or not."""
-    anyone = Actor(uuid4(), role)
+    anyone = Actor(uuid4(), role, child=role == "child")
     for_all = PolicyTables(
         KNOWN_ACTIONS, {r: frozenset({"household.transfer_ownership"}) for r in ROLES}
     )
@@ -473,7 +488,7 @@ def test_the_default_policy_keeps_the_settings_to_the_owner():
     update = DescribedAction("core", "policy.update", None, "permissions", "household")
     assert decide(Actor(uuid4(), "owner"), update) == Allow()
     for role in ("adult", "child", "guest"):
-        assert decide(Actor(uuid4(), role), update) == Refuse("not_allowed")
+        assert decide(Actor(uuid4(), role, child=role == "child"), update) == Refuse("not_allowed")
 
 
 # --- other tables ---------------------------------------------------------------------------
@@ -510,7 +525,7 @@ def test_with_no_right_the_barrier_decides_as_before():
     for role in ROLES:
         for action_type in KNOWN_ACTIONS:
             action = DescribedAction("core", action_type, None, "read", "household")
-            actor = Actor(uuid4(), role)
+            actor = Actor(uuid4(), role, child=role == "child")
             assert decide(actor, action, DEFAULT_POLICY, NO_RIGHTS) == decide(actor, action)
 
 
@@ -571,7 +586,7 @@ async def test_the_decision_audit_holds_the_facts(session, owner):
 async def test_a_decision_is_audited_with_who_must_agree(session, owner):
     await record_decision(
         session,
-        Actor(owner.id, "child"),
+        Actor(owner.id, "child", child=True),
         LEAVE,
         NeedsApproval("adult"),
         tool_name="household_leave",
@@ -617,7 +632,7 @@ async def test_a_refusal_is_audited_with_its_reason(session, owner):
 
 
 async def test_the_decision_made_by_decide_is_the_one_audited(session, owner):
-    actor = Actor(owner.id, "child")
+    actor = Actor(owner.id, "child", child=True)
     decision = decide(actor, LEAVE)
     await record_decision(session, actor, LEAVE, decision, tool_name="household_leave")
     entry = await last_audit(session, "policy.decision")

@@ -204,7 +204,12 @@ NOTE_TO_TAKE_BACK = "Un mot à retirer"
 # owner (the same sentence: the writer writes it in the language of the owner's words), and as a
 # limit.
 RIGHTS_WORDS = "Alex peut inviter des invités, 3 jours au plus."
-THREE_DAYS = 'action.facts.role == "guest" && action.facts.days <= 3 ? "allow" : "refuse"'
+# A guest's stay may have no end (``days`` null): the limit reads the days only when they are there,
+# as the writer's check asks.
+THREE_DAYS = (
+    'action.facts.role == "guest" && action.facts.days != null && action.facts.days <= 3 '
+    '? "allow" : "refuse"'
+)
 # The owner's rule of scenario 12, and the "never ask me" of scenario 27, as the owner says them
 # and as the writer sums them up.
 REMOVE_RULE_WORDS = "Demande-moi toujours le bouton avant de retirer quelqu'un."
@@ -783,17 +788,28 @@ def test_alex_takes_back_a_note_the_owner_was_not_told(household: Household):
 
 def alex_may_invite_guests_for_three_days(alex_id: str) -> dict[str, Any]:
     """The draft the fake rights writer makes of ``RIGHTS_WORDS``: a right of Alex himself for
-    ``household.invite``, with a limit (a guest, 3 days at most) and the owner's yes on every
-    invitation of his. The code checks it as it checks a real writer's: three examples, one that
-    passes and two that are stopped, the last of them a guest for 40 days, which the household's
-    own rule (30 days at most) already refuses, because the limit replaces that rule and the owner
-    must see what becomes of it. The outcome of each is the one the code works out."""
+    ``household.invite`` (inviting is in no role: nobody but the owner and the assistant invites
+    unless the owner opens it to them), with a limit (a guest, 3 days at most) and the owner's yes
+    on every invitation of his. The code checks it as it checks a real writer's: three examples,
+    one that passes and two that are stopped, the last of them a guest for 40 days the assistant
+    judged the owner should agree to first, which the catalog's own limit of inviting sends to the
+    owner: the limit replaces that rule, and the owner must see what becomes of it. The outcome of
+    each is the one the code works out."""
 
-    def invite(role: str, days: int | None, name: str, expected: str) -> dict[str, Any]:
+    def invite(
+        role: str, days: int | None, name: str, expected: str, *, owner_first: bool = False
+    ) -> dict[str, Any]:
+        facts = {
+            "role": role,
+            "days": days,
+            "no_end": False,
+            "display_name": name,
+            "owner_first": owner_first,
+        }
         return {
             "person_id": alex_id,
             "action_type": "household.invite",
-            "facts": {"role": role, "days": days, "display_name": name, "owner_first": False},
+            "facts": facts,
             "expected": expected,
         }
 
@@ -811,7 +827,7 @@ def alex_may_invite_guests_for_three_days(alex_id: str) -> dict[str, Any]:
         "examples": [
             invite("guest", 2, "Jo", "asks_the_owner"),
             invite("adult", None, "Kim", "refused"),
-            invite("guest", 40, "Lou", "refused"),
+            invite("guest", 40, "Lou", "refused", owner_first=True),
         ],
     }
 
@@ -845,7 +861,7 @@ def test_the_owner_lets_alex_invite_guests_for_three_days_at_most(household: Hou
 
     # The owner says it. Domo has the rights written (a call of its own to the model, which the
     # fake answers with this draft) and the code checks them on the examples. Nothing changes yet
-    # (until then Alex invites as any adult does, since 0.9.1).
+    # (until then Alex may not invite: inviting is in no role).
     words = draft_in_words(RIGHTS_WORDS, alex_may_invite_guests_for_three_days(alex_id))
     proposed = send_and_wait(owner, tool_message("rights_propose", {"request": words}))
     expect(reply_text(proposed)).to_have_text("Fake tool result: done")
@@ -914,7 +930,7 @@ def test_the_owner_lets_alex_invite_guests_for_three_days_at_most(household: Hou
     expect(request).to_have_attribute("data-confirmation-status", "executed", timeout=T)
     expect(request.locator("a.action-link")).to_have_count(0)
     show = request.locator("[data-action=show-link]")
-    expect(show).to_have_text(t("invitation.link.show", "en"))
+    expect(show).to_have_text(t("invite.link.show", "en"))
     show.click()
     link = invitation_link(request, stack)
     guest = household.new_page()
@@ -924,9 +940,7 @@ def test_the_owner_lets_alex_invite_guests_for_three_days_at_most(household: Hou
     # A second time, the link is not shown: it was.
     alex.reload()
     request.locator("[data-action=show-link]").click()
-    expect(request.locator("[data-invitation-link=gone]")).to_have_text(
-        t("invitation.link.gone", "en")
-    )
+    expect(request.locator("[data-invitation-link=gone]")).to_have_text(t("invite.link.gone", "en"))
     expect(request.locator("a.action-link")).to_have_count(0)
 
     # An adult, or a guest for longer than 3 days: the limit refuses, and says so on the card.
@@ -948,7 +962,8 @@ def test_the_owner_removes_alex_and_brings_him_back(household: Household):
     kept = message_ids(alex)
     assert kept
 
-    # Removed: his session ends at once, and the household page says the account is closed.
+    # Removed: his session ends at once, and the household page says his access was taken away
+    # (the owner's own removal is a withdrawal).
     removal = confirmation_card(
         send_and_wait(owner, tool_message("household_remove", {"person": ALEX.display_name}))
     )
@@ -959,7 +974,7 @@ def test_the_owner_removes_alex_and_brings_him_back(household: Household):
     person = owner.locator(".household-person").filter(
         has=owner.locator(".household-name", has_text=re.compile(rf"^{ALEX.display_name}$"))
     )
-    expect(person).to_have_attribute("data-person-state", "removed")
+    expect(person).to_have_attribute("data-person-state", "withdrawn")
     owner.goto(stack.base_url + "/chat")
 
     # The owner brings him back: a link, which the owner is shown once. The card also tells the
@@ -986,18 +1001,19 @@ def test_the_owner_removes_alex_and_brings_him_back(household: Household):
     # His conversation is there, and the household page has him again.
     assert kept <= message_ids(page)
     owner.goto(stack.base_url + "/household")
-    expect(person).to_have_attribute("data-person-state", "active")
+    expect(person).to_have_attribute("data-person-state", "has_access")
     owner.goto(stack.base_url + "/chat")
 
     # The right the owner gave him is paused: it counts again only when they give it back. Until
-    # then he invites as any adult does (0.9.1): the yes asked is his own, not the owner's.
+    # then he may not invite at all (inviting is in no role): the barrier refuses, nothing waits.
     invitation = {"display_name": "Mia", "role": "guest", "guest_days": 2}
     paused = send_and_wait(page, tool_message("household_invite", invitation))
-    expect(reply_text(paused)).to_have_text("Fake tool result: waiting_for_confirmation")
-    request = confirmation_card(paused)
-    expect(request).to_have_attribute("data-confirmation-status", "pending", timeout=T)
-    expect(request.locator("[data-action=confirm]")).to_have_count(1)
-    refuse_with_the_button(request)
+    expect(reply_text(paused)).to_have_text("Fake tool result: refused")
+    card = paused.locator(".action-card")
+    expect(card).to_have_attribute("data-action-status", "refused", timeout=T)
+    expect(card.locator(".action-text")).to_have_text(t("action.card.refused.not_allowed", "en"))
+    expect(confirmation_card(paused)).to_have_count(0)
+    assert open_invitations(stack, "Mia", "guest") == "0"
 
 
 def test_the_owner_asks_for_the_button_before_removing_anyone(household: Household):
@@ -1010,7 +1026,14 @@ def test_the_owner_asks_for_the_button_before_removing_anyone(household: Househo
     owner, alex, stack = household.owner, household.page_of(ALEX), household.stack
     owner_id = person_id_of(owner, stack, OWNER)
     alex_id = person_id_of(owner, stack, ALEX)
-    removing_alex = {"person": f"person:{alex_id}", "current_role": "adult", "is_self": False}
+    removing_alex = {
+        "person": f"person:{alex_id}",
+        "current_role": "adult",
+        "is_self": False,
+        "has_account": True,
+        "state": "has_access",
+        "made_role": None,
+    }
     rule = {
         "changes": [
             {"action_type": "household.remove", "ask": "explicit_yes", "summary": REMOVE_RULE_WORDS}
@@ -1584,7 +1607,13 @@ def sam_may_invite_with_an_adults_yes(sam_id: str) -> dict[str, Any]:
             {
                 "person_id": sam_id,
                 "action_type": "household.invite",
-                "facts": {"role": "guest", "days": 7, "display_name": "Tom", "owner_first": False},
+                "facts": {
+                    "role": "guest",
+                    "days": 7,
+                    "no_end": False,
+                    "display_name": "Tom",
+                    "owner_first": False,
+                },
                 "expected": "asks_an_adult",
             }
         ],
@@ -1886,7 +1915,8 @@ def test_the_owner_leaves_in_one_sentence(household: Household):
     former = people.filter(
         has=alex.locator(".household-name", has_text=re.compile(rf"^{OWNER.display_name}$"))
     )
-    expect(former).to_have_attribute("data-person-state", "removed")
+    # Removed by himself once he is no longer the owner: he has left (not a withdrawal).
+    expect(former).to_have_attribute("data-person-state", "gone")
     expect(former).to_have_attribute("data-person-role", "adult")
     assert database_text(stack, "SELECT count(*) FROM persons WHERE role = 'owner'") == "1"
     assert database_text(stack, "SELECT id FROM persons WHERE role = 'owner'") == alex_id

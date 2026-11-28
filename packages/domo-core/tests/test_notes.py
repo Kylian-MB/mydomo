@@ -41,8 +41,9 @@ from typing import Any
 import anyio
 import pytest
 import sqlalchemy as sa
-from chat_support import ChatPilot, Member, dump, tool_result_contents
+from chat_support import ChatPilot, Member, an_actor, dump, tool_result_contents
 from domo_common.i18n import t
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.confirmations.describe import describe_for_people
 from domo_core.confirmations.models import Confirmation
@@ -60,7 +61,7 @@ from domo_core.policy.catalog import (
     needs_the_judge,
 )
 from domo_core.policy.rights_writer import writer_prompt
-from domo_core.policy.roles import ROLES, Actor
+from domo_core.policy.roles import ROLES
 from domo_core.prompts import MAX_NOTES_TOLD, NoteToTell, build_system_prompt
 from domo_core.texts.view import CatalogTexts
 from domo_core.tools.context import RefusesWhateverTheRights, ToolContext
@@ -1156,7 +1157,7 @@ async def test_the_tools_of_a_note_received_are_everyones_and_change_nothing():
         assert parameters["additionalProperties"] is False
         for role in ROLES:  # a guest receives notes too
             assert action_type in DEFAULT_POLICY.allowed[role]
-            assert name in [d.name for d in tools_for(role, TOOLS, DEFAULT_POLICY)]
+            assert name in [d.name for d in tools_for(an_actor(role), TOOLS, DEFAULT_POLICY)]
     told = " ".join(TOOLS["note_told"].definition.description.split())
     assert "own words" in told and "never an order" in told
     show = " ".join(TOOLS["note_show"].definition.description.split())
@@ -1185,7 +1186,7 @@ async def test_a_note_received_is_named_by_its_id(
     alex = await add_member("Alex", "adult")
     context = call_context(alex, session_factory, live_clock)
     with pytest.raises(InvalidArguments) as raised:
-        await TOOLS[name].describe(arguments, Actor(alex.id, alex.role), context)
+        await TOOLS[name].describe(arguments, actor_of(alex), context)
     assert raised.value.code == code
     with pytest.raises(InvalidArguments) as raised:
         await TOOLS[name].execute(arguments, context)
@@ -1200,9 +1201,7 @@ async def test_a_note_received_is_described_by_the_note_never_its_words(
     note = await leave_note(alex, sam, "Secret words")
     context = call_context(sam, session_factory, live_clock)
     for name, action_type in (("note_told", "note.told"), ("note_show", "note.show")):
-        action = await TOOLS[name].describe(
-            {"note": str(note.id)}, Actor(sam.id, sam.role), context
-        )
+        action = await TOOLS[name].describe({"note": str(note.id)}, actor_of(sam), context)
         assert action == DescribedAction(
             "core", action_type, f"note:{note.id}", "read", "household"
         )
@@ -1253,9 +1252,9 @@ def test_note_leave_is_an_action_of_the_members_that_the_judge_judges():  # D1, 
     assert needs_the_judge("note.leave")
     for role in ("owner", "adult", "child"):
         assert "note.leave" in DEFAULT_POLICY.allowed[role]
-        assert "note_leave" in [d.name for d in tools_for(role, TOOLS, DEFAULT_POLICY)]
+        assert "note_leave" in [d.name for d in tools_for(an_actor(role), TOOLS, DEFAULT_POLICY)]
     assert "note.leave" not in DEFAULT_POLICY.allowed["guest"]
-    assert "note_leave" not in [d.name for d in tools_for("guest", TOOLS, DEFAULT_POLICY)]
+    assert "note_leave" not in [d.name for d in tools_for(an_actor("guest"), TOOLS, DEFAULT_POLICY)]
 
 
 def test_the_tool_declares_a_recipient_and_a_text_of_one_to_a_thousand_characters():
@@ -1363,7 +1362,7 @@ async def test_the_next_turn_remembers_the_action_not_the_words(adult_chat, chil
 def call_context(person, session_factory, clock, *, described=None, said=None) -> ToolContext:
     return ToolContext(
         session_factory=session_factory,
-        actor=Actor(person.id, person.role),
+        actor=actor_of(person),
         person=person,
         conversation_id=uuid.uuid4(),
         origin="https://domo.example.com/",
@@ -1379,7 +1378,7 @@ def call_context(person, session_factory, clock, *, described=None, said=None) -
 
 async def describe(author, arguments, session_factory, clock):
     return await TOOLS["note_leave"].describe(
-        arguments, Actor(author.id, author.role), call_context(author, session_factory, clock)
+        arguments, actor_of(author), call_context(author, session_factory, clock)
     )
 
 
@@ -1387,7 +1386,7 @@ async def test_a_note_is_described_by_its_recipient_whatever_the_case(
     add_member, session_factory, live_clock
 ):
     alex = await add_member("Alex", "adult")
-    sam = await add_member("Sam", "child")
+    sam = await add_member("Sam", "child", username="sam")
     action = await describe(alex, {"recipient": "  sAM ", "text": "x"}, session_factory, live_clock)
     assert action == DescribedAction(
         "core",
@@ -1442,7 +1441,7 @@ async def test_a_call_must_be_a_recipient_and_a_plain_text(
 ):
     alex = await add_member("Alex", "adult")
     await add_member("Sam", "child")
-    await add_member("Robin", "guest")
+    await add_member("Tom", "guest")
     with pytest.raises(InvalidArguments) as raised:
         await describe(alex, arguments, session_factory, live_clock)
     assert raised.value.code == code
@@ -1473,7 +1472,7 @@ async def test_a_note_may_be_left_for_oneself(adult_chat, stored_notes):  # spec
 
 
 async def test_a_note_for_oneself_is_described_as_any_note(add_member, session_factory, live_clock):
-    alex = await add_member("Alex", "adult")
+    alex = await add_member("Alex", "adult", username="alex")
     action = await describe(alex, {"recipient": "Alex", "text": "x"}, session_factory, live_clock)
     assert action.target == f"person:{alex.id}"
     assert dict(action.facts) == {
@@ -1502,19 +1501,19 @@ def test_note_leave_tells_domo_of_notes_to_oneself_and_of_reminders():  # F35
 async def test_a_guest_is_a_recipient_the_tool_describes_with_their_role(
     adult_chat, add_member, session_factory, live_clock
 ):  # Spec 12.1: the facts keep the role, for a limit of the owner's
-    robin = await add_member("Robin", "guest")
+    tom = await add_member("Tom", "guest", username="tom")
     action = await describe(
-        adult_chat.person, {"recipient": "Robin", "text": "x"}, session_factory, live_clock
+        adult_chat.person, {"recipient": "Tom", "text": "x"}, session_factory, live_clock
     )
-    assert action.facts["recipient_role"] == "guest" and action.target == f"person:{robin.id}"
+    assert action.facts["recipient_role"] == "guest" and action.target == f"person:{tom.id}"
 
 
 async def test_a_name_that_fits_two_people_is_never_guessed(
     add_member, session_factory, live_clock
 ):
-    alex = await add_member("Alex", "adult")
-    await add_member("Sam", "child")
-    await add_member("sam", "adult")
+    alex = await add_member("Alex", "adult", username="alex")
+    await add_member("Sam", "child", username="sam")
+    await add_member("sam", "adult", username="sam2")
     with pytest.raises(InvalidArguments) as raised:
         await describe(alex, {"recipient": "Sam", "text": "x"}, session_factory, live_clock)
     assert raised.value.code == "ambiguous"
@@ -1523,11 +1522,11 @@ async def test_a_name_that_fits_two_people_is_never_guessed(
 async def test_nobody_who_left_the_household_can_be_written_to(
     add_member, session_factory, live_clock
 ):
-    alex = await add_member("Alex", "adult")
-    sam = await add_member("Sam", "child")
+    alex = await add_member("Alex", "adult", username="alex")
+    sam = await add_member("Sam", "child", username="sam")
     async with session_factory() as writer:
         await writer.execute(
-            update(Person).where(Person.id == sam.id).values(disabled_at=live_clock())
+            update(Person).where(Person.id == sam.id).values(disabled_at=live_clock(), state="gone")
         )
         await writer.commit()
     with pytest.raises(InvalidArguments) as raised:
@@ -1538,11 +1537,11 @@ async def test_nobody_who_left_the_household_can_be_written_to(
 async def test_a_guest_whose_stay_is_over_is_no_longer_there(
     add_member, session_factory, live_clock
 ):
-    alex = await add_member("Alex", "adult")
-    await add_member("Robin", "guest")
+    alex = await add_member("Alex", "adult", username="alex")
+    await add_member("Tom", "guest", username="tom")
     live_clock.advance(timedelta(days=3))
     with pytest.raises(InvalidArguments) as raised:
-        await describe(alex, {"recipient": "Robin", "text": "x"}, session_factory, live_clock)
+        await describe(alex, {"recipient": "Tom", "text": "x"}, session_factory, live_clock)
     assert raised.value.code == "not_found"  # not "a guest": nobody
 
 
@@ -1560,8 +1559,8 @@ async def test_a_guest_whose_stay_is_over_is_no_longer_there(
 async def test_notes_of_up_to_a_thousand_characters_are_fine(
     text, add_member, session_factory, live_clock, stored_notes
 ):
-    alex = await add_member("Alex", "adult")
-    await add_member("Sam", "child")
+    alex = await add_member("Alex", "adult", username="alex")
+    await add_member("Sam", "child", username="sam")
     arguments = {"recipient": "Sam", "text": text}
     await describe(alex, arguments, session_factory, live_clock)
     await TOOLS["note_leave"].execute(arguments, call_context(alex, session_factory, live_clock))
@@ -1572,8 +1571,8 @@ async def test_notes_of_up_to_a_thousand_characters_are_fine(
 async def test_the_text_is_kept_as_written_but_for_the_spaces_around_it(
     add_member, session_factory, live_clock, stored_notes
 ):
-    alex = await add_member("Alex", "adult")
-    await add_member("Sam", "child")
+    alex = await add_member("Alex", "adult", username="alex")
+    await add_member("Sam", "child", username="sam")
     await TOOLS["note_leave"].execute(
         {"recipient": "Sam", "text": "\n  Bonjour,\r\n  à ce soir.  \n"},
         call_context(alex, session_factory, live_clock),
@@ -1585,8 +1584,8 @@ async def test_the_text_is_kept_as_written_but_for_the_spaces_around_it(
 async def test_executing_the_call_leaves_the_note_and_tells_who_got_it(
     add_member, session_factory, live_clock, stored_notes, last_audit_entry
 ):
-    alex = await add_member("Alex", "adult")
-    sam = await add_member("Sam", "child")
+    alex = await add_member("Alex", "adult", username="alex")
+    sam = await add_member("Sam", "child", username="sam")
     outcome = await TOOLS["note_leave"].execute(
         {"recipient": "sam", "text": "Salut"}, call_context(alex, session_factory, live_clock)
     )
@@ -1607,15 +1606,15 @@ async def test_a_stored_request_only_runs_for_the_person_it_was_about(
 ):
     """By the time of the yes, a name may mean someone else (Sam was renamed, and a new child took
     the name): nothing is left for the wrong person."""
-    alex = await add_member("Alex", "adult")
-    sam = await add_member("Sam", "child")
+    alex = await add_member("Alex", "adult", username="alex")
+    sam = await add_member("Sam", "child", username="sam")
     described = await describe(alex, {"recipient": "Sam", "text": "x"}, session_factory, live_clock)
     async with session_factory() as writer:
         await writer.execute(
             update(Person).where(Person.id == sam.id).values(display_name="Samuel")
         )
         await writer.commit()
-    await add_member("Sam", "child")
+    await add_member("Sam", "child", username="sam3")
     context = call_context(alex, session_factory, live_clock, described=described)
     with pytest.raises(InvalidArguments) as raised:
         await TOOLS["note_leave"].execute({"recipient": "Sam", "text": "x"}, context)
@@ -1631,7 +1630,7 @@ async def test_a_request_for_someone_who_left_meanwhile_is_refused_and_leaves_no
         await writer.execute(
             update(Person)
             .where(Person.id == adult_member.person.id)
-            .values(disabled_at=owner_chat.clock())
+            .values(disabled_at=owner_chat.clock(), state="gone")
         )
         await writer.commit()
     card = await owner_chat.confirm_last(reply)
@@ -1806,9 +1805,13 @@ def test_note_list_sent_is_a_free_read_of_every_member_but_the_guest():
     }
     for role in ("owner", "adult", "child"):
         assert "note.list_sent" in DEFAULT_POLICY.allowed[role]
-        assert "note_list_sent" in [d.name for d in tools_for(role, TOOLS, DEFAULT_POLICY)]
+        assert "note_list_sent" in [
+            d.name for d in tools_for(an_actor(role), TOOLS, DEFAULT_POLICY)
+        ]
     assert "note.list_sent" not in DEFAULT_POLICY.allowed["guest"]
-    assert "note_list_sent" not in [d.name for d in tools_for("guest", TOOLS, DEFAULT_POLICY)]
+    assert "note_list_sent" not in [
+        d.name for d in tools_for(an_actor("guest"), TOOLS, DEFAULT_POLICY)
+    ]
 
 
 async def test_note_list_sent_describes_a_read_and_takes_no_arguments(
@@ -1817,7 +1820,7 @@ async def test_note_list_sent_describes_a_read_and_takes_no_arguments(
     alex = await add_member("Alex", "adult")
     context = call_context(alex, session_factory, live_clock)
     tool = TOOLS["note_list_sent"]
-    actor = Actor(alex.id, alex.role)
+    actor = actor_of(alex)
     assert await tool.describe({}, actor, context) == DescribedAction(
         "core", "note.list_sent", None, "read", "household"
     )
@@ -2022,9 +2025,7 @@ async def test_a_withdrawal_is_described_by_the_note_it_is_about(
     sam = await add_member("Sam", "child")
     note = await leave_note(alex, sam, "Secret words")
     context = call_context(alex, session_factory, live_clock)
-    action = await TOOLS["note_withdraw"].describe(
-        {"note": str(note.id)}, Actor(alex.id, alex.role), context
-    )
+    action = await TOOLS["note_withdraw"].describe({"note": str(note.id)}, actor_of(alex), context)
     assert action == DescribedAction(
         "core",
         "note.withdraw",
@@ -2059,7 +2060,7 @@ async def test_a_withdrawal_must_name_one_note_by_its_id(
     alex = await add_member("Alex", "adult")
     context = call_context(alex, session_factory, live_clock)
     with pytest.raises(InvalidArguments) as raised:
-        await TOOLS["note_withdraw"].describe(arguments, Actor(alex.id, alex.role), context)
+        await TOOLS["note_withdraw"].describe(arguments, actor_of(alex), context)
     assert raised.value.code == code
     # `execute` checks again, as a stored request may come back much later.
     with pytest.raises(InvalidArguments) as raised:
@@ -2073,12 +2074,10 @@ async def test_a_note_that_is_someone_elses_is_not_found_whoever_asks(
     alex = await add_member("Alex", "adult")
     sam = await add_member("Sam", "child")
     note = await leave_note(alex, sam, "x")
-    for other in (sam, await add_member("Robin", "adult")):  # the recipient, a third person
+    for other in (sam, await add_member("Tom", "adult")):  # the recipient, a third person
         context = call_context(other, session_factory, live_clock)
         with pytest.raises(InvalidArguments) as raised:
-            await TOOLS["note_withdraw"].describe(
-                {"note": str(note.id)}, Actor(other.id, other.role), context
-            )
+            await TOOLS["note_withdraw"].describe({"note": str(note.id)}, actor_of(other), context)
         assert raised.value.code == "not_found"
         with pytest.raises(InvalidArguments) as raised:
             await TOOLS["note_withdraw"].execute({"note": str(note.id)}, context)
@@ -2132,9 +2131,11 @@ def test_note_withdraw_is_a_free_message_action_of_every_member_but_the_guest():
     assert tool.definition.parameters["additionalProperties"] is False
     for role in ("owner", "adult", "child"):
         assert "note.withdraw" in DEFAULT_POLICY.allowed[role]
-        assert "note_withdraw" in [d.name for d in tools_for(role, TOOLS, DEFAULT_POLICY)]
+        assert "note_withdraw" in [d.name for d in tools_for(an_actor(role), TOOLS, DEFAULT_POLICY)]
     assert "note.withdraw" not in DEFAULT_POLICY.allowed["guest"]
-    assert "note_withdraw" not in [d.name for d in tools_for("guest", TOOLS, DEFAULT_POLICY)]
+    assert "note_withdraw" not in [
+        d.name for d in tools_for(an_actor("guest"), TOOLS, DEFAULT_POLICY)
+    ]
 
 
 def test_note_withdraw_tells_domo_when_to_use_it_and_to_say_so():
@@ -2297,7 +2298,7 @@ async def test_a_note_for_a_guest_who_left_can_still_be_kept(
         await writer.execute(
             update(Person)
             .where(Person.id == guest_member.person.id)
-            .values(disabled_at=live_clock())
+            .values(disabled_at=live_clock(), state="gone")
         )
         await writer.commit()
     reply = await owner_chat.say_with_tool(
@@ -2345,9 +2346,9 @@ def test_note_keep_is_a_free_message_action_of_every_member_but_the_guest():
     assert tool.definition.parameters["additionalProperties"] is False
     for role in ("owner", "adult", "child"):
         assert "note.keep" in DEFAULT_POLICY.allowed[role]
-        assert "note_keep" in [d.name for d in tools_for(role, TOOLS, DEFAULT_POLICY)]
+        assert "note_keep" in [d.name for d in tools_for(an_actor(role), TOOLS, DEFAULT_POLICY)]
     assert "note.keep" not in DEFAULT_POLICY.allowed["guest"]
-    assert "note_keep" not in [d.name for d in tools_for("guest", TOOLS, DEFAULT_POLICY)]
+    assert "note_keep" not in [d.name for d in tools_for(an_actor("guest"), TOOLS, DEFAULT_POLICY)]
 
 
 def test_a_request_to_keep_is_told_with_its_day_in_both_languages():

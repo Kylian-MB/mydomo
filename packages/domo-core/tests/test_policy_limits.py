@@ -4,9 +4,9 @@ facts of the moment, and that answers ``allow``, ``refuse``, ``ask_owner`` or ``
 A limit lets an action through, refuses it (``limit``, with the limit's summary, which Domo may
 say), or sends it to the owner (with the question Domo could not answer, when the limit needs
 understanding). Whatever goes wrong refuses (``limit_error``), is logged and audited: a limit is
-applied by the code and fails closed. The rule the tools used to hold themselves (a guest's stay
-of 30 days at most) is the catalog's default limit, which a right of the owner replaces. The
-household's time zone is an owner's setting: without it, a limit cannot read the hour.
+applied by the code and fails closed. No limit of the catalog reads the length of a stay (audit
+POL-5): a stay of any length, or with no end, goes on unless the owner wrote a limit on it himself.
+The household's time zone is an owner's setting: without it, a limit cannot read the hour.
 
 The barrier is pure, and tried on facts made here (``facts_of``). What the facts read from the
 database is tried on the shared rolled-back ``session``; the chat pilots talk with Domo on a
@@ -53,15 +53,16 @@ from fakes import FakeChatModel
 from sqlalchemy import func, select, update
 
 NOW = datetime(2030, 1, 1, 12, 30, tzinfo=UTC)  # a Tuesday
-JUSTINE_LIMIT = 'action.facts.role == "guest" && action.facts.days <= 3 ? "allow" : "refuse"'
-JUSTINE_SUMMARY = "Justine invites guests, 3 days at most."
+PAUL_LIMIT = (
+    'action.facts.role == "guest" && action.facts.days != null && action.facts.days <= 3 '
+    '? "allow" : "refuse"'
+)
+PAUL_SUMMARY = "Paul invites guests, 3 days at most."
 NO_NOTE_FOR_A_GUEST = "Adults leave no note for a guest."
-THIRTY_DAYS = "A guest stays 30 days at most."
-# The catalog's limit of inviting (the owner's trial of 0.9.1): the stay, and the owner's yes first
-# when Domo judged so.
+# The catalog's limit of inviting (the owner's trial of 0.9.1): the owner's yes first when Domo
+# judged so; no length of stay.
 INVITING = (
-    f"{THIRTY_DAYS} When the assistant judges that the owner should say yes before someone joins, "
-    "the "
+    "When the assistant judges that the owner should say yes before someone joins, the "
     "invitation waits for the owner's yes."
 )
 NEW_PASSWORD = "a-brand-new-passphrase"
@@ -97,7 +98,7 @@ def with_limit(
     expression: str,
     *,
     judge_question: str | None = None,
-    summary: str = JUSTINE_SUMMARY,
+    summary: str = PAUL_SUMMARY,
 ) -> RightsTable:
     """The rights of a test: ``actor`` may do ``action_type``, under this limit."""
     limit = Limit(expression, judge_question, summary)
@@ -121,7 +122,7 @@ def with_limit(
 
 def moment(actor: Actor, action: DescribedAction, **more) -> dict[str, object]:
     """The facts of a moment for a pure decision (no time zone)."""
-    return facts_of(actor, action, name="Justine", local_now=None, **more)
+    return facts_of(actor, action, name="Paul", local_now=None, **more)
 
 
 # --- what the barrier does with a limit ----------------------------------------------------------
@@ -131,27 +132,27 @@ def moment(actor: Actor, action: DescribedAction, **more) -> dict[str, object]:
     ("role", "days", "expected"),
     [
         ("guest", 2, Allow()),
-        ("guest", 5, Refuse("limit", limit=JUSTINE_SUMMARY)),
-        ("adult", None, Refuse("limit", limit=JUSTINE_SUMMARY)),
+        ("guest", 5, Refuse("limit", limit=PAUL_SUMMARY)),
+        ("adult", None, Refuse("limit", limit=PAUL_SUMMARY)),
     ],
 )
 def test_a_limit_lets_through_or_refuses(role, days, expected):
-    justine = Actor(uuid4(), "adult")
+    paul = Actor(uuid4(), "adult")
     action = invite(role, days)
-    rights = with_limit(justine, "household.invite", JUSTINE_LIMIT)
-    assert decide(justine, action, DEFAULT_POLICY, rights, moment(justine, action)) == expected
+    rights = with_limit(paul, "household.invite", PAUL_LIMIT)
+    assert decide(paul, action, DEFAULT_POLICY, rights, moment(paul, action)) == expected
 
 
 def test_a_limit_that_asks_the_owner_needs_the_owners_agreement():
-    justine = Actor(uuid4(), "adult")
+    paul = Actor(uuid4(), "adult")
     note = note_for("adult")
-    rights = with_limit(justine, "note.leave", '"ask_owner"')
-    assert decide(justine, note, DEFAULT_POLICY, rights, moment(justine, note)) == (
+    rights = with_limit(paul, "note.leave", '"ask_owner"')
+    assert decide(paul, note, DEFAULT_POLICY, rights, moment(paul, note)) == (
         NeedsApproval("owner")
     )
     action = invite("guest", 2)
-    rights = with_limit(justine, "household.invite", '"ask_owner"')
-    assert decide(justine, action, DEFAULT_POLICY, rights, moment(justine, action)) == (
+    rights = with_limit(paul, "household.invite", '"ask_owner"')
+    assert decide(paul, action, DEFAULT_POLICY, rights, moment(paul, action)) == (
         NeedsApproval("owner")
     )
     # The owner's own request never waits for the owner: asking is their agreement.
@@ -163,16 +164,16 @@ def test_a_limit_that_asks_the_owner_needs_the_owners_agreement():
 def test_a_judgement_goes_to_the_owner_with_the_question():
     """What needs understanding is the judge's first, with the question; when it doubts, it goes
     to the owner (spec 5.7, "Domo judges first" part 13)."""
-    justine = Actor(uuid4(), "adult")
+    paul = Actor(uuid4(), "adult")
     action = invite("guest", 2)
-    question = "Is Dana a friend of Justine?"
-    rights = with_limit(justine, "household.invite", '"judge"', judge_question=question)
-    assert decide(justine, action, DEFAULT_POLICY, rights, moment(justine, action)) == (
+    question = "Is Dana a friend of Paul?"
+    rights = with_limit(paul, "household.invite", '"judge"', judge_question=question)
+    assert decide(paul, action, DEFAULT_POLICY, rights, moment(paul, action)) == (
         NeedsApproval("owner", question=question, judge_first=True)
     )
     # Asking the owner straight away says the question too, when the right has one.
-    rights = with_limit(justine, "household.invite", '"ask_owner"', judge_question=question)
-    assert decide(justine, action, DEFAULT_POLICY, rights, moment(justine, action)) == (
+    rights = with_limit(paul, "household.invite", '"ask_owner"', judge_question=question)
+    assert decide(paul, action, DEFAULT_POLICY, rights, moment(paul, action)) == (
         NeedsApproval("owner", question=question)
     )
 
@@ -190,21 +191,19 @@ def test_a_judgement_goes_to_the_owner_with_the_question():
     ],
 )
 def test_a_limit_that_fails_refuses(expression):
-    justine = Actor(uuid4(), "adult")
+    paul = Actor(uuid4(), "adult")
     action = invite("guest", 2)
-    rights = with_limit(justine, "household.invite", expression)
-    assert decide(justine, action, DEFAULT_POLICY, rights, moment(justine, action)) == Refuse(
+    rights = with_limit(paul, "household.invite", expression)
+    assert decide(paul, action, DEFAULT_POLICY, rights, moment(paul, action)) == Refuse(
         "limit_error"
     )
 
 
 def test_a_limit_without_the_facts_of_the_moment_refuses():
-    justine = Actor(uuid4(), "adult")
-    rights = with_limit(justine, "household.invite", '"allow"')
-    assert decide(justine, invite("guest", 2), DEFAULT_POLICY, rights) == Refuse("limit_error")
-    assert decide(justine, invite("guest", 2), DEFAULT_POLICY, rights, None) == Refuse(
-        "limit_error"
-    )
+    paul = Actor(uuid4(), "adult")
+    rights = with_limit(paul, "household.invite", '"allow"')
+    assert decide(paul, invite("guest", 2), DEFAULT_POLICY, rights) == Refuse("limit_error")
+    assert decide(paul, invite("guest", 2), DEFAULT_POLICY, rights, None) == Refuse("limit_error")
 
 
 def test_nobody_known_is_never_sent_to_the_owner_and_someone_unsure_is_as_anyone():
@@ -249,11 +248,11 @@ def test_compile_limit_refuses_an_expression_too_long_or_not_cel():
         with pytest.raises(InvalidLimit):
             compile_limit(expression)
     # Compiled once per expression.
-    assert compile_limit(JUSTINE_LIMIT) is compile_limit(JUSTINE_LIMIT)
+    assert compile_limit(PAUL_LIMIT) is compile_limit(PAUL_LIMIT)
 
 
 def test_check_limit_refuses_an_unknown_fact_and_the_hour_without_a_time_zone():
-    check_limit(JUSTINE_LIMIT, "household.invite", time_zone_set=False)
+    check_limit(PAUL_LIMIT, "household.invite", time_zone_set=False)
     with pytest.raises(InvalidLimit):
         check_limit(
             'action.facts.age > 3 ? "allow" : "refuse"', "household.invite", time_zone_set=True
@@ -299,8 +298,15 @@ def test_check_limit_refuses_a_number_read_without_a_guard_against_a_missing_val
             "household.change_role",
             time_zone_set=False,
         )
-    # Guarded, or read only for a guest (whose stay is always given), it is fine.
-    check_limit(JUSTINE_LIMIT, "household.invite", time_zone_set=False)
+    # A guest's stay may have no end: read for a guest only, it is guarded all the same.
+    with pytest.raises(InvalidLimit, match=r"!= null"):
+        check_limit(
+            'action.facts.role == "guest" && action.facts.days <= 3 ? "allow" : "refuse"',
+            "household.invite",
+            time_zone_set=False,
+        )
+    # Guarded, it is fine.
+    check_limit(PAUL_LIMIT, "household.invite", time_zone_set=False)
     check_limit(
         'action.facts.days != null && action.facts.days <= 3 ? "allow" : "refuse"',
         "household.invite",
@@ -326,18 +332,16 @@ def test_the_facts_of_every_action_type_can_be_read():
             )
 
 
-# --- the rules of the tools are the catalog's default limits (spec 5.11) -------------------------
+# --- the catalog's default limits (spec 5.11) ---------------------------------------------------
 
 
-def test_the_tools_rules_are_default_limits():
+def test_the_catalog_s_default_limits_read_no_length_of_stay():
     assert {action_type: limit.summary for action_type, limit in DEFAULT_LIMITS.items()} == {
-        # The stay, and the owner's yes first when Domo judged so (0.9.1).
+        # The owner's yes first when Domo judged so (0.9.1).
         "household.invite": INVITING,
-        # Giving a link again follows the rights of inviting (``RIGHTS_OF``): the same limit,
-        # which answers as the stay alone for it (a new link never asks the owner first).
+        # Giving a link again follows the rights of inviting (``RIGHTS_OF``): the same limit (a
+        # new link never asks the owner first).
         "household.invite_again": INVITING,
-        "household.change_role": THIRTY_DAYS,
-        "household.bring_back": THIRTY_DAYS,
     }
     for action_type, limit in DEFAULT_LIMITS.items():
         assert limit.judge_question is None
@@ -364,18 +368,23 @@ def test_a_default_limit_applies_without_a_right_and_a_right_replaces_it():
             ),
         )
     )
+    # No stay is refused by the catalog: any length, or none (audit POL-5).
     for actor, rights in ((alex, may_invite), (owner, NO_RIGHTS)):
-        for days, expected in (
-            (30, Allow()),
-            (31, Refuse("limit", limit=INVITING)),
-        ):
+        for days in (30, 31, 400, None):
             action = invite("guest", days)
-            assert decide(actor, action, DEFAULT_POLICY, rights, moment(actor, action)) == expected
-    lifted = with_limit(
-        alex, "household.invite", '"allow"', summary="Alex may invite guests for any stay."
+            assert decide(actor, action, DEFAULT_POLICY, rights, moment(actor, action)) == Allow()
+    # A right of the owner's carries a limit on the stay of his own: it applies.
+    summary = "Alex invites guests for 60 days at most."
+    limited = with_limit(
+        alex,
+        "household.invite",
+        'action.facts.days != null && action.facts.days > 60 ? "refuse" : "allow"',
+        summary=summary,
     )
-    long_stay = invite("guest", 31)
-    assert decide(alex, long_stay, DEFAULT_POLICY, lifted, moment(alex, long_stay)) == Allow()
+    long_stay = invite("guest", 61)
+    assert decide(alex, long_stay, DEFAULT_POLICY, limited, moment(alex, long_stay)) == Refuse(
+        "limit", limit=summary
+    )
     adult = invite("adult", None)
     assert decide(owner, adult, facts=moment(owner, adult)) == Allow()
     for action_type, facts in (
@@ -388,29 +397,39 @@ def test_a_default_limit_applies_without_a_right_and_a_right_replaces_it():
             "person:x",
             "permissions",
             "household",
-            {**facts, "role": "guest", "days": 31},
+            {**facts, "role": "guest", "days": 400},
         )
-        assert decide(owner, action, facts=moment(owner, action)) == Refuse(
-            "limit", limit=THIRTY_DAYS
-        )
+        assert decide(owner, action, facts=moment(owner, action)) == Allow()
 
 
-def test_an_adult_invites_and_domo_may_send_it_to_the_owner_first():
-    """The owner's trial of 0.9.1, "Domo judges": an adult's invitation goes on (their own
-    child, say), and waits for the owner when Domo judged it deserves it (``owner_first``). The
-    owner's own goes on, and the stay holds for everyone. A child's and a guest's are refused, as
-    before."""
+def _may_invite(actor: Actor) -> RightsTable:
+    """The owner opens inviting to ``actor`` (it is in no role: ruling 14)."""
+    right = Right(
+        uuid4(), actor.person_id, None, "household.invite", "allow", None, None, None, None, "."
+    )
+    return RightsTable((right,))
+
+
+def test_an_adult_invites_by_the_owner_s_right_and_domo_may_send_it_to_the_owner_first():
+    """Inviting is in no role (ruling 14): an adult's own call is refused, unless the owner opened
+    it to them. Then their invitation goes on (their own child, say), and waits for the owner when
+    Domo judged it deserves it (``owner_first``). The owner's own goes on, whatever the stay. A
+    child's and a guest's are refused, as before."""
     dana, owner = Actor(uuid4(), "adult"), Actor(uuid4(), "owner")
     child = invite("child", None)
-    assert decide(dana, child, facts=moment(dana, child)) == Allow()
+    assert decide(dana, child, facts=moment(dana, child)) == Refuse("not_allowed")
+    rights = _may_invite(dana)
+    assert decide(dana, child, DEFAULT_POLICY, rights, moment(dana, child)) == Allow()
     stranger = invite("adult", None, owner_first=True)
-    assert decide(dana, stranger, facts=moment(dana, stranger)) == NeedsApproval("owner")
+    assert decide(dana, stranger, DEFAULT_POLICY, rights, moment(dana, stranger)) == (
+        NeedsApproval("owner")
+    )
     assert decide(owner, stranger, facts=moment(owner, stranger)) == Allow()
-    too_long = invite("guest", 31, owner_first=True)
-    for actor in (dana, owner):
-        assert decide(actor, too_long, facts=moment(actor, too_long)) == Refuse(
-            "limit", limit=INVITING
-        )
+    long_stay = invite("guest", 400, owner_first=True)
+    assert decide(dana, long_stay, DEFAULT_POLICY, rights, moment(dana, long_stay)) == (
+        NeedsApproval("owner")
+    )
+    assert decide(owner, long_stay, DEFAULT_POLICY, rights, moment(owner, long_stay)) == Allow()
     for role in ("child", "guest"):
         someone = Actor(uuid4(), role)
         for action in (child, stranger):
@@ -429,7 +448,7 @@ def test_a_new_link_reads_the_limit_of_inviting_with_its_own_facts():
         "household",
         {"role": "adult", "days": None, "display_name": "Sam", "owner_first": False},
     )
-    assert decide(dana, again, facts=moment(dana, again)) == Allow()
+    assert decide(dana, again, DEFAULT_POLICY, _may_invite(dana), moment(dana, again)) == Allow()
     check_limit(
         DEFAULT_LIMITS["household.invite"].expression,
         "household.invite_again",
@@ -450,12 +469,14 @@ async def test_decision_facts_read_the_person_the_household_and_what_they_did(
     session.add_all(
         [
             Person(display_name="Gone", role="guest", expires_at=NOW - timedelta(days=1)),
-            Person(display_name="Left", role="adult", disabled_at=NOW - timedelta(days=1)),
+            Person(
+                display_name="Left", role="adult", disabled_at=NOW - timedelta(days=1), state="gone"
+            ),
         ]
     )
     for name, role, days, expires, cancelled in (
         ("Dana", "guest", 2, NOW + timedelta(days=1), None),
-        ("Eve", "adult", None, NOW + timedelta(days=1), None),
+        ("Tom", "adult", None, NOW + timedelta(days=1), None),
         ("Old", "child", None, NOW - timedelta(days=1), None),  # expired
         ("No", "guest", 2, NOW + timedelta(days=1), NOW),  # cancelled
     ):
@@ -647,7 +668,7 @@ async def test_the_history_can_leave_out_the_request_a_yes_is_carrying_out(
 async def test_a_limit_error_is_logged_and_audited(
     caplog, adult_chat, add_member, grant, last_audit_entry, count_notes
 ):
-    await add_member("Sam", "child")
+    await add_member("Sam", "child", username="sam")
     await grant("note.leave", role="adult", limit='action.facts.age > 3 ? "allow" : "refuse"')
     with caplog.at_level(logging.ERROR, logger="domo_core.policy.decision"):
         reply = await adult_chat.say_with_tool("note_leave", {"recipient": "Sam", "text": "Hello"})
@@ -667,7 +688,7 @@ async def test_a_yes_refused_for_a_limit_that_could_not_be_checked_tells_domo_to
 ):  # Ruling R12
     """The replay of a yes refuses with the same words for Domo as a call that was refused
     at once: the check could not be made, and the person may ask the owner."""
-    await add_member("Sam", "child")
+    await add_member("Sam", "child", username="sam")
     right = await grant("note.leave", role="adult", ask="yes")
     waiting = await adult_chat.say_with_tool("note_leave", {"recipient": "Sam", "text": "Hello"})
     assert waiting.actions == [{"tool": "note_leave", "status": "waiting"}]
@@ -771,24 +792,27 @@ async def test_a_note_for_a_guest_is_left_and_the_owner_can_still_limit_it(
     assert await count_notes() == 1
 
 
-async def test_a_guest_stays_thirty_days_at_most_by_default_and_the_owner_can_allow_more(
+async def test_no_stay_is_refused_by_default_and_the_owner_can_limit_it(
     owner_chat, grant, count_invitations, session_factory
 ):
-    longer = {"display_name": "Dana", "role": "guest", "guest_days": 31}
-    reply = await owner_chat.say_with_tool("household_invite", longer)
-    assert reply.model_results[-1] == {"status": "refused", "reason": "limit", "limit": INVITING}
-    # Beyond the technical ceiling, the tool itself refuses.
-    reply = await owner_chat.say_with_tool("household_invite", {**longer, "guest_days": 366})
-    assert reply.actions == [{"tool": "household_invite", "status": "invalid", "reason": "invalid"}]
-    assert await count_invitations() == 0
-
-    await grant(
-        "household.invite", role="owner", limit='"allow"', summary="Guests stay as long as I say."
-    )
+    longer = {"display_name": "Dana", "role": "guest", "guest_days": 400}
     card = await owner_chat.confirm_last(await owner_chat.say_with_tool("household_invite", longer))
     assert card.status == "executed"
     async with session_factory() as reader:
-        assert (await reader.execute(select(Invitation.guest_days))).scalar_one() == 31
+        assert (await reader.execute(select(Invitation.guest_days))).scalar_one() == 400
+    # The owner's own limit on the stay applies to his own request too.
+    summary = "Guests stay 60 days at most."
+    await grant(
+        "household.invite",
+        role="owner",
+        limit='action.facts.days != null && action.facts.days > 60 ? "refuse" : "allow"',
+        summary=summary,
+    )
+    reply = await owner_chat.say_with_tool(
+        "household_invite", {"display_name": "Tom", "role": "guest", "guest_days": 61}
+    )
+    assert reply.model_results[-1] == {"status": "refused", "reason": "limit", "limit": summary}
+    assert await count_invitations() == 1
 
 
 async def test_the_owner_sees_what_domo_could_not_tell(
@@ -830,7 +854,7 @@ async def test_a_limit_is_checked_again_when_the_yes_comes(
         "household_invite", {"display_name": "Dana", "role": "guest"}
     )
     second = await adult_chat.say_with_tool(
-        "household_invite", {"display_name": "Eve", "role": "guest"}
+        "household_invite", {"display_name": "Tom", "role": "guest"}
     )
     assert first.actions == second.actions == [{"tool": "household_invite", "status": "waiting"}]
 
@@ -857,7 +881,7 @@ async def test_a_limit_is_checked_again_when_the_yes_comes(
 async def test_the_facts_of_a_waiting_request_are_read_again_at_the_yes(
     adult_chat, add_member, grant, set_role, count_notes
 ):
-    sam = await add_member("Sam", "child")
+    sam = await add_member("Sam", "child", username="sam")
     await grant(
         "note.leave",
         role="adult",
@@ -878,14 +902,16 @@ async def test_the_facts_of_a_waiting_request_are_read_again_at_the_yes(
 async def test_a_yes_to_a_call_that_no_longer_describes_the_same_action_is_refused(
     adult_chat, add_member, grant, session_factory, count_notes
 ):
-    sam = await add_member("Sam", "child")
+    sam = await add_member("Sam", "child", username="sam")
     await grant("note.leave", role="adult", approver="self")
     gone = await adult_chat.say_with_tool("note_leave", {"recipient": "Sam", "text": "Hello"})
     other = await adult_chat.say_with_tool("note_leave", {"recipient": "Sam", "text": "Again"})
     # Sam leaves; then someone else has the name.
     async with session_factory() as writer:
         found = await writer.execute(select(Person).where(Person.id == sam.id))
-        found.scalar_one().disabled_at = adult_chat.clock()
+        left = found.scalar_one()
+        left.disabled_at = adult_chat.clock()
+        left.state = "gone"
         await writer.commit()
     card = await adult_chat.confirm_last(gone)
     assert card.status == "refused"
@@ -926,7 +952,7 @@ async def test_the_history_counts_what_was_done_after_a_yes_too(owner_chat, gran
     )
     assert card.status == "executed"
     reply = await owner_chat.say_with_tool(
-        "household_invite", {"display_name": "Eve", "role": "adult"}
+        "household_invite", {"display_name": "Tom", "role": "adult"}
     )
     assert reply.model_results[-1] == {
         "status": "refused",

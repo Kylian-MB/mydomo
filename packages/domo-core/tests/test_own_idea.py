@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.audit.models import AuditEntry
 from domo_core.chat.models import Conversation, Message, MessageAction
@@ -22,7 +23,7 @@ from domo_core.policy import catalog as catalog_module
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.catalog import DEFAULT_POLICY, PolicyTables
 from domo_core.policy.models import PolicyRight
-from domo_core.policy.roles import Actor, as_role
+from domo_core.policy.roles import Actor
 from domo_core.tools.context import OwnIdea, ToolContext, ToolOutcome, idea_of
 from domo_core.tools.registry import TOOLS
 from sqlalchemy import func, select
@@ -81,7 +82,7 @@ async def _household(
 def _ctx(session_factory: Any, person: Person, conversation: Conversation) -> ToolContext:
     return ToolContext(
         session_factory=session_factory,
-        actor=Actor(person.id, as_role(person.role)),
+        actor=actor_of(person),
         person=person,
         conversation_id=conversation.id,
         origin="",
@@ -128,8 +129,11 @@ def mark(reason: str = REASON) -> ToolCall:
     return ToolCall("m", "act_on_my_own", json.dumps({"reason": reason}))
 
 
-def invite(arguments: JsonObject = INVITE_TOM) -> ToolCall:
-    return ToolCall("i", "household_invite", json.dumps(arguments))
+def invite(arguments: JsonObject = INVITE_TOM, *, his: bool = False) -> ToolCall:
+    """Inviting Tom (or ``arguments``); ``his``: as the assistant's own act, with his reason."""
+    return ToolCall(
+        "i", "household_invite", json.dumps({**arguments, "reason": REASON} if his else arguments)
+    )
 
 
 async def _actions(session_factory: Any, reply_id: uuid.UUID) -> list[MessageAction]:
@@ -152,7 +156,7 @@ async def test_a_marked_call_is_judged_as_the_assistant_s_with_his_reason(
     marked = await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
     assert marked.status == "done"
     assert ctx.own_idea == OwnIdea(REASON, born_of=sam.id)
-    await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     invite_actors = actors[1:]
     # Decided as the assistant, and for Sam too: the mark lifts only a right not given (R26).
     assert invite_actors[0].subject == "domo"
@@ -173,7 +177,7 @@ async def test_the_mark_reaches_one_action_only(session_factory, monkeypatch):
     actors = _barrier_actors(monkeypatch)
     ctx = _ctx(session_factory, sam, conversation)
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     assert ctx.own_idea is None
     actors.clear()
     second = await handle_tool_call(
@@ -291,7 +295,7 @@ async def test_what_the_owner_denied_them_on_purpose_is_refused_without_a_judge(
     judged = _judge(monkeypatch)
     ctx = _ctx(session_factory, sam, conversation)
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    record = await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    record = await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     assert record.status == "refused"
     assert record.model_result["reason"] == "not_allowed"
     assert record.model_result["whose_rights"] == "the person's"
@@ -305,7 +309,7 @@ async def test_a_right_merely_not_given_goes_to_the_judge(session_factory, monke
     judged = _judge(monkeypatch)
     ctx = _ctx(session_factory, sam, conversation)
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    record = await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    record = await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     assert len(judged.cases) == 1
     assert record.status == "done"
 
@@ -317,7 +321,7 @@ async def test_a_judge_that_stays_silent_twice_does_nothing_and_asks_nothing(
     judged = _judge(monkeypatch, fallback("no_model"), fallback("timeout"))
     ctx = _ctx(session_factory, sam, conversation)
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    record = await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    record = await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     assert len(judged.cases) == 2
     assert record.status == "refused"
     assert record.model_result == {
@@ -336,7 +340,7 @@ async def test_a_judge_silent_once_is_asked_again(session_factory, monkeypatch):
     judged = _judge(monkeypatch, fallback("error"), Judgement("do"))
     ctx = _ctx(session_factory, sam, conversation)
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    record = await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    record = await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     assert len(judged.cases) == 2
     assert record.status == "done"
 
@@ -346,7 +350,7 @@ async def test_do_runs_it_and_records_it_as_his(session_factory, monkeypatch):
     _judge(monkeypatch)
     ctx = _ctx(session_factory, sam, conversation)
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    record = await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    record = await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     assert record.status == "done"
     stored = (await _actions(session_factory, reply_id))[-1]
     assert stored.action_type == "household.invite"
@@ -396,7 +400,7 @@ async def test_the_reason_is_data_and_never_moves_who_answers(session_factory, m
         ctx=ctx,
         reply_id=reply_id,
     )
-    record = await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    record = await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     assert record.status == "waiting"
     request = await _request(session_factory, record)
     assert (request.requester_id, request.approver_kind) == (sam.id, "owner")
@@ -424,7 +428,7 @@ async def test_an_untrusted_speaker_s_mark_is_refused_without_a_judge(session_fa
     )
     # Marked while the speaker was still trusted (an untrusted one cannot mark at all).
     ctx.own_idea = OwnIdea(REASON, born_of=sam.id)
-    record = await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    record = await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     assert record.status == "refused"
     assert record.model_result["reason"] == "untrusted_identity"
     assert len(judged.cases) == 0
@@ -436,7 +440,7 @@ async def test_the_owner_s_approver_on_the_person_still_holds(session_factory, m
     _judge(monkeypatch)
     ctx = _ctx(session_factory, sam, conversation)
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    record = await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    record = await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     assert record.status == "waiting"
     assert record.model_result["by"] == "the owner"
 
@@ -446,7 +450,7 @@ async def test_a_child_s_idea_still_waits_for_an_adult(session_factory, monkeypa
     _judge(monkeypatch)
     ctx = _ctx(session_factory, paul, conversation)
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    record = await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    record = await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     assert record.status == "waiting"
     assert record.model_result["by"] == "an adult"
 
@@ -457,7 +461,7 @@ async def test_the_owner_s_ask_rule_on_the_role_still_holds(session_factory, mon
     _judge(monkeypatch)
     ctx = _ctx(session_factory, sam, conversation)
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    record = await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    record = await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     assert record.status == "waiting"
     assert record.model_result["asked_by"] == "rule"
 
@@ -468,7 +472,7 @@ async def test_a_limit_written_for_the_person_still_holds(session_factory, monke
     judged = _judge(monkeypatch)
     ctx = _ctx(session_factory, sam, conversation)
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    record = await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    record = await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     assert record.status == "refused"
     assert record.model_result["reason"] == "limit"
     assert len(judged.cases) == 0
@@ -497,7 +501,7 @@ async def test_an_invalid_call_does_not_use_up_the_mark(session_factory, monkeyp
     _judge(monkeypatch)
     ctx = _ctx(session_factory, sam, conversation)
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    record = await handle_tool_call(invite({"role": "guest"}), ctx=ctx, reply_id=reply_id)
+    record = await handle_tool_call(invite({"role": "guest"}, his=True), ctx=ctx, reply_id=reply_id)
     assert record.status == "invalid"
     assert ctx.own_idea == OwnIdea(REASON, born_of=sam.id)
     stored = (await _actions(session_factory, reply_id))[-1]
@@ -512,7 +516,7 @@ async def test_the_refusal_of_a_deny_on_purpose_is_audited_under_the_person(
     _judge(monkeypatch)
     ctx = _ctx(session_factory, sam, conversation)
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     async with session_factory() as reader:
         found = await reader.execute(
             select(AuditEntry)
@@ -539,7 +543,7 @@ async def test_on_his_own_a_judge_silent_twice_does_nothing_and_asks_nothing(
     judged = _judge(monkeypatch, fallback("no_model", they_asked=False))
     ctx = replace(_ctx(session_factory, alex, conversation), on_his_own=True, reply_message_id=None)
     assert idea_of(ctx, None) == OwnIdea("")
-    record = await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    record = await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     assert len(judged.cases) == 2
     assert record.model_result["reason"] == "judge_silent"
     async with session_factory() as reader:
@@ -573,5 +577,6 @@ def test_the_mark_is_everyone_s_and_his_and_changes_nothing():
     assert "confirmation.own_idea" in policy.domo
     assert "confirmation.own_idea" in catalog_module.CHANGES_NOTHING
     assert "confirmation.own_idea" not in catalog_module.NOT_ON_HIS_OWN
-    assert not catalog_module.SILENT_YET_HIS_IDEA
+    # The silent gestures on people his idea still reaches; nothing of the mark itself.
+    assert "confirmation.own_idea" not in catalog_module.SILENT_YET_HIS_IDEA
     assert TOOLS["act_on_my_own"].action_type == "confirmation.own_idea"

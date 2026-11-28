@@ -68,6 +68,7 @@ MODEL_MODULES = (
     "domo_core.outward.models",
     "domo_core.channels.voice.models",
     "domo_core.learning.models",
+    "domo_core.people.models",
 )
 
 # What the application hands out to open a database session (``async with factory() as session``).

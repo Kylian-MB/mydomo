@@ -59,7 +59,8 @@ def forget_the_strangers() -> Iterator[None]:
 
 @pytest.fixture
 async def owner(add_member: Callable[..., Awaitable[Person]]) -> Person:
-    return await add_member("Alex", "owner")
+    # With an account, as anyone heard at a page: a word can be left to them (``people.reach``).
+    return await add_member("Alex", "owner", username="alex")
 
 
 def nobody(now: datetime) -> Speaker:

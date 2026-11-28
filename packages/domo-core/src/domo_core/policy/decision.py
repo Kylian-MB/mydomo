@@ -48,14 +48,16 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domo_core.accounts.actors import actor_of as accounts_actor_of
 from domo_core.accounts.models import Person
+from domo_core.people.directives import refusal_for
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.barrier import Decision, Refuse, decide, identity_judged, stricter
 from domo_core.policy.catalog import PolicyTables, Risks
 from domo_core.policy.facts import decision_facts
 from domo_core.policy.models import PolicyRight
 from domo_core.policy.rights import RightsTable, load_rights
-from domo_core.policy.roles import Actor, Role, as_role, domo_actor
+from domo_core.policy.roles import Actor, Role, as_role, asked_as, domo_actor
 from domo_core.policy.settings import load_policy_settings
 
 logger = logging.getLogger(__name__)
@@ -116,6 +118,7 @@ async def decide_now(
     rights: RightsTable | None = None,
     unrecorded: Sequence[str] = (),
     spent_leaving_out: UUID | None = None,
+    directives_read: bool = False,
     risks: Risks | None = None,
 ) -> Decision:
     """What may happen to ``action`` when ``actor`` asks for it now: the rights in force, read on
@@ -162,6 +165,12 @@ async def decide_now(
             for who in (actor, domo_actor())
         ]
         return stricter(*decided)
+    # The owner's directives on people come first and are applied, never weighed: not even the
+    # rights are read for an action they refuse. The person's side of the assistant's own idea
+    # (``directives_read``) does not read them again: his side did, with his exception.
+    refused = None if directives_read else await refusal_for(session, actor, action, now)
+    if refused is not None:
+        return refused
     if (
         actor.page_person_id is not None
         and actor.page_person_id != actor.person_id
@@ -172,6 +181,8 @@ async def decide_now(
         # told. A voice the code is sure of acts with its own rights (final fix wave, case 6).
         page = await session.get(Person, actor.page_person_id)
         if page is not None:
+            # The asker's side keeps what their directives were read with (``directives_read``);
+            # the page's person's are read for them.
             mine, theirs = [
                 await decide_now(
                     session,
@@ -184,10 +195,21 @@ async def decide_now(
                     unrecorded=unrecorded,
                     spent_leaving_out=spent_leaving_out,
                     risks=risks,
+                    directives_read=read,
                 )
-                for who in (
-                    replace(actor, page_person_id=None),
-                    replace(actor, person_id=page.id, role=as_role(page.role), page_person_id=None),
+                for who, read in (
+                    (replace(actor, page_person_id=None), directives_read),
+                    # The page's person as their record makes them (a child mark, a made role),
+                    # with the doubt on who speaks.
+                    (
+                        replace(
+                            accounts_actor_of(page),
+                            standing=actor.standing,
+                            voice_too_short=actor.voice_too_short,
+                            subject=actor.subject,
+                        ),
+                        False,
+                    ),
                 )
             ]
             both = stricter(mine, theirs)
@@ -256,7 +278,7 @@ def judged_actor(actor_now: Actor, basis: ChainBasis, done: Sequence[DescribedAc
         for action in done
     )
     expected: Role = "adult" if handed_over else basis.role
-    return replace(actor_now, role=basis.role) if actor_now.role == expected else actor_now
+    return asked_as(actor_now, basis.role) if actor_now.role == expected else actor_now
 
 
 async def _given_by_the_chain(
@@ -305,6 +327,6 @@ async def decide_in_chain(
     added = await _given_by_the_chain(session, actor.person_id, done)
     if mine_now - added == basis.right_ids:
         # Only the chain changed them: the person is judged as they were when they asked.
-        rights = RightsTable(tuple(right for right in rights.rights if right.id not in added))
+        rights = replace(rights, rights=tuple(r for r in rights.rights if r.id not in added))
     decision = await decide_now(session, actor, action, policy, now, rights=rights)
     return actor, decision

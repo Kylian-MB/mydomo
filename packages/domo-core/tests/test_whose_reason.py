@@ -54,7 +54,7 @@ async def test_the_reason_of_his_idea_about_the_house_never_reaches_the_guest(
     _judge(monkeypatch, Judgement("do_not", reason=SECRET, noted=NOTED))
     ctx, reply_id, _ = await _turn(session_factory, sam)
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    record = await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    record = await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     assert record.status == "refused"
     # The case was Alex's (the house's): Sam is told nothing of it, on the card or the result.
     assert SECRET not in json.dumps(record.model_result)
@@ -74,7 +74,7 @@ async def test_the_reason_reaches_the_person_whose_case_it_was(session_factory, 
     _judge(monkeypatch, Judgement("do_not", reason="not tonight", noted=NOTED))
     ctx, reply_id, _ = await _turn(session_factory, alex)
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    record = await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    record = await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     assert record.model_result["why"] == "not tonight"
     [fact] = await _facts(session_factory)
     # The reason said to him, never the journal's line (C1).
@@ -205,7 +205,7 @@ async def test_an_idea_in_a_turn_with_outside_text_says_so_to_the_judge(
     ctx, reply_id, _ = await _turn(session_factory, people["Sam"])
     ctx = replace(ctx, tool_woke=True)
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     # Told which kind: what a launch gave, which started the turn (no more is known of it).
     from domo_core.confirmations.case import PROGRAM_TEXT_WORDS
 
@@ -220,7 +220,7 @@ async def test_an_idea_in_their_own_turn_is_not_said_to_follow_outside_words(
     judged = _judge(monkeypatch, Judgement("do"))
     ctx, reply_id, _ = await _turn(session_factory, people["Sam"])
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     assert judged.cases[0].as_json()["idea"]["after_outside_words"] is False
 
 

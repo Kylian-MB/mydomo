@@ -137,6 +137,7 @@ import anyio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import is_active
 from domo_core.chat.agent import ActionRecord
@@ -174,7 +175,7 @@ from domo_core.confirmations.store import (
 )
 from domo_core.conversation.cards import storable
 from domo_core.conversation.visits import news_for
-from domo_core.household.service import whole_names
+from domo_core.household.service import names_among, whole_names
 from domo_core.learning.models import Kind
 from domo_core.learning.record import note_went_wrong, reason_code
 from domo_core.learning.undone import note_undoing
@@ -207,9 +208,9 @@ from domo_core.policy.catalog import (
 )
 from domo_core.policy.decision import ChainBasis, decide_now, doubted
 from domo_core.policy.rights import Approver, load_rights
-from domo_core.policy.roles import DOMO_SUBJECT_ID, Actor, as_role
+from domo_core.policy.roles import DOMO_SUBJECT_ID, Actor
 from domo_core.policy.settings import load_policy_settings
-from domo_core.policy.subjects import concerned_of, keys_of, subject_of
+from domo_core.policy.subjects import concerned_of, keys_of, owner_of_now, subject_of
 from domo_core.texts.view import REFERENCE
 
 # From ``tools.context``, not ``tools.registry``: the registry holds the tools that manage
@@ -554,10 +555,12 @@ def _may_undo_his(
 
 @dataclass(frozen=True)
 class StoredAction:
-    """An action ``store_action`` stored: its ``id``, and the line that tells the assistant it
-    undid what he had done or decided himself (``undoes``, ``None`` when it did not)."""
+    """An action ``store_action`` stored: its ``id`` (``None`` when there is no reply to store it
+    under: a review, whose audit and facts are written all the same), and the line that tells the
+    assistant it undid what he had done or decided himself (``undoes``, ``None`` when it did
+    not)."""
 
-    id: uuid.UUID
+    id: uuid.UUID | None
     undoes: str | None = None
 
 
@@ -567,7 +570,7 @@ _NOBODY_TO_ASK: Final = "nobody could answer for it: the household has no owner 
 
 async def store_action(
     ctx: ToolContext,
-    reply_id: uuid.UUID,
+    reply_id: uuid.UUID | None,
     record: ActionRecord,
     *,
     action: DescribedAction | None = None,
@@ -599,6 +602,10 @@ async def store_action(
     returned holds the line he is told (``StoredAction.undoes``: the day and the type, nothing of
     the conversation it was done in). Returns the action stored, ``None`` when it was not.
 
+    Without a reply (``reply_id`` ``None``: a review, which nobody reads) no action row is stored
+    and nothing is shown: its fact, the judge's verdict and the decision are written all the same,
+    in the name of who it was judged as.
+
     It is one attempt, shielded from cancellation (a reader who leaves must not stop the record
     of what was done) and limited to ``_STORE_SECONDS``. A failure is logged (its kind only) and
     the turn goes on: what came of the action is still told to the model and shown."""
@@ -614,30 +621,34 @@ async def store_action(
                     told = await note_undoing(
                         session,
                         action_type=action.action_type,
-                        keys=keys_of(action, record.model_result),
+                        keys=keys_of(action, record.model_result, ctx.person.id),
                         by=ctx.person.id,
                         now=ctx.clock(),
                         reason=ctx.said_in_turn,
                     )
-                stored = await ConversationStore(session).add_action(
-                    reply_id,
-                    tool_name=record.tool_name,
-                    action_type=record.action_type or "",
-                    status=record.status,
-                    summary=record.card,
-                    confirmation_id=record.confirmation_id,
-                    by_domo=judged_as.subject == "domo",
-                    subject_key=_subject_key(ctx, record, action),
-                    idea_reason=_cut(idea_reason),
-                )
+                subject_key = _subject_key(ctx, record, action)
+                stored_id: uuid.UUID | None = None
+                if reply_id is not None:
+                    stored = await ConversationStore(session).add_action(
+                        reply_id,
+                        tool_name=record.tool_name,
+                        action_type=record.action_type or "",
+                        status=record.status,
+                        summary=record.card,
+                        confirmation_id=record.confirmation_id,
+                        by_domo=judged_as.subject == "domo",
+                        subject_key=subject_key,
+                        idea_reason=_cut(idea_reason),
+                    )
+                    stored_id = stored.id
                 if noted is not None:
                     await note_went_wrong(
                         session,
                         kind=noted.kind,
                         action_type=record.action_type or "",
                         now=ctx.clock(),
-                        subject_key=stored.subject_key,
-                        action_id=stored.id,
+                        subject_key=subject_key,
+                        action_id=stored_id,
                         by=noted.by,
                         of_domo=noted.of_domo,
                         about=ctx.person.id,
@@ -650,14 +661,14 @@ async def store_action(
                         tool_name=record.tool_name,
                         action=action,
                         judgement=judged,
-                        action_id=stored.id,
+                        action_id=stored_id,
                     )
                 if action is not None and decision is not None:
                     await record_decision(
                         session, judged_as, action, decision, tool_name=record.tool_name
                     )
                 await session.commit()
-            return StoredAction(stored.id, told)
+            return StoredAction(stored_id, told)
         except Exception as error:
             logger.error("An action could not be recorded (%s)", type(error).__name__)
             return None
@@ -667,7 +678,7 @@ async def store_action(
 
 async def _recorded(
     ctx: ToolContext,
-    reply_id: uuid.UUID,
+    reply_id: uuid.UUID | None,
     record: ActionRecord,
     *,
     action: DescribedAction | None = None,
@@ -698,9 +709,17 @@ async def _recorded(
     return replace(record, action_id=stored.id)
 
 
+def _as_news(ctx: ToolContext, reply_id: uuid.UUID | None, concerned: "_Concerned | None") -> bool:
+    """Whether a request that waits for the person it concerns is news for them, in their own
+    conversation, rather than shown under this reply: it concerns someone else than the person of
+    the turn, or there is no reply to show it under (a review, ``reply_id`` ``None``: the person
+    reviewed is told it as news too)."""
+    return concerned is not None and (concerned.id != ctx.person.id or reply_id is None)
+
+
 async def _store_waiting(
     ctx: ToolContext,
-    reply_id: uuid.UUID,
+    reply_id: uuid.UUID | None,
     record: ActionRecord,
     *,
     arguments: JsonObject,
@@ -745,21 +764,33 @@ async def _store_waiting(
     the fact that the judge warned is kept, ruling R69, with the code's own line that it cannot be
     undone, R72: ``store.for_the_person_concerned``); it is news for them, in the same
     transaction, and the core is told (``ctx.notify``); nothing of it is shown here but a line
-    that it waits for them, by name.
+    that it waits for them, by name. So it does too, for the person of this conversation, when
+    there is no reply to show it under (``reply_id`` ``None``: a review, ``_as_news``).
 
     Shielded and limited like ``store_action``."""
     judged_as = ctx.turn_subject if actor is None else actor
     elsewhere = concerned is not None and concerned.id != ctx.person.id
+    as_news = _as_news(ctx, reply_id, concerned)
     with anyio.move_on_after(_STORE_SECONDS, shield=True):
         try:
             async with ctx.session_factory() as session:
                 conversation_id = ctx.conversation_id
-                if concerned is not None and elsewhere:
+                if concerned is not None and as_news:
                     found = await ConversationStore(session).active_conversation(concerned.id)
                     conversation_id = found.id
+                requester = ctx.actor
+                # Born in a review and waiting for someone else: the request is the owner's to
+                # answer and to run, in his conversation, as one of his own review's (the owner
+                # its requester), never the reviewed person's, who may have left by the time the
+                # yes comes.
+                his_from_a_review = ctx.in_review and elsewhere
+                if his_from_a_review:
+                    owner = await session.get(Person, await owner_of_now(session, ctx.clock()))
+                    assert owner is not None
+                    requester = actor_of(owner)
                 confirmation = await create_confirmation(
                     session,
-                    requester=ctx.actor,
+                    requester=requester,
                     tool_name=record.tool_name,
                     arguments=arguments,
                     action=action,
@@ -784,13 +815,13 @@ async def _store_waiting(
                     # Born of the owner's rule on his act in a person's turn: replayed there.
                     in_their_turn=in_their_turn and not ctx.on_his_own,
                 )
-                if elsewhere:
+                if as_news:
                     # No reply of theirs showed it: their words answer it once one does.
                     confirmation.last_shown_message_id = None
                 await add_steps(session, confirmation.id, steps)
                 waiting = (
                     record
-                    if elsewhere
+                    if as_news
                     else replace(
                         record,
                         confirmation_id=confirmation.id,
@@ -800,18 +831,19 @@ async def _store_waiting(
                         },
                     )
                 )
-                await ConversationStore(session).add_action(
-                    reply_id,
-                    tool_name=waiting.tool_name,
-                    action_type=waiting.action_type or "",
-                    status=waiting.status,
-                    summary=waiting.card,
-                    confirmation_id=waiting.confirmation_id,
-                    by_domo=judged_as.subject == "domo",
-                    subject_key=confirmation.subject_key,
-                    idea_reason=_cut(idea_reason),
-                )
-                if concerned is not None and elsewhere:
+                if reply_id is not None:
+                    await ConversationStore(session).add_action(
+                        reply_id,
+                        tool_name=waiting.tool_name,
+                        action_type=waiting.action_type or "",
+                        status=waiting.status,
+                        summary=waiting.card,
+                        confirmation_id=waiting.confirmation_id,
+                        by_domo=judged_as.subject == "domo",
+                        subject_key=confirmation.subject_key,
+                        idea_reason=_cut(idea_reason),
+                    )
+                if concerned is not None and as_news:
                     await news_for(session, concerned.id, now=ctx.clock())
                 if judged is not None:
                     await audit_judgement(
@@ -825,7 +857,7 @@ async def _store_waiting(
                     session, judged_as, action, decision, tool_name=record.tool_name
                 )
                 await session.commit()
-            if concerned is not None and elsewhere and ctx.notify is not None:
+            if concerned is not None and as_news and ctx.notify is not None:
                 # News for them: a turn of theirs may be due now (the request is stored already,
                 # whatever this does).
                 try:
@@ -854,6 +886,15 @@ NOT_ALLOWED_DETAIL: Final = (
     "done: tell them so in your own words, never with the word of the reason"
 )
 
+# What the model is told when an owner's directive on people applies (``owner_directive``): the
+# owner ruled on it and the code applied it; no right and no judgement of the assistant's changes
+# that. In words he can say, never the word of the reason.
+OWNER_DIRECTIVE_DETAIL: Final = (
+    "the owner ruled on this and nothing may go against it, so nothing was done: tell the "
+    "person so in your own words, never with the word of the reason, and never hint at a way "
+    "around it"
+)
+
 
 def _refused(
     tool_name: str,
@@ -876,6 +917,8 @@ def _refused(
         model_result["detail"] = LIMIT_ERROR_DETAIL
     elif reason == "not_allowed":
         model_result["detail"] = NOT_ALLOWED_DETAIL
+    elif reason == "owner_directive":
+        model_result["detail"] = OWNER_DIRECTIVE_DETAIL
     return ActionRecord(
         tool_name=tool_name,
         action_type=action_type,
@@ -1254,8 +1297,11 @@ def _idea_told(ctx: ToolContext, idea: OwnIdea | None, born_of: str | None) -> I
     which program it is and what it is built to reach (``ToolContext.outside_sources``), the
     person's own words named as theirs beside it, or, with nobody's words in the turn at all
     (``ToolContext.anyones_words``), that nobody said or wrote anything (``outside_words``): the
-    judge weighs the source like a person would, and the code refuses nothing for it."""
+    judge weighs the source like a person would, and the code refuses nothing for it. So is a line
+    heard from a voice the house was not sure was the person's among the words of a review
+    (``ToolContext.told_unsure``, ``UNSURE_LINE_WORDS``): a review has no speaker to tell it."""
     told = outside_words(
+        unsure=ctx.told_unsure,
         unknown=ctx.told_unknown,
         kinds=ctx.outside_kinds,
         their_words=ctx.reply_message_id is not None or ctx.asked_before,
@@ -1469,7 +1515,7 @@ async def _judged_by(
 
 async def run_with_a_request(
     ctx: ToolContext,
-    reply_id: uuid.UUID,
+    reply_id: uuid.UUID | None,
     record: ActionRecord,
     *,
     plan: "ChainPlan",
@@ -1514,15 +1560,17 @@ async def run_with_a_request(
                 await session.flush()
                 # Stored as an action that waits on its request (review I2): Domo's line of it,
                 # in the turns after, follows the request (running, paused, done, failed), never
-                # saying it was done before it was (``conversation.prepare``).
-                await ConversationStore(session).add_action(
-                    reply_id,
-                    tool_name=tool_name,
-                    action_type=plan.action.action_type,
-                    status="waiting",
-                    summary={"key": "action.card.running", "params": {}},
-                    confirmation_id=confirmation.id,
-                )
+                # saying it was done before it was (``conversation.prepare``). A review offers no
+                # chain: without a reply there is no line to store.
+                if reply_id is not None:
+                    await ConversationStore(session).add_action(
+                        reply_id,
+                        tool_name=tool_name,
+                        action_type=plan.action.action_type,
+                        status="waiting",
+                        summary={"key": "action.card.running", "params": {}},
+                        confirmation_id=confirmation.id,
+                    )
                 if judged is not None:
                     await audit_judgement(
                         session,
@@ -1552,6 +1600,14 @@ async def run_with_a_request(
     )
 
 
+def needs_them_in_the_household(ctx: ToolContext) -> bool:
+    """Whether a call is refused (``not_allowed``) once the person of the turn is no longer in the
+    household: in every turn, but never in a review of what was said (``ToolContext.in_review``),
+    whose calls through here are the assistant's own, judged as him with his rights: the person
+    reviewed, who may have left (their last review), is only where the idea was born."""
+    return not ctx.in_review
+
+
 async def read_the_person_again(ctx: ToolContext) -> Literal["active", "gone", "unknown"]:
     """Read the person who asks again, as the database holds them now, and make ``ctx`` theirs
     when they are still in the household (``person``, and the role of ``actor``): someone
@@ -1573,7 +1629,15 @@ async def read_the_person_again(ctx: ToolContext) -> Literal["active", "gone", "
         if person is None or not is_active(person, ctx.clock()):
             return "gone"
         ctx.person = person
-        ctx.actor = replace(ctx.actor, role=as_role(person.role))
+        # The marks of their record as they are now; how sure the code is of who speaks stays the
+        # turn's.
+        ctx.actor = replace(
+            actor_of(person),
+            standing=ctx.actor.standing,
+            voice_too_short=ctx.actor.voice_too_short,
+            page_person_id=ctx.actor.page_person_id,
+            subject=ctx.actor.subject,
+        )
         return "active"
     logger.error("Reading the person again took too long")
     return "unknown"
@@ -1616,8 +1680,13 @@ async def _decide_now(
                     decision = replace(decision, judge_identity=True)
                 if not for_the_person:
                     return decision
-                theirs = given_for_an_idea(ctx.policy, ctx.actor.role, action.action_type)
-                person = await decide_now(session, ctx.actor, action, theirs, now, risks=risks)
+                theirs = given_for_an_idea(
+                    ctx.policy, ctx.actor.role, action.action_type, child=ctx.actor.child
+                )
+                # His side read the owner's directives, with his exception: not again here.
+                person = await decide_now(
+                    session, ctx.actor, action, theirs, now, directives_read=True, risks=risks
+                )
                 return stricter(person, decision)
         except Exception as error:
             logger.error("The rights could not be read for a decision (%s)", type(error).__name__)
@@ -1641,7 +1710,7 @@ async def _decided_again(
     person or rights that cannot be read make it ``failed`` (nothing runs); otherwise the decision
     of now."""
     match await read_the_person_again(ctx):
-        case "gone":
+        case "gone" if needs_them_in_the_household(ctx):
             logger.warning(
                 "A call of the model was refused: the person left the household while the "
                 "judge answered"
@@ -1649,7 +1718,7 @@ async def _decided_again(
             return _refused(tool_name, action.action_type, "not_allowed")
         case "unknown":
             return undecided_record(tool_name, action.action_type, "not_read")
-        case "active":
+        case "active" | "gone":
             pass
     decision = await _decide_now(
         ctx,
@@ -1704,6 +1773,7 @@ async def _with_whole_names(
                     tool.person_arguments,
                     now=ctx.clock(),
                     speaker=ctx.person.id,
+                    among=names_among(tool),
                 )
         except Exception as error:
             logger.error(
@@ -1775,7 +1845,7 @@ async def _described_and_decided(
 
 async def _waits(
     ctx: ToolContext,
-    reply_id: uuid.UUID,
+    reply_id: uuid.UUID | None,
     tool_name: str,
     arguments: JsonObject,
     action: DescribedAction,
@@ -1856,8 +1926,26 @@ async def _waits(
                 noted=_Noted("failed", "code", True, _NOBODY_TO_ASK),
             )
         concerned = found
+    elif reply_id is None and ctx.in_review and approver != "self" and plan is None:
+        # A review shows nothing under a reply: what waits for the barrier's approver (the
+        # owner, or an adult: the owner is one) waits in the owner's conversation, as news for
+        # him, never in the conversation of the person reviewed.
+        owner = await _the_owner(ctx)
+        if owner is None:
+            return await _recorded(
+                ctx,
+                reply_id,
+                _refused(tool_name, action.action_type, "nobody_to_ask"),
+                action=action,
+                decision=decision,
+                judged=judged,
+                actor=actor,
+                idea_reason=idea_reason,
+                noted=_Noted("failed", "code", True, _NOBODY_TO_ASK),
+            )
+        concerned = owner
     asking = asked or Asked("yes", "approver", None)
-    elsewhere = concerned is not None and concerned.id != ctx.person.id
+    elsewhere = _as_news(ctx, reply_id, concerned)
     waits: JsonObject = {
         "status": "waiting_for_confirmation",
         "by": WHO_SAYS_YES[approver] if not elsewhere else _THE_PERSON_IT_CONCERNS,
@@ -1957,6 +2045,25 @@ async def _concerned(
     return None
 
 
+async def _the_owner(ctx: ToolContext) -> _Concerned | None:
+    """The owner of now, as the person a request waits for; ``None`` when there is none, or he
+    could not be read (logged)."""
+    with anyio.move_on_after(_CHECK_SECONDS):
+        try:
+            async with ctx.session_factory() as session:
+                try:
+                    owner_id = await owner_of_now(session, ctx.clock())
+                except LookupError:
+                    return None
+                person = await session.get(Person, owner_id)
+                return None if person is None else _Concerned(person.id, person.display_name)
+        except Exception as error:
+            logger.error("The owner could not be read (%s)", type(error).__name__)
+            return None
+    logger.error("Reading the owner took too long")
+    return None
+
+
 async def _whose_yes(
     tool: InternalTool, tool_name: str, arguments: JsonObject, ctx: ToolContext
 ) -> Approver | ActionRecord | None:
@@ -2013,7 +2120,7 @@ def _told_after(record: ActionRecord, cost: JsonObject | None) -> ActionRecord:
 
 async def _their_cost_weighed(
     ctx: ToolContext,
-    reply_id: uuid.UUID,
+    reply_id: uuid.UUID | None,
     tool: InternalTool,
     tool_name: str,
     arguments: JsonObject,
@@ -2137,7 +2244,7 @@ async def _their_cost_weighed(
 
 
 async def handle_tool_call(
-    call: ToolCall, *, ctx: ToolContext, reply_id: uuid.UUID, over_limit: bool = False
+    call: ToolCall, *, ctx: ToolContext, reply_id: uuid.UUID | None, over_limit: bool = False
 ) -> ActionRecord:
     """Put one call of the model through the barrier, run it if allowed, and record it (see the
     module docstring). Every outcome is a record, and nothing here raises.
@@ -2163,7 +2270,7 @@ async def handle_tool_call(
                 "A tool of the assistant could not be looked for (%s)", type(error).__name__
             )
     match await read_the_person_again(ctx):
-        case "gone":
+        case "gone" if needs_them_in_the_household(ctx):
             logger.warning(
                 "A call of the model was refused: the person is no longer in the household"
             )
@@ -2174,7 +2281,7 @@ async def handle_tool_call(
             action_type = None if tool is None else tool.action_type
             record = undecided_record(tool_name, action_type, "not_read")
             return await _recorded(ctx, reply_id, record)
-        case "active":
+        case "active" | "gone":
             pass
     if over_limit:
         record = invalid_record(
@@ -2574,7 +2681,7 @@ async def handle_tool_call(
         actor=actor,
         idea_reason=idea_reason,
     )
-    if stored.action_id is None:
+    if stored.action_id is None and reply_id is not None:
         logger.error(
             "The tool %s was allowed to do %s (it ended %s) but the action could not be "
             "recorded nor audited: check what it did",

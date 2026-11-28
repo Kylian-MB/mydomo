@@ -1,11 +1,16 @@
-"""The household roles, and who an action is done for: a person, or Domo himself."""
+"""The household's built-in roles, and who an action is done for: a person, or Domo himself.
 
-from dataclasses import dataclass
+The four built-in roles are also the bases a role the assistant makes for the household starts
+from (``people.made_roles``; the owner's role is never made nor copied): an actor carries that
+role's id (``Actor.made_role``), and a protection reads the actor's marks, never a role's name."""
+
+from dataclasses import dataclass, replace
 from typing import Final, Literal, get_args
 from uuid import UUID
 
 # The same four values as the ``persons.role`` constraint. What each role may do is in
-# ``policy.catalog``.
+# ``policy.catalog``; what a role made for the household gives on top of its base is in
+# ``people.made_roles``.
 Role = Literal["owner", "adult", "child", "guest"]
 
 ROLES: tuple[Role, ...] = get_args(Role)
@@ -57,6 +62,12 @@ class Actor:
     role: Role
     standing: Standing = "sure"
     subject: Subject = "person"
+    # The marks of the person's record (``accounts.actors.actor_of``): a protection reads these,
+    # never the name of the role. ``made_role`` is the role the assistant made for them.
+    child: bool = False
+    visiting: bool = False
+    resident: bool = True
+    made_role: UUID | None = None
     voice_too_short: bool = False
     # Heard at a page signed in as that other person (``Speaker.page_person_id``): nothing is
     # ordinary for them then (``barrier.identity_judged``), and that person's rules count too, the
@@ -67,6 +78,12 @@ class Actor:
     def trusted(self) -> bool:
         """Whether the code is sure of who it is, for anything (sensitive things included)."""
         return self.standing == "sure" and not self.voice_too_short
+
+
+def asked_as(actor: Actor, role: Role) -> Actor:
+    """``actor`` with the role they had when they asked (a chain judges its steps by it); the
+    marks of their record stay those of now."""
+    return replace(actor, role=role)
 
 
 def domo_actor() -> Actor:

@@ -22,6 +22,7 @@ import domo_core.confirmations.chain as chain_run
 import pytest
 from chat_support import ChatPilot, confirmation_cards, dump, status_of
 from domo_common.i18n import t
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.chat.agent import ActionRecord
 from domo_core.confirmations.chain import STOPPED_AT_ONCE_DETAIL, STOPPED_DETAIL
@@ -32,7 +33,6 @@ from domo_core.household.service import disable
 from domo_core.household.succession import list_successors
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.catalog import DEFAULT_POLICY
-from domo_core.policy.roles import Actor, as_role
 from domo_core.tools.context import ToolContext, ToolOutcome
 from domo_core.tools.registry import TOOLS
 from domo_core.web.deps import get_tool_registry
@@ -90,7 +90,7 @@ async def yes_through_the_service(
     person = pilot.person
     base = ToolContext(
         session_factory=pilot.server.session_factory,
-        actor=Actor(person.id, as_role(person.role)),
+        actor=actor_of(person),
         person=person,
         conversation_id=confirmation_id,
         origin=pilot.server.base_url,
@@ -124,7 +124,11 @@ async def remove(session_factory: Any, person: Person, clock: Any) -> None:
 async def bring_back(session_factory: Any, person: Person) -> None:
     """``person``, removed, is in the household again (committed)."""
     async with session_factory() as writer:
-        await writer.execute(update(Person).where(Person.id == person.id).values(disabled_at=None))
+        await writer.execute(
+            update(Person)
+            .where(Person.id == person.id)
+            .values(disabled_at=None, state="has_access")
+        )
         await writer.commit()
 
 

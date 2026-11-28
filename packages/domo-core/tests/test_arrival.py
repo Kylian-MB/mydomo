@@ -31,6 +31,7 @@ from chat_support import (
     WAIT_SECONDS,
     ChatPilot,
     Member,
+    an_actor,
     consume_sse,
     dump,
     post_message,
@@ -369,7 +370,9 @@ async def test_an_arrival_may_act_and_is_judged(owner_chat, adult_chat):
     # Every tool the person may use, as in any turn of theirs.
     assert offered == {
         tool.name
-        for tool in tools_for("owner", TOOLS, DEFAULT_POLICY, person_id=owner_chat.person.id)
+        for tool in tools_for(
+            an_actor("owner", person_id=owner_chat.person.id), TOOLS, DEFAULT_POLICY
+        )
     }
     assert "note_leave" in offered
     # Its call reached the judge, told that nobody spoke and why he acts.
@@ -834,19 +837,20 @@ async def test_an_arrival_stopped_after_showing_a_request_again_ends_and_leaves_
 
 async def news_for_the_owner(owner_chat: ChatPilot, adult_member: Member) -> None:
     """Alex began using the general key, which the owner gave; and the owner's limit on it has
-    passed the threshold they asked to be told at."""
+    passed the threshold they asked to be told at. What is left of the limit is more than the
+    most a turn can cost (its tools and context included), so that the turn is made."""
     server = owner_chat.server
     await add_limit(
         server.session_factory,
         server.provider_id,
-        amount="10",
+        amount="40",
         set_by=owner_chat.person.id,
         warn_at=50,
     )
     await add_spent(
         server.session_factory,
         server.provider_id,
-        "6",
+        "24",
         person_id=adult_member.person.id,
         at=owner_chat.clock(),
     )

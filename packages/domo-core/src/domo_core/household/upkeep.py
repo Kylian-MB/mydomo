@@ -8,7 +8,9 @@ anybody: they are gone the moment the stay is no longer in the future
 before the removal paused rights still has theirs in force. This pass does both: it pauses, once
 and audited, the rights in force of everyone who left (``pause_rights_of_those_who_left``: removed,
 or stay ended; never the owner, who never leaves), so that a guest who leaves between two passes
-has their rights paused within a minute. If the owner brings them back first,
+has their rights paused within a minute. A stay that ended without an account (the assistant
+judged that they left, ``people.records.complete``) is one like any other: the record stays,
+whole, its access asleep. If the owner brings them back first,
 ``household.service.accept_return`` pauses what is still in force.
 
 ``pause_rights_of_those_who_left`` writes one audit entry ``rights.paused`` per person who had some
@@ -18,7 +20,8 @@ of the core's upkeep (``upkeep.run_upkeep``) that does it in a session of its ow
 when the core starts and every minute after (``web.app``).
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import Final
 
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -26,8 +29,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import active_at
 from domo_core.devices.service import forget_devices_of_those_who_left
+from domo_core.people.directives import end_expired
+from domo_core.people.forget import finish_the_forgotten
+from domo_core.people.made_roles import UNUSED, delete, unused
+from domo_core.people.merge import purge
 from domo_core.policy.models import PolicyRight
 from domo_core.policy.rights import pause_rights_and_audit
+from domo_core.policy.roles import DOMO_LABEL
 from domo_core.upkeep import UpkeepPass
 
 
@@ -57,13 +65,51 @@ async def pause_rights_of_those_who_left(session: AsyncSession, now: datetime) -
 def departures_pass(session_factory: async_sessionmaker[AsyncSession]) -> UpkeepPass:
     """The pass of the upkeep that pauses the rights of the people who left
     (``pause_rights_of_those_who_left``, at the time of the pass) and forgets their devices
-    (``devices.service.forget_devices_of_those_who_left``), in a session of its own, committed.
+    (``devices.service.forget_devices_of_those_who_left``), and ends the owner's directives whose
+    time limit is past (``people.directives.end_expired``), and finishes what a forgetting
+    left for after its call (``people.forget.finish_the_forgotten``), in a session of its own,
+    committed.
     The tools Domo made stay: they are his."""
 
     async def pause(now: datetime) -> None:
         async with session_factory() as session:
+            await end_expired(session, now)
             await pause_rights_of_those_who_left(session, now)
             await forget_devices_of_those_who_left(session, now)
+            await finish_the_forgotten(session, now)
             await session.commit()
 
     return pause
+
+
+# How long a role just made and not yet given is left alone before it is cleaned up.
+UNUSED_ROLE_GRACE: Final = timedelta(days=7)
+
+
+def unused_roles_pass(session_factory: async_sessionmaker[AsyncSession]) -> UpkeepPass:
+    """The pass of the upkeep that deletes the roles made for the household that nobody carries
+    and no waiting promise names, once they are ``UNUSED_ROLE_GRACE`` old
+    (``people.made_roles.unused``), by the assistant, with the reason ``unused``, in a session of
+    its own, committed. A role nobody carries any more is deleted at once, where its last bearer
+    leaves it (``people.records.leave_role``): this one is for a role never given."""
+
+    async def clean_up(now: datetime) -> None:
+        async with session_factory() as session:
+            for role in await unused(session, before=now - UNUSED_ROLE_GRACE):
+                await delete(session, role, by=DOMO_LABEL, reason=UNUSED, turn_of=None, now=now)
+            await session.commit()
+
+    return clean_up
+
+
+def merge_traces_pass(session_factory: async_sessionmaker[AsyncSession]) -> UpkeepPass:
+    """The pass of the upkeep that empties the traces of the merges past their
+    ``people.merge.MERGE_KEPT`` (``people.merge.purge``: the absorbed record of a merge never
+    split is emptied as a forgotten one), in a session of its own, committed."""
+
+    async def purge_the_traces(now: datetime) -> None:
+        async with session_factory() as session:
+            await purge(session, now)
+            await session.commit()
+
+    return purge_the_traces

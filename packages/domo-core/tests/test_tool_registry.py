@@ -8,6 +8,8 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from chat_support import an_actor
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.household.models import Invitation
 from domo_core.policy.actions import DescribedAction
@@ -35,7 +37,7 @@ def context(person: Person, session_factory=None, *, now: datetime = NOW) -> Too
     left empty)."""
     return ToolContext(
         session_factory=session_factory,
-        actor=Actor(person.id, person.role),
+        actor=actor_of(person),
         person=person,
         conversation_id=uuid.uuid4(),
         origin="https://domo.example.com/",
@@ -83,7 +85,31 @@ HOUSEHOLD_TOOLS = [
     "household_remove",
     "household_cancel_invitation",
     "invitation_link_again",
+    "invitation_link_show",
+    "invitation_send",
     "household_bring_back",
+    "record_open",
+    "record_complete",
+    "record_look",
+    "record_erase",
+    "record_forget",
+    "forget_me",
+    "records_merge",
+    "records_split",
+    "access_mistake",
+    "link_note",
+    "link_drop",
+    "role_create",
+    "role_change",
+    "role_delete",
+    "roles_look",
+    "access_promise",
+    "promise_keep",
+    "promise_drop",
+    "promises_look",
+    "directive_set",
+    "directive_lift",
+    "directives_look",
     "household_transfer_ownership",
 ]
 # The tools of each member's own keys: give one again (task 13), add one, remove one, say who
@@ -246,7 +272,31 @@ def test_every_tool_is_an_action_of_the_catalog():
         "household.remove",
         "household.cancel_invitation",
         "household.invite_again",
+        "household.show_link",
+        "household.send_link",
         "household.bring_back",
+        "people.open",
+        "people.complete",
+        "people.look",
+        "people.erase",
+        "people.forget",
+        "people.forget_me",
+        "people.merge",
+        "people.split",
+        "people.mistake",
+        "people.link",
+        "people.unlink",
+        "role.create",
+        "role.change",
+        "role.delete",
+        "role.look",
+        "access.promise",
+        "access.promise_keep",
+        "access.promise_drop",
+        "access.promises_look",
+        "people.directive_set",
+        "people.directive_lift",
+        "people.directives_look",
         "household.transfer_ownership",
         "model.rekey",
         "key.add",
@@ -526,11 +576,12 @@ def test_the_registry_cannot_be_changed():
                 *NOTE_TOOLS,
                 *RECEIVED_NOTE_TOOLS,
                 *REQUEST_TOOLS,
-                # Inviting, and cancelling or giving again the link of their own invitation
-                # (0.9.1).
-                "household_invite",
-                "household_cancel_invitation",
-                "invitation_link_again",
+                # Inviting is in no role (ruling 14): none of its tools, but the link that
+                # waits for them, shown once in words.
+                "invitation_link_show",
+                # Everyone looks at their own record.
+                "record_look",
+                "forget_me",
                 *MODEL_TOOLS,
                 *MEMBER_CHOICE_TOOLS,
                 *OWN_TEXT_TOOLS,
@@ -559,6 +610,11 @@ def test_the_registry_cannot_be_changed():
                 *NOTE_TOOLS,
                 *RECEIVED_NOTE_TOOLS,
                 *REQUEST_TOOLS,
+                # The link that waits for them, shown once in words.
+                "invitation_link_show",
+                # Everyone looks at their own record.
+                "record_look",
+                "forget_me",
                 *MODEL_TOOLS,
                 *MEMBER_CHOICE_TOOLS,
                 *OWN_TEXT_TOOLS,
@@ -586,6 +642,8 @@ def test_the_registry_cannot_be_changed():
                 *RECEIVED_NOTE_TOOLS,
                 "act_on_my_own",
                 "asking_agreed",
+                "record_look",
+                "forget_me",
                 *GUEST_KEY_TOOLS,
                 "models_step_up",
                 *OWN_TEXT_TOOLS,
@@ -605,7 +663,7 @@ def test_the_registry_cannot_be_changed():
     ],
 )
 def test_each_role_sees_the_tools_its_actions_allow(role, expected):  # D1
-    assert names(tools_for(role, TOOLS, DEFAULT_POLICY)) == expected
+    assert names(tools_for(an_actor(role), TOOLS, DEFAULT_POLICY)) == expected
 
 
 def test_the_tools_follow_the_policy_they_are_given():
@@ -615,16 +673,16 @@ def test_the_tools_follow_the_policy_they_are_given():
         allowed={role: frozenset({"profile.rename"}) for role in ROLES},
         domo=frozenset(),
     )
-    assert names(tools_for("owner", TOOLS, nobody_lists)) == ["profile_rename"]
+    assert names(tools_for(an_actor("owner"), TOOLS, nobody_lists)) == ["profile_rename"]
     his_own = PolicyTables(known=DEFAULT_POLICY.known, allowed={}, domo=frozenset({"tool.build"}))
-    assert names(tools_for("guest", TOOLS, his_own)) == ["tool_build"]
+    assert names(tools_for(an_actor("guest"), TOOLS, his_own)) == ["tool_build"]
     guests_list = PolicyTables(
         known=DEFAULT_POLICY.known,
         allowed={"guest": frozenset({"household.list"})},
         domo=frozenset(),
     )
-    assert names(tools_for("guest", TOOLS, guests_list)) == ["household_list"]
-    assert tools_for("adult", TOOLS, guests_list) == []
+    assert names(tools_for(an_actor("guest"), TOOLS, guests_list)) == ["household_list"]
+    assert tools_for(an_actor("adult"), TOOLS, guests_list) == []
 
 
 def test_a_tool_whose_action_the_catalog_does_not_know_is_never_offered():
@@ -632,7 +690,7 @@ def test_a_tool_whose_action_the_catalog_does_not_know_is_never_offered():
         known=frozenset({"profile.rename"}),
         allowed={"owner": frozenset({"household.list", "profile.rename"})},
     )
-    assert names(tools_for("owner", TOOLS, unknown)) == ["profile_rename"]
+    assert names(tools_for(an_actor("owner"), TOOLS, unknown)) == ["profile_rename"]
 
 
 def a_right(action_type: str, *, person_id=None, role=None, access=None, ask=None) -> Right:
@@ -645,7 +703,7 @@ def test_a_person_is_shown_the_tools_of_their_own_rights():  # spec 5.9
     # A child (an adult invites by default since 0.9.1).
     sam, jo = uuid.uuid4(), uuid.uuid4()
     rights = RightsTable((a_right("household.invite", person_id=sam, access="allow"),))
-    shown = names(tools_for("child", TOOLS, DEFAULT_POLICY, person_id=sam, rights=rights))
+    shown = names(tools_for(an_actor("child", person_id=sam), TOOLS, DEFAULT_POLICY, rights=rights))
     assert shown == [
         "household_list",
         *OWN_TOOLS,
@@ -656,6 +714,10 @@ def test_a_person_is_shown_the_tools_of_their_own_rights():  # spec 5.9
         "household_invite",
         # The right to invite gives the link again too (F1: ``catalog.RIGHTS_OF``).
         "invitation_link_again",
+        "invitation_link_show",
+        # Everyone looks at their own record, and may be forgotten.
+        "record_look",
+        "forget_me",
         *MODEL_TOOLS,
         *MEMBER_CHOICE_TOOLS,
         *OWN_TEXT_TOOLS,
@@ -676,10 +738,12 @@ def test_a_person_is_shown_the_tools_of_their_own_rights():  # spec 5.9
         *VOICE_TOOLS,
     ]
     assert "household_invite" not in names(
-        tools_for("child", TOOLS, DEFAULT_POLICY, person_id=jo, rights=rights)
+        tools_for(an_actor("child", person_id=jo), TOOLS, DEFAULT_POLICY, rights=rights)
     )
     # Without a person, only the rights of the role count.
-    assert "household_invite" not in names(tools_for("child", TOOLS, DEFAULT_POLICY, rights=rights))
+    assert "household_invite" not in names(
+        tools_for(an_actor("child"), TOOLS, DEFAULT_POLICY, rights=rights)
+    )
 
 
 def test_a_right_of_a_role_shows_or_hides_a_tool_to_the_whole_role():
@@ -690,12 +754,14 @@ def test_a_right_of_a_role_shows_or_hides_a_tool_to_the_whole_role():
         )
     )
     assert names(
-        tools_for("guest", TOOLS, DEFAULT_POLICY, person_id=uuid.uuid4(), rights=rights)
+        tools_for(an_actor("guest", person_id=uuid.uuid4()), TOOLS, DEFAULT_POLICY, rights=rights)
     ) == [
         "household_leave",
         *RECEIVED_NOTE_TOOLS,
         "act_on_my_own",
         "asking_agreed",
+        "record_look",
+        "forget_me",
         *GUEST_KEY_TOOLS,
         "models_step_up",
         *OWN_TEXT_TOOLS,
@@ -712,17 +778,17 @@ def test_a_right_of_a_role_shows_or_hides_a_tool_to_the_whole_role():
         *VOICE_TOOLS,
     ]
     assert "household_remove" in names(
-        tools_for("child", TOOLS, DEFAULT_POLICY, person_id=uuid.uuid4(), rights=rights)
+        tools_for(an_actor("child", person_id=uuid.uuid4()), TOOLS, DEFAULT_POLICY, rights=rights)
     )
     assert "household_remove" not in names(
-        tools_for("adult", TOOLS, DEFAULT_POLICY, person_id=uuid.uuid4(), rights=rights)
+        tools_for(an_actor("adult", person_id=uuid.uuid4()), TOOLS, DEFAULT_POLICY, rights=rights)
     )
 
 
 def test_a_tool_shown_with_a_rule_is_still_shown():
     rights = RightsTable((a_right("note.leave", role="adult", ask="explicit_yes"),))
     assert "note_leave" in names(
-        tools_for("adult", TOOLS, DEFAULT_POLICY, person_id=uuid.uuid4(), rights=rights)
+        tools_for(an_actor("adult", person_id=uuid.uuid4()), TOOLS, DEFAULT_POLICY, rights=rights)
     )
 
 
@@ -734,27 +800,31 @@ def test_no_right_shows_the_owners_tools_to_anyone_else():
             a_right("policy.update", person_id=adult, access="allow"),
         )
     )
-    shown = names(tools_for("adult", TOOLS, DEFAULT_POLICY, person_id=adult, rights=rights))
+    shown = names(
+        tools_for(an_actor("adult", person_id=adult), TOOLS, DEFAULT_POLICY, rights=rights)
+    )
     assert "policy_update" not in shown
     # Not even when the tables say so: changing the rules is the owner's.
     everyone = PolicyTables(
         known=DEFAULT_POLICY.known,
         allowed={role: DEFAULT_POLICY.allowed["owner"] for role in ROLES},
     )
-    assert "policy_update" not in names(tools_for("adult", TOOLS, everyone, person_id=adult))
-    assert "policy_update" in names(tools_for("owner", TOOLS, everyone, person_id=adult))
+    assert "policy_update" not in names(
+        tools_for(an_actor("adult", person_id=adult), TOOLS, everyone)
+    )
+    assert "policy_update" in names(tools_for(an_actor("owner", person_id=adult), TOOLS, everyone))
 
 
 def test_someone_elses_texts_are_shown_only_to_whoever_has_the_right():  # spec 4.7, socle 8
     for role in ROLES:
-        assert "texts_for_someone" not in names(tools_for(role, TOOLS, DEFAULT_POLICY))
+        assert "texts_for_someone" not in names(tools_for(an_actor(role), TOOLS, DEFAULT_POLICY))
     alex, owner = uuid.uuid4(), uuid.uuid4()
     rights = RightsTable((a_right("texts.for_someone", person_id=alex, access="allow"),))
     assert "texts_for_someone" in names(
-        tools_for("adult", TOOLS, DEFAULT_POLICY, person_id=alex, rights=rights)
+        tools_for(an_actor("adult", person_id=alex), TOOLS, DEFAULT_POLICY, rights=rights)
     )
     assert "texts_for_someone" not in names(
-        tools_for("owner", TOOLS, DEFAULT_POLICY, person_id=owner, rights=rights)
+        tools_for(an_actor("owner", person_id=owner), TOOLS, DEFAULT_POLICY, rights=rights)
     )
 
 
@@ -791,7 +861,9 @@ async def test_household_list_tells_who_is_here_and_who_is_invited(session_facto
             Person(display_name="Alex", role="adult"),
             Person(display_name="Robin", role="guest", expires_at=NOW + timedelta(days=2)),
             # Not in the household any more: removed, or a stay that is over.
-            Person(display_name="Gone", role="adult", disabled_at=NOW - timedelta(days=1)),
+            Person(
+                display_name="Gone", role="adult", disabled_at=NOW - timedelta(days=1), state="gone"
+            ),
             Person(display_name="Left", role="guest", expires_at=NOW - timedelta(seconds=1)),
         ):
             writer.add(person)

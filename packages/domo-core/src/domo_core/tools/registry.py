@@ -27,6 +27,7 @@ from domo_core.tools.confirmation_tools import (
 from domo_core.tools.context import InternalTool, InvalidArguments, tools_for
 from domo_core.tools.delivery_tools import DeliveryLook
 from domo_core.tools.devices import DeviceEntrust, DeviceList, DeviceRemove
+from domo_core.tools.directive_tools import DirectiveLift, DirectiveSet, DirectivesLook
 from domo_core.tools.house_name import HouseName
 from domo_core.tools.household_admin import (
     HouseholdCancelInvitation,
@@ -36,12 +37,15 @@ from domo_core.tools.household_admin import (
     HouseholdRemove,
     HouseholdTransferOwnership,
     InvitationLinkAgain,
+    InvitationLinkShow,
 )
 from domo_core.tools.household_read import HouseholdList
 from domo_core.tools.household_return import HouseholdBringBack
+from domo_core.tools.invitation_send import InvitationSend
 from domo_core.tools.key_tools import KeyAdd, KeyLimit, KeyRemove, KeyShare
 from domo_core.tools.keys_house import KeysHouse
 from domo_core.tools.learning_tools import WentWrongAsked, WentWrongNote
+from domo_core.tools.link_tools import LinkDrop, LinkNote
 from domo_core.tools.made_tools import (
     MadeToolBack,
     MadeToolBuild,
@@ -55,6 +59,7 @@ from domo_core.tools.made_tools import (
     ToolsSettings,
 )
 from domo_core.tools.memory_tools import MemoryChange, MemoryForget, MemoryKeep, MemorySearch
+from domo_core.tools.merge_tools import RecordsMerge, RecordsSplit
 from domo_core.tools.model_key import ModelRekey
 from domo_core.tools.model_tools import (
     ModelsChoose,
@@ -80,11 +85,27 @@ from domo_core.tools.outward_tools import (
     AddressesLook,
     AddressOpen,
 )
+from domo_core.tools.people_tools import (
+    AccessMistake,
+    ForgetMe,
+    RecordComplete,
+    RecordErase,
+    RecordForget,
+    RecordLook,
+    RecordOpen,
+)
 from domo_core.tools.plan_tools import PlanCancel, PlanChange, PlanSet
 from domo_core.tools.policy_tools import PolicyShow, PolicyUpdate
 from domo_core.tools.profile import DomoName, ProfileRename
 from domo_core.tools.program_run import ProgramRun
+from domo_core.tools.promise_tools import (
+    AccessPromiseTool,
+    PromiseDrop,
+    PromiseKeep,
+    PromisesLook,
+)
 from domo_core.tools.rights_tools import RightsApply, RightsPropose
+from domo_core.tools.role_tools import RoleChange, RoleCreate, RoleDelete, RolesLook
 from domo_core.tools.spending_tools import KeyAdmin, SpendingShow
 from domo_core.tools.successors import (
     SuccessorsNoteDeath,
@@ -141,7 +162,31 @@ _TOOLS: tuple[InternalTool, ...] = (
     HouseholdRemove(),
     HouseholdCancelInvitation(),
     InvitationLinkAgain(),
+    InvitationLinkShow(),
+    InvitationSend(),
     HouseholdBringBack(),
+    RecordOpen(),
+    RecordComplete(),
+    RecordLook(),
+    RecordErase(),
+    RecordForget(),
+    ForgetMe(),
+    RecordsMerge(),
+    RecordsSplit(),
+    AccessMistake(),
+    LinkNote(),
+    LinkDrop(),
+    RoleCreate(),
+    RoleChange(),
+    RoleDelete(),
+    RolesLook(),
+    AccessPromiseTool(),
+    PromiseKeep(),
+    PromiseDrop(),
+    PromisesLook(),
+    DirectiveSet(),
+    DirectiveLift(),
+    DirectivesLook(),
     HouseholdTransferOwnership(),
     ModelRekey(),
     KeyAdd(),

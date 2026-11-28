@@ -25,6 +25,7 @@ from domo_core.accounts.models import Person
 from domo_core.household import nicknames
 from domo_core.household.service import active_persons, open_invitations, resolve_person
 from domo_core.llm.types import JsonObject, ToolDefinition
+from domo_core.people import whose
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.roles import Actor
 from domo_core.text import cleaned_name, is_plain_line, name_key
@@ -99,7 +100,14 @@ async def _keepable(session: AsyncSession, nickname: str, person: str, ctx: Tool
     names += [i.display_name for i in await open_invitations(session, now)]
     if any(name_key(name) == key for name in names):
         raise InvalidArguments("invalid", _A_WHOLE_NAME)
-    return await resolve_person(session, person, now=now, speaker=ctx.person.id)
+    return await resolve_person(
+        session,
+        person,
+        now=now,
+        speaker=ctx.person.id,
+        among="records",
+        detailed=whose.may_see_every_record(ctx, ctx.acting),
+    )
 
 
 class NicknameKeep:
@@ -113,7 +121,8 @@ class NicknameKeep:
             "finds that person in their requests. When they use a short name or a nickname for "
             "someone that you have not heard from them before, and you are not sure who is meant "
             "or it matters who (something that touches that person, or that cannot be undone), "
-            'ask once in plain words, in their language ("Sam, is that Samuel?"), and keep '
+            "ask once, in plain words and in their language, whether they mean that person, and "
+            "keep "
             "their answer with this tool; when it is plain who is meant, keep it without asking. "
             "Once it is kept, act on it directly and never ask again. A nickname is this person's "
             "own way of naming someone: others may use other names, or the same one for someone "
@@ -144,6 +153,7 @@ class NicknameKeep:
     # The argument that names someone of the household: given its whole name before the call is
     # described (``tools.context.NamesPeople``, spec 6.7).
     person_arguments: Final = ("person",)
+    names_among: Final = "records"
 
     async def describe(
         self, arguments: JsonObject, actor: Actor, ctx: ToolContext

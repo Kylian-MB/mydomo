@@ -202,6 +202,7 @@ async def test_a_newcomer_without_a_host_or_whose_host_left_is_still_told(sessio
         found = await writer.get(Person, dana.id)
         assert found is not None
         found.disabled_at = clock()
+        found.state = "gone"
         await writer.commit()
     await add_call(session_factory, key.id, alone, clock() - timedelta(minutes=2))
     await add_call(session_factory, key.id, robin, clock() - timedelta(minutes=1))

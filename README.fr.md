@@ -8,19 +8,20 @@ sont dans un coffre chiffré que le cœur de l'assistant ne peut jamais lire.
 
 *English version: [README.md](README.md).*
 
-**Ce qu'il fait aujourd'hui** (la deuxième itération, le foyer) : tu l'installes
+**Ce qu'il fait aujourd'hui** (la deuxième itération, la maison) : tu l'installes
 sur un serveur, tu crées le compte du propriétaire, tu choisis le modèle d'IA
 avec lequel il parle (Anthropic, OpenAI, Google, ou tout serveur qui parle l'API
 d'OpenAI, par exemple un serveur de ton réseau), puis tu discutes avec lui dans
-une page web, depuis un ordinateur ou un téléphone. Le propriétaire invite les
-personnes avec qui il vit (adultes, enfants, invités), et chacun a son propre
-compte et sa propre discussion. L'assistant sait maintenant faire quelques petites
-choses : laisser un mot à quelqu'un, inviter des personnes et changer leur rôle,
-aider le propriétaire à changer la clé du modèle. Avant tout ce qui compte,
-L'assistant juge, pour chaque action, s'il la fait, s'il demande un oui, le bouton, ou
-une preuve que c'est bien toi ; les règles du propriétaire et les droits passent
-avant. On peut se connecter avec une clé d'accès (passkey) au lieu de son mot de
-passe. Chaque action importante est inscrite dans un journal d'audit
+une page web, depuis un ordinateur ou un téléphone. L'assistant tient lui-même
+les personnes de la maison : celles avec qui tu vis, tes invités, et celles qui
+comptent pour la maison, avec ou sans compte. Qui a un compte a sa propre
+discussion. L'assistant sait maintenant faire quelques petites choses : laisser
+un mot à quelqu'un, inviter des personnes et changer leur rôle, se créer des
+rôles, aider le propriétaire à changer la clé du modèle. Avant tout ce qui
+compte, l'assistant juge, pour chaque action, s'il la fait, s'il demande un oui,
+le bouton, ou une preuve que c'est bien toi ; les règles du propriétaire et les
+droits passent avant. On peut se connecter avec une clé d'accès (passkey) au
+lieu de son mot de passe. Chaque action importante est inscrite dans un journal d'audit
 infalsifiable que le propriétaire peut consulter. Tout ce qu'on lit vient de
 Domo, pour celui qui le lit, dans sa langue : il part de phrases par défaut en
 français et en anglais, et les réécrit quand il a une raison de le faire (voir
@@ -234,26 +235,63 @@ La page te guide ensuite en deux étapes :
 Ces deux étapes sont en français ou en anglais, selon ton navigateur. Dès que la
 clé marche, tu arrives dans la discussion : rien à attendre. La langue de ton
 navigateur devient la langue de la maison. Le propriétaire peut lire le journal
-d'audit à l'adresse `https://<adresse>:8443/audit`, et voir le foyer à l'adresse
+d'audit à l'adresse `https://<adresse>:8443/audit`, et voir la maison à l'adresse
 `https://<adresse>:8443/household`.
 
-## Le foyer
+## La maison
 
-L'assistant est partagé par les personnes avec qui tu vis. Le propriétaire, la
-personne qui l'a installé, invite les autres. Chacun a son propre compte, son
-propre mot de passe et sa propre discussion : l'assistant ne la montre à personne
-d'autre, pas même au propriétaire.
+L'assistant est partagé par les personnes avec qui tu vis. Toi, le propriétaire,
+tu l'as installé. Ensuite, l'assistant tient lui-même les personnes de la maison,
+d'après ce qu'on lui dit, ce qu'il entend et ce qu'il lit : il te demande le
+moins possible. Qui a un compte a son propre mot de passe et sa propre
+discussion : l'assistant ne la montre à personne d'autre, pas même à toi.
 
 Tout passe par la discussion, avec tes propres mots : « invite Alex comme
 adulte », « invite Sam comme invité pour une semaine », « Alex est adulte
-maintenant ». Il n'y a pas de formulaire à remplir.
+maintenant », « mes parents arrivent samedi ». Il n'y a pas de formulaire à
+remplir.
 
-- **Les rôles.** Au départ, le propriétaire peut tout faire dans cette liste. Les
-  adultes et les enfants peuvent demander qui fait partie du foyer et laisser des
-  mots, à qui ils veulent, un invité compris. Les adultes peuvent aussi inviter
-  quelqu'un, comme le dit le point sur les invitations. Un invité peut discuter
-  avec l'assistant et changer son propre nom. Le propriétaire peut changer tout cela,
-  comme le dit le point suivant.
+- **Les personnes de la maison.** Pour chaque personne qui compte, l'assistant
+  tient une fiche : son nom tel que la maison le dit, si elle vit ici, passe, ou
+  ne vient jamais, si c'est un enfant, son rôle, ce qu'elle peut faire, et ce
+  qu'elle est pour les autres (« le copain de Paul », « la mère de Dana »). Deux
+  fiches peuvent porter le même nom. Il en ouvre une pour qui vit ici, vient, va
+  venir ou reçoit un accès, et, s'il le juge bon, pour quelqu'un qui compte pour
+  la maison et revient souvent dans les discussions ; jamais pour un nom cité en
+  passant, qui reste un souvenir. Ce qu'il sait d'une personne reste dans sa
+  mémoire, rattaché à sa fiche. Une fiche ne donne rien par elle-même.
+- **Un accès n'est pas un compte.** Un accès, c'est le droit de se servir de
+  l'assistant ; la fiche le porte, par son rôle et par les droits donnés à cette
+  personne. Un compte (un identifiant, un mot de passe, des clés d'accès) n'est
+  que le moyen de lui parler depuis son propre appareil : ceux qui vivent ici en
+  reçoivent un, et toute autre personne quand tu le demandes, ou quand
+  l'assistant le juge utile (il te prévient alors). L'assistant peut donner un
+  accès à quelqu'un, ou le reprendre, de lui-même quand il le juge bon. « Donne
+  l'accès à ma compagne et ses enfants » : s'il ne les connaît pas encore, il
+  note une **promesse**, et la tient le jour où il les reconnaît, sans
+  redemander ; s'il doute, il attend. Seule ta promesse est un ordre : celle d'un
+  autre est une demande qu'il juge le moment venu.
+- **Les rôles.** Au départ, il y en a quatre : propriétaire, adulte, enfant et
+  invité. Tu peux tout faire dans cette liste. Les adultes et les enfants
+  peuvent demander qui fait partie de la maison et laisser des mots, à qui ils
+  veulent, un invité compris. Un invité peut discuter avec l'assistant et changer
+  son propre nom. Inviter, donner un rôle, retirer ou faire revenir quelqu'un, et
+  tout autre changement sur les personnes de la maison, c'est à toi et à
+  l'assistant : les autres le lui demandent, et il juge. Tu peux changer tout
+  cela, comme le dit le point suivant.
+- **Les rôles que crée l'assistant.** Quand il en a besoin (« meilleur ami »,
+  « voisin », « nounou »), l'assistant crée un rôle, lui donne un nom, le change,
+  et le supprime quand plus personne ne l'a. Chacun part d'un adulte de la
+  maison, d'un enfant ou de quelqu'un de passage, et ajoute ou retire ce qu'il
+  juge bon. Il ne contient jamais ce qui n'est qu'à toi (les règles et les
+  droits, tes successeurs, transmettre ton rôle, le niveau des modèles, partager
+  un compte de la maison). Il ne donne pas non plus les limites de dépense, ni
+  les gestes sur les personnes et les rôles, ni ce que l'assistant n'a pas
+  lui-même. Tu peux en revanche ouvrir toi-même les gestes sur les personnes et
+  les rôles à une personne précise. Un rôle ne lève
+  jamais ce qui protège un enfant : une personne marquée comme enfant garde
+  l'accord d'un adulte et ne reçoit rien de ce qui est réservé aux adultes,
+  quel que soit son rôle.
 - **Les droits et les limites.** Le propriétaire décide qui peut faire quoi, et le
   dit à l'assistant avec ses propres mots : « Alex peut inviter des invités, 3 jours au
   plus », « les invités ne peuvent plus changer leur nom », « les mots de Sam
@@ -271,11 +309,11 @@ maintenant ». Il n'y a pas de formulaire à remplir.
   avec ses exemples et ce qui arrive à chacun, pour demander, que s'il n'est pas
   sûr d'avoir compris, ou si le droit ferait plus que ce qui a été dit. Le droit
   est écrit par un appel à part au modèle, qui ne
-  voit que les mots du propriétaire et la liste du foyer, jamais la discussion ;
+  voit que les mots du propriétaire et la liste de la maison, jamais la discussion ;
   le code de l'assistant calcule ensuite lui-même ce qui arrive à chaque exemple : ce
   que tu lis est exactement ce qui s'appliquera. Un exemple qui dépend de
-  l'heure, du nombre de fois où quelque chose a été fait ou de qui est dans le
-  foyer dit le moment qu'il imagine (« Un samedi à 22 h. »). Si le propriétaire
+  l'heure, du nombre de fois où quelque chose a été fait ou de qui est dans la
+  maison dit le moment qu'il imagine (« Un samedi à 22 h. »). Si le propriétaire
   change qui doit dire oui à une demande qui attend, le oui de quelqu'un d'autre
   ne la fait plus : elle attend la bonne personne, et la carte dit à qui c'est.
   Quelques règles que personne ne peut changer : seul le propriétaire change les droits et les règles, personne
@@ -291,18 +329,22 @@ maintenant ». Il n'y a pas de formulaire à remplir.
   (« laisse deux minutes au rédacteur de droits »). Quand le temps manque, rien
   n'est écrit et le journal d'audit le note ; si cela arrive souvent, l'assistant peut
   proposer d'en laisser plus, et ne le change jamais sans le oui du propriétaire.
-- **Inviter quelqu'un.** Le propriétaire et les adultes peuvent inviter. L'assistant
-  prépare l'invitation et juge s'il faut demander un oui. Quand c'est un adulte
-  qui demande, il juge aussi si le propriétaire doit d'abord être d'accord : son
-  propre enfant arrive tout de suite ; quelqu'un que le foyer ne connaît pas, un
-  autre adulte, ou quelqu'un qui se servira des clés du propriétaire attend le
-  oui du propriétaire. Un adulte redonne le lien, ou annule, seulement une
-  invitation qu'il a faite ; le propriétaire, n'importe laquelle. Une fois
+- **Inviter quelqu'un.** Une invitation donne un compte à quelqu'un. Toi et
+  l'assistant invitez ; les autres le lui demandent. Il prépare l'invitation et
+  juge s'il faut demander un oui. Quand c'est quelqu'un d'autre qui demande, il
+  juge aussi si tu dois d'abord être d'accord, et l'invitation attend alors ton
+  oui. Il peut aussi inviter quelqu'un de lui-même, une personne de passage
+  comprise : tu es alors prévenu. Une personne redonne le lien, ou annule, une
+  invitation qu'elle a faite ; une invitation de l'assistant, quiconque en a le
+  droit le peut, et il juge ; toi, n'importe laquelle. Une fois
   faite, la carte sous la réponse de l'assistant montre le lien d'invitation,
   **cette fois-là seulement** : envoie-le toi-même, par message ou par e-mail.
-  Le lien ne sert qu'une fois, pendant 7 jours, et l'assistant ne le voit jamais. La
-  personne l'ouvre, choisit un identifiant et un mot de passe, et arrive dans sa
-  propre discussion. Quand quelqu'un d'autre dit oui à l'invitation d'une personne
+  Si l'assistant a un outil qui peut écrire à l'adresse de la personne, il peut
+  l'envoyer lui-même : le lien est glissé dans le message sans que lui ni son
+  outil ne le voient jamais. Le lien ne sert qu'une fois, pendant 7 jours. La
+  personne l'ouvre, trouve un identifiant déjà proposé, choisit un mot de passe,
+  et arrive dans sa propre discussion ; si l'assistant avait déjà une fiche pour
+  elle, le compte s'y rattache, avec ce qu'il sait d'elle. Quand quelqu'un d'autre dit oui à l'invitation d'une personne
   qui a le droit d'inviter (le propriétaire, par exemple), le lien est pour la
   personne qui a demandé : un bouton « Montrer le lien » sur sa carte le montre,
   une seule fois, à elle seule. Si elle dit oui elle-même, il lui est montré tout
@@ -316,27 +358,37 @@ maintenant ». Il n'y a pas de formulaire à remplir.
   « Montrer le lien » de la carte de celui qui l'a demandé. Si c'est quelqu'un
   d'autre que toi qui redemande le lien, ton bouton « Montrer le lien », s'il
   attendait encore, ne donne plus de lien : c'est le nouveau qui compte, et
-  c'est à cette personne de l'envoyer.
-- **Les invités.** L'accès d'un invité s'arrête après un séjour choisi au moment
-  de l'invitation (2 jours par défaut). La règle du foyer au départ est de 30 jours
-  au plus ; le propriétaire peut changer cette règle en le disant à l'assistant (jusqu'à
-  365 jours). Quelqu'un qui devient invité plus tard reçoit un séjour de la même
-  façon. Un invité peut rester plus ou moins longtemps que prévu : « Sam reste
-  finalement jusqu'à dimanche », « Sam part demain ». Le nouveau séjour compte à
-  partir de maintenant, avec la même règle du foyer, et la carte dit la nouvelle
-  date de fin.
+  c'est à cette personne de l'envoyer. Toi, et toi seul, peux demander à voir un
+  lien qui attend quelqu'un d'autre (« montre-moi le lien de Dana ») : il t'est
+  montré une fois, et cette personne est prévenue.
+- **Les invités.** Toute durée de séjour est acceptée, à partir d'un jour, et
+  un séjour peut ne pas avoir de fin. Quand rien n'est dit, un invité qui
+  reçoit un compte reste 30 jours ; ce n'est qu'une valeur par défaut. Un séjour plus long, ou sans fin,
+  est ton ordre ou le jugement de l'assistant. Si tu écris une règle sur la
+  durée d'un séjour (« les invités, 10 jours au plus »), elle passe avant, et
+  « sans fin » compte comme plus long que n'importe quel nombre. Pour un invité
+  sans compte, c'est l'assistant qui juge qu'il est reparti, et il peut lui
+  redonner un accès à sa visite suivante. Quelqu'un qui devient invité plus tard
+  reçoit un séjour de la même façon. Un invité peut rester plus ou moins
+  longtemps que prévu : « Sam reste finalement jusqu'à dimanche », « Sam part
+  demain ». Le nouveau séjour compte à partir de maintenant, avec les mêmes
+  règles, et la carte dit la nouvelle date de fin.
 - **Changer un rôle, retirer quelqu'un.** Demande-le à l'assistant. Retirer quelqu'un
   ferme son compte tout de suite et le déconnecte partout ; ce qu'il a écrit est
   gardé. Une invitation encore en attente peut être annulée : son lien ne marche
-  plus. Les droits que le propriétaire avait donnés à cette personne seule sont
-  mis en pause dès son départ ; il peut encore les lui retirer pendant qu'elle est
-  partie (« Paul est parti, retire-lui le droit d'inviter »).
-- **Quitter le foyer.** Chacun peut demander à l'assistant de partir : « retire-moi du
-  foyer ». Un invité peut ainsi partir plus tôt. Un adulte ou un invité dit oui
+  plus. Les droits que tu avais donnés à cette personne seule sont mis en pause
+  dès son départ ; tu peux encore les lui retirer pendant qu'elle est partie
+  (« Paul est parti, retire-lui le droit d'inviter »). Quand c'est toi qui
+  retires quelqu'un, c'est l'une de tes consignes (voir plus bas) : l'assistant
+  ne lui redonne jamais rien de lui-même. Quelqu'un parti de lui-même, ou retiré
+  par l'assistant, n'est sous aucune consigne : il peut le faire revenir.
+- **Quitter la maison.** Chacun peut demander à l'assistant de partir : « retire-moi de la
+  maison ». Un invité peut ainsi partir plus tôt. Un adulte ou un invité dit oui
   lui-même ; pour un enfant, c'est un adulte qui dit oui. Le propriétaire ne
   part jamais ainsi : il donne d'abord son rôle à quelqu'un. Retirer quelqu'un
-  d'autre reste au propriétaire, ou à qui il en a donné le droit. Rien n'est
-  effacé, et la personne peut revenir.
+  d'autre reste à toi et à l'assistant, ou à qui tu en as donné le droit. Rien
+  n'est effacé, et la personne peut revenir (pour être oublié, voir « Oublie-moi »
+  plus bas).
 - **Faire revenir quelqu'un.** Une personne retirée, ou un invité dont le séjour
   est fini, peut revenir : demande à l'assistant « fais revenir Alex ». L'assistant juge
   s'il faut demander un oui, puis la carte montre un lien, une seule fois, comme pour
@@ -349,11 +401,53 @@ maintenant ». Il n'y a pas de formulaire à remplir.
   lesquels rendre. Si deux personnes parties avaient le même nom, l'assistant demande
   laquelle. Si la personne a perdu son lien, « refais le lien pour Alex » en fait
   un nouveau, avec un seul oui : l'ancien ne marche plus, et la carte le dit.
+  Quelqu'un que tu as retiré ne revient que sur ta propre parole, qui lève ta
+  consigne.
+- **Tes consignes.** Trois ordres de toi sur les personnes de la maison passent
+  avant tout ce que juge l'assistant ; toi seul les donnes et les lèves. « Ne
+  crée plus de nouvelles personnes » : il n'ouvre aucune fiche et ne donne aucun
+  accès à quelqu'un de nouveau ; les fiches déjà là ne bougent pas. Si tu
+  ajoutes « ne les retiens plus non plus », il ne garde plus rien qui soit
+  rattaché à leurs fiches. « Retire
+  les accès de Sam » : tous ses accès tombent tout de suite, ses connexions et
+  ses appareils sont coupés, la fiche reste, et l'assistant ne lui redonne
+  jamais rien. « Refuse Tom » : pareil, avant même que Tom ait eu quoi que ce
+  soit ; ça marche aussi pour quelqu'un qu'il ne connaît pas encore, d'après une
+  description. Une consigne peut avoir une fin (« pendant la fête de samedi »)
+  ou une exception en mots (« sauf la famille »), que l'assistant juge.
+  Tu peux aussi lui dire « accepte », « donne l'accès à », « crée un compte
+  pour », « envoie-lui le lien » : il le fait avec ce qu'il a.
+- **Tes deux règles.** « Préviens-moi chaque fois que tu donnes un accès à
+  quelqu'un de nouveau » : un message t'arrive alors toujours. Sans elle,
+  l'assistant juge s'il te prévient, et peut te proposer la règle la première
+  fois qu'il donne un accès de lui-même. « Les invités viennent avec leur propre
+  clé » : voir [Les modèles et le budget](#les-modèles-et-le-budget).
+- **Quand il se trompe.** L'assistant réunit deux fiches d'une même personne dès
+  qu'il le comprend (« Mamie et ma mère, c'est la même »), et peut les séparer
+  de nouveau pendant **90 jours** : c'est le temps qu'il garde ce qui venait de
+  chacune. Il efface une fiche ouverte par erreur. Quand quelqu'un n'est pas
+  celui qu'il croyait, il reprend tout de suite l'accès donné par erreur et te
+  dit ce qui était ouvert, depuis quand, et ce que la personne a fait pendant ce
+  temps. Une phrase suffit pour le corriger (« ce n'est pas mon frère, c'est le
+  voisin »), et il en garde la leçon.
+- **« Oublie-moi ».** Chacun peut demander à l'assistant de l'oublier, même
+  quelqu'un qui vit ici et a des accès, sans ton oui. Comme c'est sans retour, il
+  dit une fois ce que ça veut dire, puis le fait : ses accès tombent, et sa
+  fiche, ses liens, ses surnoms et sa confiance, les souvenirs à son propos, ses
+  discussions et son compte sont effacés. Tu es prévenu après. Toi, tu n'es
+  jamais oublié. Si tu avais refusé quelqu'un ou retiré ses accès, cette
+  consigne reste, avec une courte description pour le reconnaître.
+- **Pas encore : la voix.** Tant que l'assistant ne peut pas entendre les gens,
+  quelqu'un sans compte n'a aucun endroit où lui parler : il passe par quelqu'un
+  de la maison (« mets de la musique pour Tom »). C'est alors la demande de cette
+  personne, faite avec ses droits à elle ; la fiche de Tom ne donne à
+  l'assistant que le contexte. Les accès de la fiche de Tom serviront le jour où
+  l'assistant pourra l'entendre.
 - **Plusieurs actions dans une phrase.** Quand une phrase demande des actions
   qui dépendent les unes des autres (« donne mon rôle à Alex, puis
   retire-moi »), l'assistant fait **une seule demande** : une carte qui liste les
   étapes dans l'ordre, et un seul oui pour toutes (de 1 à 20 étapes ; au-delà,
-  L'assistant fait plusieurs suites). Les actions qui ne dépendent pas les unes des
+  l'assistant fait plusieurs suites). Les actions qui ne dépendent pas les unes des
   autres ne sont pas enchaînées : il les fait une par une, comme d'habitude.
   Après le oui, les étapes se font dans l'ordre, et chacune est vérifiée de
   nouveau quand son tour vient, avec les mêmes règles qu'une action seule. Pour
@@ -377,38 +471,39 @@ maintenant ». Il n'y a pas de formulaire à remplir.
     nouvelle carte. Si on ne sait pas si elle a déjà agi, elle ne repart qu'avec
     un nouveau oui, et la carte le dit. Ce qui est fait reste fait.
   - **Attendre l'arrivée de quelqu'un.** Une étape peut attendre qu'une personne
-    invitée ait rejoint le foyer : « invite mon frère Paul comme adulte et
+    invitée ait rejoint la maison : « invite mon frère Paul comme adulte et
     donne-lui mon rôle quand il sera là ». Après le oui, la suite fait ses étapes
     jusqu'à l'attente, puis se met en pause, et sa carte le dit. Quand Paul a
-    rejoint le foyer, la suite reprend toute seule, dans la minute, même si l'assistant
+    rejoint la maison, la suite reprend toute seule, dans la minute, même si l'assistant
     a redémarré entre-temps, et l'assistant te le dit. Si une règle du propriétaire
     sur une étape qui reste demande plus que le oui déjà donné, il te redemande
     d'abord, et la carte dit qui est arrivé. Si le
     lien n'est pas utilisé à temps, ou si l'invitation est annulée, la suite
-    s'arrête et l'assistant te le dit. Tu peux aussi l'abandonner.
+    s'arrête et l'assistant te le dit. S'il invite ensuite la même personne avec
+    le même rôle, la suite reprend sous le même oui. Tu peux aussi l'abandonner.
   - **Plusieurs liens.** Chaque lien que fait une suite (une invitation, un
     retour) a son propre bouton « Montrer le lien » sur la carte, pour la personne
     qui a demandé seulement, même quand la suite attend de nouveau.
 - **Transmettre le rôle de propriétaire.** Le propriétaire peut donner son rôle à
-  un adulte du foyer : « donne mon accès à Justine ». C'est au propriétaire seul,
+  un adulte de la maison : « donne mon accès à Dana ». C'est au propriétaire seul,
   aucun droit ne peut le donner. Comme pour toute demande, une fois que l'assistant
   l'a comprise, il la fait : il ne redemande pas si tu es sûr, sauf s'il doute de
   ce que tu as voulu dire ou que ce soit bien toi, ou si tu lui as dit de toujours
-  te demander d'abord. La personne doit être un adulte présent dans le
-  foyer (pas un enfant, un invité, quelqu'un de parti, ni le propriétaire
+  te demander d'abord. La personne doit être un adulte présent dans la
+  maison (pas un enfant, un invité, quelqu'un de parti, ni le propriétaire
   lui-même). Elle n'a pas à être d'accord. L'ancien propriétaire devient adulte
   et garde son compte et sa
   discussion ; une seule phrase peut transmettre le rôle et le retirer (« donne
-  mon accès à Justine et retire-moi »). Il y a toujours un seul propriétaire, et
+  mon accès à Dana et retire-moi »). Il y a toujours un seul propriétaire, et
   son rôle n'a pas de date de fin. Il ne revient que si le nouveau propriétaire le
-  rend. Les règles, les droits, la clé du modèle et le fuseau horaire restent au
-  foyer. Pour le nouveau propriétaire, les droits qu'on lui avait donnés à lui
+  rend. Les règles, les droits, la clé du modèle et le fuseau horaire restent à la
+  maison. Pour le nouveau propriétaire, les droits qu'on lui avait donnés à lui
   seul sont mis en pause, comme pour quelqu'un qui revient (l'assistant dit lesquels, et
   il peut les reprendre), et ses demandes qui attendaient le propriétaire
   attendent maintenant son propre oui. L'assistant dit au nouveau propriétaire qu'il
   l'est devenu.
 - **La liste des successeurs.** Le propriétaire, et lui seul, tient une liste
-  ordonnée (10 au plus) de ceux qui prendraient son rôle : des personnes du foyer,
+  ordonnée (10 au plus) de ceux qui prendraient son rôle : des personnes de la maison,
   ou des personnes de l'extérieur, avec ce que le propriétaire dit d'elles
   (« Paul, mon frère »). Pour chacun, l'assistant propose comment lui ouvrir la porte le
   jour venu, et recommande la meilleure façon : un accès personnel qui ne sert qu'à
@@ -419,21 +514,21 @@ maintenant ». Il n'y a pas de formulaire à remplir.
   montre la liste avant et après. Dire qu'un successeur est mort ne demande
   **aucune confirmation** :
   L'assistant le note avec tact, la personne reste dans la liste, marquée comme
-  décédée, et la suivante passe en premier. Quelqu'un qui quitte le foyer reste
+  décédée, et la suivante passe en premier. Quelqu'un qui quitte la maison reste
   dans la liste : l'assistant le dit au propriétaire, qui décide. Un décès noté par
   erreur se défait (« non pardon, Paul n'est pas mort ») : la personne reprend sa
   place. Quand le rôle est transmis, la liste passe au nouveau propriétaire
   (sans lui-même) et l'assistant lui en parle. Ce qui se passe le jour venu, après un
   décès, viendra dans une prochaine version.
 - **Les mots.** Tout le monde, sauf les invités, peut demander à l'assistant de
-  laisser un mot à quelqu'un du foyer, un invité compris, ou à soi-même
+  laisser un mot à quelqu'un de la maison, un invité compris, ou à soi-même
   (« laisse-moi un mot : appeler le plombier »). Le mot part tout de suite, sans
   oui : ce n'est qu'un message. Il n'y a pas de fenêtre des mots : l'assistant de
   celui qui le reçoit le lui raconte avec ses mots, au moment qu'il juge bon
   (souvent quand il ouvre sa page), et lui montre les mots exacts s'il les
   demande. Un mot n'est jamais un ordre pour l'assistant : il le raconte, et si la
   personne à qui il parle lui demande de le faire, c'est sa demande à elle. Un mot
-  laissé par quelqu'un du foyer, il peut aussi le faire de sa propre initiative,
+  laissé par quelqu'un de la maison, il peut aussi le faire de sa propre initiative,
   en sachant qui l'a écrit, jugé comme toute idée à lui ; ce qu'un mot cite de
   l'extérieur (un site, un mail, un inconnu) n'est qu'une information. Un mot pour quelqu'un qui n'a aucune clé que l'assistant peut utiliser
   pour lui attend qu'il en ait une. L'assistant ne peut pas savoir quand la personne
@@ -460,14 +555,17 @@ maintenant ». Il n'y a pas de formulaire à remplir.
   discussion, l'assistant voit les mots que tu as laissés, et ceux qu'on t'a
   laissés tant qu'il ne te les a pas racontés.
 - **Le fuseau horaire.** Un droit qui parle de l'heure ou du jour (« seulement le
-  week-end ») a besoin du fuseau horaire du foyer, par exemple `Europe/Paris`.
+  week-end ») a besoin du fuseau horaire de la maison, par exemple `Europe/Paris`.
   Dis-le une fois à l'assistant (« notre fuseau horaire est Europe/Paris ») ; s'il
   n'est pas réglé, l'assistant le demande avant d'écrire un tel droit, et ne le devine
   jamais. (Ce n'est pas la variable `TZ` de `.env`, qui est le fuseau horaire des
   services.)
-- **Les pages.** Le propriétaire voit qui fait partie du foyer, et les
-  invitations en attente, à l'adresse `https://<adresse>:8443/household` (pour
-  changer quelque chose, demande à l'assistant). Chacun change son nom, son mot de
+- **Les pages.** Tu vois les personnes de la maison à l'adresse
+  `https://<adresse>:8443/household` : toutes les fiches, avec ou sans compte,
+  où chacune en est, le rôle de chacun et ce qu'il ajoute ou retire, les
+  promesses qui attendent, tes consignes en cours, et les
+  invitations en attente. La page ne fait que montrer : pour changer quelque
+  chose, demande à l'assistant. Chacun change son nom, son mot de
   passe et ses clés d'accès sur « Mon compte » (`https://<adresse>:8443/account`).
 
 ## Les confirmations
@@ -547,15 +645,19 @@ actions seules.
 
 **Ce qu'il garde quand il agit seul.** Seul, l'assistant garde sa mémoire, la
 confiance qu'il note d'après ce qu'il a vu, ses plans, ses rappels, ses suites et
-sa façon d'écrire ; il invite, réinvite, annule une invitation, donne un rôle,
-retire quelqu'un du foyer ou le fait revenir ; il reprend un appareil (celui de
+sa façon d'écrire ; il ouvre, complète, réunit et efface les fiches des
+personnes, crée des rôles, donne et reprend des accès, et en promet ; il invite,
+réinvite, annule une invitation, donne un rôle,
+retire quelqu'un de la maison ou le fait revenir ; il reprend un appareil (celui de
 quelqu'un d'autre attend le oui de cette personne quand il doute), et retire un
-compte qui ne sert plus. Partager un compte de la maison reste au
-propriétaire. Ce qu'il garde ou pose seul est à lui, pas à la personne dont c'est
-la discussion. Le propriétaire reprend ce qu'il veut par une règle : un
-« jamais », ou un « demande-moi d'abord », qui attend alors son oui. Une
-invitation qu'il fait seul garde encore, pour l'instant, la personne de la
-discussion comme celle qui a invité ; le journal dit que c'est lui.
+compte qui ne sert plus. Partager un compte de la maison et tes consignes
+restent au propriétaire. Ce qu'il garde ou pose seul est à lui, pas à la
+personne dont c'est la discussion. Le propriétaire reprend ce qu'il veut par une
+règle : un « jamais », ou un « demande-moi d'abord », qui attend alors son oui.
+Une invitation qu'il fait seul est inscrite comme la sienne, avec sa raison, et
+le journal dit que c'est lui. Un programme qu'il a écrit ne crée jamais de
+personne, ne change jamais un rôle, ne donne ni ne retire jamais un accès : lui
+seul le fait.
 
 **Ce qui s'est mal passé, et ce qu'il en apprend.** Le code note ce qui s'est mal
 passé : une demande refusée (par qui, avec les mots du refus coupés court), une
@@ -586,7 +688,7 @@ rien là-dessus dans ses mots) est demandé. Un programme qu'il lance à la main
 pas d'habitude : son coût est demandé, sauf si ses mots le couvrent. Pour la
 maison, l'assistant répond lui-même, comme avant.
 
-**La dernière clé.** Retirer la dernière clé du foyer qui marche, ou la clé
+**La dernière clé.** Retirer la dernière clé de la maison qui marche, ou la clé
 générale quand celui qui l'a donnée n'a pas d'autre clé pour la remplacer, n'est
 plus refusé : l'assistant prévient qu'il ne pourrait plus répondre à ceux qui en
 dépendent, et propose d'en donner une autre d'abord ; si on le veut toujours,
@@ -616,7 +718,7 @@ avec une phrase convenue avec lui (voir
 preuve vaut au moins un oui ferme.
 
 **Ce qui ne change pas.** Un adulte doit donner son accord quand un enfant quitte
-le foyer. Une suite d'actions est jugée une seule fois, en entier, et demande le
+la maison. Une suite d'actions est jugée une seule fois, en entier, et demande le
 oui le plus strict de ses étapes. Une demande attend 7 jours par défaut.
 
 **« Ne me demande jamais pour ça ».** Le propriétaire peut aussi dire à l'assistant
@@ -727,7 +829,7 @@ le juge regarde de nouveau l'action modifiée avec ce qui a changé : elle part 
 le oui que tu as donné suffit, sinon elle devient une nouvelle demande. Si
 L'assistant n'est pas sûr d'avoir compris, il redemande. L'action modifiée repasse les
 mêmes vérifications. Cela marche aussi pour une suite (voir la
-section sur le foyer), et pour un changement des droits : « oui, mais 3 jours au
+section sur la maison), et pour un changement des droits : « oui, mais 3 jours au
 lieu de 2 ». Le rédacteur réécrit alors les droits avec ton changement, et la
 nouvelle version est jugée comme tout autre changement : appliquée tout de
 suite quand tes mots suffisent, ou montrée sur une nouvelle carte, avec ses
@@ -758,7 +860,7 @@ Une clé d'accès vous permet de vous connecter avec votre empreinte, votre visa
 ou le verrouillage d'écran de votre appareil, au lieu de votre mot de passe.
 Ajoutez-en une sur « Mon compte » (l'assistant vous demande d'abord votre mot de
 passe), puis choisissez « Se connecter avec une clé d'accès » sur la page de
-connexion. Votre mot de passe continue de marcher. Une personne retirée du foyer
+connexion. Votre mot de passe continue de marcher. Une personne retirée de la maison
 ne peut plus se connecter avec une clé d'accès non plus.
 
 **Un nom, pas une adresse IP.** Les navigateurs refusent les clés d'accès sur
@@ -796,7 +898,7 @@ page avec le port que l'assistant publie.
 connexion, l'assistant laisse une même adresse lancer au plus 20 connexions par
 clé d'accès en 5 minutes (une connexion réussie remet le compte à zéro). Docker
 Desktop, sous Windows et macOS, peut montrer tous les appareils à l'assistant avec la
-même adresse : cette limite vaut alors pour tout le foyer à la fois. Si elle est
+même adresse : cette limite vaut alors pour toute la maison à la fois. Si elle est
 atteinte, connectez-vous avec votre mot de passe, ou attendez quelques minutes.
 Un serveur Linux voit l'adresse de chaque appareil.
 
@@ -832,7 +934,7 @@ lien d'invitation ou un code y est montré une fois, comme sur la page. Une clé
 ne s'y tape jamais : le formulaire sûr t'attend sur ta page. Demande à l'assistant de
 voir tes appareils, ou d'en retirer un : il ne peut alors plus lui parler. Le
 propriétaire peut retirer l'appareil de n'importe qui. Un appareil cesse de
-marcher quand sa personne quitte le foyer ou quand le séjour d'un invité finit ;
+marcher quand sa personne quitte la maison ou quand le séjour d'un invité finit ;
 changer de mot de passe ne le retire pas. Les adultes et le propriétaire peuvent
 confier un appareil ; un enfant ou un invité seulement si le propriétaire lui en
 donne le droit. Un appareil vaut une session de sa personne : qui le tient peut
@@ -913,7 +1015,7 @@ mots (« ce n'était pas moi ») : il oublie ce qu'il a appris depuis.
   modèle de jugement ne répond pas, il demande une preuve. Tant qu'il n'est pas
   sûr, il laisse tes souvenirs privés de côté et ne dit rien de privé à voix
   haute.
-- **Quelqu'un d'autre du foyer** (Paul devant la page d'Alex) : Paul parle dans
+- **Quelqu'un d'autre de la maison** (Paul devant la page d'Alex) : Paul parle dans
   sa propre discussion (il la retrouve sur sa page). Après une preuve donnée
   là, et tant que sa voix est nettement la sienne, il agit avec ses propres droits ; sinon,
   chacune de ses actions est jugée, et les règles d'Alex comptent aussi : la plus
@@ -926,7 +1028,7 @@ mots (« ce n'était pas moi ») : il oublie ce qu'il a appris depuis.
   sinon, il dit seulement que quelque chose l'attend. Jamais l'ancienne
   discussion ni les souvenirs privés de Paul.
 - **Une voix que personne ne connaît** : pas de fiche, donc pas de droits à
-  elle. Elle a droit à un court échange, sans outil et sans rien du foyer, et il
+  elle. Elle a droit à un court échange, sans outil et sans rien de la maison, et il
   laisse un mot à la personne de la page. Après quelques réponses (6 en 10
   minutes), elle n'a plus que le silence pendant un moment. Ce que ça coûte de ne
   pas te prendre pour un inconnu sur le seul score : devant une page connectée,
@@ -939,7 +1041,7 @@ mots (« ce n'était pas moi ») : il oublie ce qu'il a appris depuis.
 
 **Ordinaire et sensible.** Ordinaire : parler avec lui ; changer ton propre
 prénom, ou le sien ; ses textes et sa façon d'écrire ; son choix de modèles ;
-retenir quelque chose dans sa mémoire ; voir qui est dans le foyer et ses
+retenir quelque chose dans sa mémoire ; voir qui est dans la maison et ses
 règles ; éteindre le micro ; un outil qu'il s'est créé qui agit seulement dans la
 maison, ne peut ni dépenser, ni sortir, ni faire ce qui ne se défait pas, et ne
 tient aucun compte qui écrit (une lumière). Sensible : ce qui coûte de l'argent,
@@ -1104,6 +1206,16 @@ code applique ses choix : quel modèle, sur quelle clé.
   hôte. Pour les prochains arrivants, tu peux dire « à partir de maintenant, les
   invités ne se servent plus de ma clé générale » : ceux qui sont déjà là gardent
   ce qu'ils ont, et tu peux les retirer un par un.
+- **Les invités viennent avec leur propre clé.** Quelqu'un à qui l'assistant a
+  donné un compte de lui-même n'a pas d'hôte : il se sert de la clé générale,
+  dans ses limites. Tu peux poser la règle « les invités viennent avec leur
+  propre clé ». Elle vaut à chaque tour, quel que soit le moment où elle a été
+  posée et la façon dont la personne est venue : quelqu'un de passage ne se sert
+  alors que d'une clé qu'il a donnée lui-même, ou d'une que tu lui laisses
+  utiliser nommément. Quelqu'un qui vit ici n'est jamais touché, et lever la
+  règle rend la clé générale. Un visiteur sans clé a quand même le petit tour où
+  l'assistant lui en demande une, payé par la clé générale, tant que tu permets
+  à la clé générale de servir à cela.
 - **Qui commence à se servir de ta clé.** Quand quelqu'un commence à se servir
   d'une clé que tu as donnée, la clé générale comprise, l'assistant le sait à ton tour
   suivant : son nom, son rôle, qui l'a invité, et ce qu'il a dépensé sur cette clé
@@ -1180,7 +1292,7 @@ quand il a une raison de le faire.
   web ni un mot laissé. Ensuite le code et un relecteur vérifient que le texte dit
   bien ce qu'il doit dire, avant de le garder. Sur une demande qui attend un oui,
   le haut de la carte est écrit pour chaque personne qui la lit (« Alex voudrait
-  inviter Robin ce week-end, tu es d'accord ? »), sur le moment, et vérifié
+  inviter Tom ce week-end, tu es d'accord ? »), sur le moment, et vérifié
   contre l'action exacte ; si ça échoue ou tarde, la carte montre sa phrase par
   défaut. Ton oui porte toujours sur l'action exacte, jamais sur les mots de la
   carte.
@@ -1368,7 +1480,7 @@ Depuis la 0.10.0, quand rien de ce qu'il a ne permet ce que tu demandes, l'assis
 peut s'écrire un petit programme, le lancer tout de suite et le garder comme
 outil pour la fois suivante, sans nouvelle version de l'application. Ses outils
 sont à lui : ni à toi, ni à quelqu'un en particulier. Ils le font grandir, et ils
-servent à tout le monde au foyer.
+servent à tout le monde à la maison.
 
 - **À la main tout de suite, un outil pour la prochaine fois.** « J'ai prêté
   20 euros à Sam, note-le » : si rien de ce qu'il a ne le fait et que tu
@@ -1399,7 +1511,7 @@ servent à tout le monde au foyer.
   personne avec qui l'assistant parle, avec ses droits du moment, ou la maison, avec
   les droits de l'assistant lui-même, quand il agit de lui-même (ou quand toi, le
   propriétaire, tu le fais lancer pour la maison à une heure). Un lancement
-  pour quelqu'un qui a quitté le foyer est refusé ; ses lancements prévus
+  pour quelqu'un qui a quitté la maison est refusé ; ses lancements prévus
   attendent son retour. Si tu fermes un de ses outils à quelqu'un (par un
   droit), il n'est pas lancé pour lui, et dans sa conversation il n'est pas non
   plus changé, retiré ni programmé.
@@ -1409,7 +1521,7 @@ servent à tout le monde au foyer.
   outils, et un coin privé pour chaque personne, créé la première fois qu'il
   sert : un lancement pour toi voit l'espace commun et ton coin, jamais les
   lignes de quelqu'un d'autre. Un lancement pour la maison ne voit que l'espace
-  commun. Ton coin reste quand tu quittes simplement le foyer, et part quand ton
+  commun. Ton coin reste quand tu quittes simplement la maison, et part quand ton
   compte est supprimé. La base tient 1 Go sauf si tu en décides autrement :
   dis à l'assistant jusqu'où elle peut grandir (à partir de 16 Mo). Une fois pleine,
   un outil ne peut plus que supprimer ou vider des tables.
@@ -1513,8 +1625,8 @@ servent à tout le monde au foyer.
   comme un échec comme un autre. Seul assistant les change, par un acte à lui
   noté au journal ; un programme ou le texte d'un outil ne le peut jamais, ni
   une construction quand tu lui as retiré le droit de fixer les réglages d'un
-  outil. Si tu ne veux pas qu'il le fasse, retire-lui ce droit. Ce qui protège le
-  foyer reste dans le code et n'est pas un réglage : les droits, l'accord
+  outil. Si tu ne veux pas qu'il le fasse, retire-lui ce droit. Ce qui protège la
+  maison reste dans le code et n'est pas un réglage : les droits, l'accord
   d'une autre personne, tes règles, les preuves, les secrets, les limites de
   dépense, le confinement du bac à sable, les essais qui ne gardent rien, et la
   taille de la base des outils, qui reste la tienne (ton réglage
@@ -1576,7 +1688,7 @@ réseau.
   une requête vers ailleurs est refusée. L'assistant les ouvre et les ferme
   lui-même, selon son jugement et ses droits à lui, et chaque ouverture est au
   journal ; une règle à toi peut lui faire te demander d'abord (ouvrir une
-  adresse vers internet est le seul chemin par lequel quelque chose du foyer
+  adresse vers internet est le seul chemin par lequel quelque chose de la maison
   peut en sortir). Quand tu en fermes une, plus rien n'y va dès la requête
   suivante, quel que soit l'outil pour lequel elle était ouverte, et à la main
   non plus. L'assistant peut la rouvrir s'il juge que les choses ont changé : il
@@ -1603,8 +1715,8 @@ réseau.
   session que le site rend (ses cookies). Il est lié pour de bon à ses
   adresses et à sa place. Il est à une personne ou à la maison : celui d'une
   personne ne sert qu'aux lancements faits pour elle, jamais pour quelqu'un
-  d'autre, pour la maison ni pour l'assistant seul ; un compte de la maison sert au
-  foyer, pas aux invités sauf si tu le leur ouvres, et à l'assistant seul sauf si
+  d'autre, pour la maison ni pour l'assistant seul ; un compte de la maison sert à la
+  maison, pas aux invités sauf si tu le leur ouvres, et à l'assistant seul sauf si
   tu le lui fermes. Celui qui l'a donné, ou toi, le retire, et l'assistant peut
   retirer de lui-même un compte qui ne sert plus : ce qui s'en servait est
   refusé tout de suite. Un compte retiré peut être redemandé quand l'assistant
@@ -1685,7 +1797,7 @@ Tout ce que l'assistant conserve est dans des volumes Docker. Sauvegardez-les **
 | Volume | Contenu |
 | --- | --- |
 | `vault-data` | **Le coffre de secrets et sa clé maîtresse** (le fichier `master.key`). Sans la clé maîtresse, tous les secrets enregistrés (vos clés de modèles) sont perdus pour toujours, et une copie du coffre sans elle est inutilisable. |
-| `db-data` et `db-auth` | La base de données (les comptes du foyer, leurs clés d'accès et les invitations, les conversations, les mots, les demandes qui attendent un oui, les règles et les droits du propriétaire, les outils que l'assistant s'est faits, et le journal d'audit), la base des outils (ce que ses outils gardent, `domo_tools`, sur le même serveur) et son mot de passe : ils vont ensemble. |
+| `db-data` et `db-auth` | La base de données (les comptes de la maison, leurs clés d'accès et les invitations, les conversations, les mots, les demandes qui attendent un oui, les règles et les droits du propriétaire, les outils que l'assistant s'est faits, et le journal d'audit), la base des outils (ce que ses outils gardent, `domo_tools`, sur le même serveur) et son mot de passe : ils vont ensemble. |
 | `core-auth` | Le jeton que le cœur utilise pour parler au coffre. |
 | `caddy-data` | L'autorité de certification locale, **avec sa clé privée** : si elle est perdue, chaque appareil doit faire confiance à une nouvelle autorité. |
 | `caddy-config` | Les réglages propres au serveur web. |
@@ -1873,7 +1985,7 @@ docker image rm alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda91
 | --- | --- |
 | `packages/domo-common` | Modèles et fonctions partagés par les autres paquets |
 | `packages/domo-gatekeeper` | Coffre de secrets chiffré et relais vers les fournisseurs |
-| `packages/domo-core` | Interface web, discussion et actions de l'assistant (le foyer, les mots, les demandes et leurs confirmations, les règles et les droits du propriétaire, les outils qu'il se crée et leurs contrôles), comptes et clés d'accès, journal d'audit |
+| `packages/domo-core` | Interface web, discussion et actions de l'assistant (la maison, les mots, les demandes et leurs confirmations, les règles et les droits du propriétaire, les outils qu'il se crée et leurs contrôles), comptes et clés d'accès, journal d'audit |
 | `packages/domo-sandbox` | Le lanceur du bac à sable : fait tourner un outil de l'assistant dans un processus à part, avec ses limites, et son analyseur |
 | `packages/domo-speech` | Le service de parole à la maison : le son en texte, le texte en son, le son en empreinte de voix ; il ne garde rien, et mesure ses modèles sur sa machine |
 | `deploy/` | Configuration du serveur web placé devant l'assistant |

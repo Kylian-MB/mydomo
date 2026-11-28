@@ -19,7 +19,9 @@ from conversation_support import request_of
 from domo_core.accounts.models import Person
 from domo_core.channels.page.abilities import PAGE
 from domo_core.channels.voice import attention as attention_module
+from domo_core.channels.voice import proof as proof_module
 from domo_core.channels.voice import session as session_module
+from domo_core.channels.voice import stranger as stranger_module
 from domo_core.channels.voice.attention import (
     Exchanged,
     Judged,
@@ -47,6 +49,7 @@ from domo_core.llm.types import (
 from domo_core.policy.settings import HEAR_OUTSIDE_KEY, VOICE_GESTURE_KEY, update_policy_setting
 from domo_core.proofs.kinds import PROOF_KINDS, SpokenPhraseProof, phrase_ref
 from domo_core.proofs.service import agree
+from domo_core.tools.context import ToolContext
 from fakes import FakeChatModel, is_judge_call
 from sqlalchemy import select
 from voice_session_support import (
@@ -825,3 +828,33 @@ def test_the_instructions_say_what_his_name_is():
     # The name he is given is explained, not left to be guessed (final fix wave B2).
     assert "- his_name:" in told
     assert "his_name" in told.split("Was it for him?")[1]
+
+
+async def test_a_child_marked_record_is_a_child_in_the_voice_proof_and_the_word_left(
+    house, add_member, session_factory, monkeypatch
+):
+    # Paul holds the adult role, but his record carries the child mark: a voice path that built
+    # his actor from his role would have treated him as an adult.
+    paul = await add_member("Paul", "adult")
+    async with session_factory() as writer:
+        row = await writer.get(Person, paul.id)
+        assert row is not None
+        row.is_child = True
+        await writer.commit()
+        paul = row
+    h = await house()
+    context = await proof_module._moment_of_the_decision(  # noqa: SLF001
+        h.deps, paul, uuid.uuid4(), "voice"
+    )
+    assert context.actor.child is True
+
+    built: list[Any] = []
+    real = ToolContext
+
+    def recording(*args: Any, **kwargs: Any) -> Any:
+        built.append(kwargs["actor"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(stranger_module, "ToolContext", recording)
+    await stranger_module._leave_word(h.deps, paul.id, "A word.")  # noqa: SLF001
+    assert [actor.child for actor in built] == [True]

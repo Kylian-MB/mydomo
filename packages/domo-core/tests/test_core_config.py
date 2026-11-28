@@ -2,7 +2,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from domo_core.config import ConfigurationError, CoreSettings
+from domo_core.config import ConfigurationError, CoreSettings, site_origin
 from pydantic import ValidationError
 from sqlalchemy.engine import make_url
 
@@ -263,3 +263,22 @@ def test_an_empty_entry_is_refused(monkeypatch, value):
 def test_trusted_proxies_given_directly_are_checked_too():
     with pytest.raises(ValidationError, match="every address"):
         CoreSettings(trusted_proxies="*")
+
+
+@pytest.mark.parametrize(
+    ("addresses", "port", "origin"),
+    [
+        # The default names this machine alone: nobody else reaches a link to it.
+        ("localhost", 8443, None),
+        ("localhost, 127.0.0.1, ::1", 8443, None),
+        ("localhost, 192.168.1.10", 8443, "https://192.168.1.10:8443"),
+        ("home.example", 443, "https://home.example"),
+        ("https://home.example:9000/page", 8443, "https://home.example:8443"),
+        ("fe80::1", 8443, "https://[fe80::1]:8443"),
+        ("[fe80::1]:8443", 443, "https://[fe80::1]"),
+    ],
+)
+def test_the_house_address_outside_a_request(addresses, port, origin):
+    assert site_origin(addresses, port) == origin
+    settings = CoreSettings(site_addresses=addresses, https_port=port)
+    assert settings.site_origin == origin

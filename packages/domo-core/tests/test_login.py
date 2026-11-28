@@ -159,6 +159,7 @@ async def test_someone_who_left_the_household_cannot_log_in(
     person = await add_person("Alex", "adult" if left == "removed" else "guest")
     if left == "removed":
         person.disabled_at = before
+        person.state = "gone"
     else:
         person.expires_at = before
     await session.flush()

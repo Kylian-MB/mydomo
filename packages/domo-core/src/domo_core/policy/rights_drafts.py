@@ -75,7 +75,13 @@ NOT_READABLE: Final = "the writer answered in a form that cannot be read"
 SUMMARY_RULE: Final = f"the summary is one line of 1 to {MAX_SUMMARY_LENGTH} characters"
 EXAMPLE_TYPE_RULE: Final = "action_type is a type of the catalog that a right can be about"
 PERSON_RULE: Final = "person_id is the id of a person of the household (people)"
-ROLE_RULE: Final = f"role is one of {', '.join(ROLES)}"
+# The roles a rule is written on are the built-in ones: a role the assistant made is not one (a
+# rule for its people is written for each of them).
+ROLE_RULE: Final = (
+    f"role is one of {', '.join(ROLES)}: a role the assistant made is not a role a rule is "
+    "written on (that role itself is changed instead, for whoever has it, now and later: ask "
+    "about it)"
+)
 DOMO_RULE: Final = "domo is true or false"
 WHO_RULE: Final = f'who is "{DOMO_LABEL}" or null'
 

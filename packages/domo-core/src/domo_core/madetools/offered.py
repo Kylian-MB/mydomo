@@ -58,6 +58,7 @@ from domo_common.sandbox_api import JsonObject
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.db import SessionFactory
 from domo_core.llm.types import ToolDefinition
@@ -93,7 +94,7 @@ from domo_core.policy.actions import DescribedAction, FactValue
 from domo_core.policy.asks import Asked, AskedBy
 from domo_core.policy.catalog import Risks
 from domo_core.policy.facts import STOPPED_FOR_A_YES
-from domo_core.policy.rights import Approver
+from domo_core.policy.rights import Approver, load_rights
 from domo_core.policy.roles import Actor
 from domo_core.policy.settings import load_policy_settings
 from domo_core.prompts import BeingBuilt, ToolAside
@@ -452,8 +453,12 @@ async def _given_for_the_house(
     """Who really gives the yes of ``stop``, a stop of the house's, as an approver: Domo
     himself in a turn of his own, for the one he answers (``domo_answers``: ``self``); after a
     yes a person gave to the request that carried it (``ctx.approved_by``: it waited in the
-    owner's conversation), that person, as their role makes them an approver (the owner, an
-    adult). ``None``: nobody who may give it (nothing is taken)."""
+    owner's conversation), that person, as an approver: the owner, or someone who may agree for
+    a child (``who_agrees.agrees_for_children``, under the rights in force). ``None``: nobody who
+    may give it (nothing is taken)."""
+    # Here: the confirmations import the tools' context, as this module does.
+    from domo_core.confirmations.who_agrees import agrees_for_children
+
     decider_id = ctx.approved_by
     if decider_id is None:
         return "self" if ctx.on_his_own and domo_answers(stop) else None
@@ -462,7 +467,8 @@ async def _given_for_the_house(
         return None
     if decider.role == "owner":
         return "owner"
-    if decider.role == "adult":
+    rights = await load_rights(session)
+    if agrees_for_children(actor_of(decider), rights=rights, policy=ctx.policy):
         return "adult"
     return None
 
@@ -478,7 +484,9 @@ async def _given_by(session: AsyncSession, ctx: ToolContext, asked: Approver) ->
     if decider_id is None or decider_id == ctx.person.id or asked == "self":
         return "self"
     decider = await session.get(Person, decider_id)
-    if decider is None or not approves(asked, decider, ctx.person.id):
+    if decider is None or not approves(
+        asked, decider, ctx.person.id, rights=await load_rights(session), policy=ctx.policy
+    ):
         return "self"
     return asked
 

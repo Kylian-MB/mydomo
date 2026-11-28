@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 import pytest
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.audit.log import FORBIDDEN_DETAIL_KEYS
 from domo_core.devices.service import begin_pairing, finish_pairing
@@ -20,9 +21,16 @@ from domo_core.household.service import GUEST_DAYS_DEFAULT, create_invitation, d
 from domo_core.household.succession import SuccessorEntry, note_death, replace_successors
 from domo_core.notes.models import Note
 from domo_core.outward.models import ServiceAccount, account_ref
+from domo_core.people.models import AccessPromise
 from domo_core.policy.actions import EMPTY_FACTS, DescribedAction
-from domo_core.policy.catalog import ACTION_FACTS, DEFAULT_POLICY, KNOWN_ACTIONS
-from domo_core.policy.roles import ROLES, Actor
+from domo_core.policy.catalog import (
+    ACTION_FACTS,
+    DEFAULT_POLICY,
+    GIVES_ACCESS,
+    KNOWN_ACTIONS,
+    MAKES_SOMEONE_NEW,
+)
+from domo_core.policy.roles import ROLES
 from domo_core.tools.context import ToolContext
 from domo_core.tools.registry import TOOLS
 from sqlalchemy import update
@@ -161,19 +169,88 @@ _FIVE_FIELDS: dict[str, Any] = {
     [
         (
             "household.invite",
-            {"role": "role", "days": "number", "display_name": "text", "owner_first": "boolean"},
+            {
+                "role": "role",
+                "days": "number",
+                "no_end": "boolean",
+                "display_name": "text",
+                "owner_first": "boolean",
+                "exception_of": "text",
+                "serves_the_speaker": "boolean",
+            },
         ),
         (
             "household.change_role",
-            {"person": "person", "current_role": "role", "role": "role", "days": "number"},
+            {
+                "person": "person",
+                "current_role": "role",
+                "role": "role",
+                "days": "number",
+                "no_end": "boolean",
+                "returns": "boolean",
+                "comes_to_live": "boolean",
+                "off_the_guests_key_rule": "boolean",
+                "may_then_agree_for_a_child": "boolean",
+                "has_account": "boolean",
+                "state": "text",
+                "made_role": "text",
+                "exception_of": "text",
+                "serves_the_speaker": "boolean",
+            },
         ),
-        ("household.remove", {"person": "person", "current_role": "role", "is_self": "boolean"}),
-        ("household.bring_back", {"person": "person", "role": "role", "days": "number"}),
+        (
+            "household.remove",
+            {
+                "person": "person",
+                "current_role": "role",
+                "is_self": "boolean",
+                "given_by_domo": "boolean",
+                "has_account": "boolean",
+                "state": "text",
+                "made_role": "text",
+            },
+        ),
+        (
+            "household.bring_back",
+            {
+                "person": "person",
+                "role": "role",
+                "days": "number",
+                "no_end": "boolean",
+                "returns": "boolean",
+                "has_account": "boolean",
+                "state": "text",
+                "made_role": "text",
+                "exception_of": "text",
+                "serves_the_speaker": "boolean",
+            },
+        ),
+        # Every type that gives an access says whether it goes to the person who speaks.
+        ("household.send_link", {"exception_of": "text", "serves_the_speaker": "boolean"}),
+        (
+            "access.promise_keep",
+            {
+                "role": "role",
+                "days": "number",
+                "exception_of": "text",
+                "serves_the_speaker": "boolean",
+            },
+        ),
+        ("people.open", {"exception_of": "text"}),
+        ("people.link", {"from": "person", "to": "person"}),
+        ("people.unlink", {"from": "person", "to": "person"}),
+        # The two records a merge makes one, and splits again.
+        ("people.merge", {"kept": "person", "absorbed": "person"}),
+        ("people.split", {"kept": "person", "absorbed": "person"}),
         (
             "household.transfer_ownership",
             {"from": "person", "to": "person", "requester_role": "role", "to_role": "role"},
         ),
-        ("household.cancel_invitation", {"role": "role"}),
+        ("household.cancel_invitation", {"role": "role", "given_by_domo": "boolean"}),
+        # Whether forgetting takes away the access of someone who lives here: the judge weighs
+        # it, and an owner's limit may read it.
+        ("people.forget", {"loses_access": "boolean"}),
+        ("people.forget_me", {"loses_access": "boolean"}),
         ("note.leave", {"recipient": "person", "recipient_role": "role", "length": "number"}),
         ("note.withdraw", {"recipient": "person", "seen": "boolean"}),
         ("note.keep", {"recipient": "person", "days": "number"}),
@@ -233,6 +310,12 @@ def test_a_fact_never_holds_a_free_text_of_any_length():
     }
     assert texts == {
         ("household.invite", "display_name"),
+        # The id of the owner's directive whose words let a call of the assistant's through
+        # (``people.directives``): on every type that gives an access or makes someone new.
+        *(
+            (action_type, "exception_of")
+            for action_type in sorted(GIVES_ACCESS | MAKES_SOMEONE_NEW)
+        ),
         # A new link for an invitation that waits reads the facts of inviting (F1, 2026-11-16).
         ("household.invite_again", "display_name"),
         ("successors.note_death", "name"),
@@ -268,10 +351,19 @@ def test_a_fact_never_holds_a_free_text_of_any_length():
         ("net.look", "tool"),
         ("account.ask", "name"),
         ("account.ask", "place"),
+        # The instant the owner removed it, as an ISO date and time: what a yes is held against.
+        ("account.ask", "removed_at"),
         ("account.remove", "name"),
         ("account.share", "name"),
         # What a program sends out: the zone of its address as written (house or internet).
         ("program.out", "zone"),
+        # A role, a removal and a return act on a record: where it stands (one closed word) and
+        # the name of the role made for the household the action is about.
+        *(
+            (action_type, fact)
+            for action_type in ("household.change_role", "household.remove", "household.bring_back")
+            for fact in ("state", "made_role")
+        ),
     }
 
 
@@ -283,15 +375,16 @@ class Scene:
     owner: Person
     alex: Person  # an adult
     sam: Person  # a child
-    robin: Person  # a guest
-    kim: Person  # an adult who left
+    tom: Person  # a guest
+    dana: Person  # an adult who left
     waiting: Invitation  # for "Jo", a child
     seen_note: Note  # from the owner to Alex, shown on Alex's page
-    guest_note: Note  # from the owner to Robin
+    guest_note: Note  # from the owner to Tom
     session_factory: Any
     clock: Any
     alexs_key: str = ""  # the id of a key Alex gave
     alexs_anthropic_key: str = ""  # the id of an Anthropic key Alex gave (it has an admin key)
+    promise_id: str = ""  # the id of a promise of access that waits (for an adult)
 
     @property
     def in_ten_days(self) -> str:
@@ -307,12 +400,12 @@ async def begin_and_finish_pairing(writer, person_id, now, name):
 @pytest.fixture
 async def scene(add_member, session_factory, live_clock) -> Scene:
     owner = await add_member("Owner", "owner")
-    alex = await add_member("Alex", "adult")
+    alex = await add_member("Alex", "adult", username="alex")
     sam = await add_member("Sam", "child")
-    robin = await add_member("Robin", "guest")
-    kim = await add_member("Kim", "adult")
+    tom = await add_member("Tom", "guest")
+    dana = await add_member("Dana", "adult")
     async with session_factory() as writer:
-        await disable(writer, await writer.get_one(Person, kim.id), live_clock(), by=kim.id)
+        await disable(writer, await writer.get_one(Person, dana.id), live_clock(), by=dana.id)
         waiting, _ = await create_invitation(
             writer,
             display_name="Jo",
@@ -330,7 +423,7 @@ async def scene(add_member, session_factory, live_clock) -> Scene:
         writer.add(note)
         for_the_guest = Note(
             author_id=owner.id,
-            recipient_id=robin.id,
+            recipient_id=tom.id,
             text="La clé est sous le tapis",
             created_at=live_clock(),
         )
@@ -344,6 +437,16 @@ async def scene(add_member, session_factory, live_clock) -> Scene:
         paul = SuccessorEntry(person_id=None, name="Paul", relation=None, access_way=None)
         await replace_successors(writer, [paul], live_clock())
         await note_death(writer, "Paul", live_clock())
+        # A promise of access that waits, for someone the assistant does not know yet.
+        promise = AccessPromise(
+            description="Alex's cousin",
+            role="adult",
+            standing="lives_here",
+            asked_by=f"person:{owner.id}",
+            is_order=True,
+            reason="asked by a person",
+        )
+        writer.add(promise)
         # An account of Alex's own, and one of the house's (going out, step 2).
         for name, whose in (("music", alex.id), ("lights", None)):
             writer.add(
@@ -365,8 +468,8 @@ async def scene(add_member, session_factory, live_clock) -> Scene:
         owner,
         alex,
         sam,
-        robin,
-        kim,
+        tom,
+        dana,
         waiting,
         note,
         for_the_guest,
@@ -374,13 +477,14 @@ async def scene(add_member, session_factory, live_clock) -> Scene:
         live_clock,
         alexs_key=alexs_key.id,
         alexs_anthropic_key=alexs_anthropic_key.id,
+        promise_id=str(promise.id),
     )
 
 
 def _context(person: Person, scene: Scene) -> ToolContext:
     return ToolContext(
         session_factory=scene.session_factory,
-        actor=Actor(person.id, person.role),  # type: ignore[arg-type]
+        actor=actor_of(person),  # type: ignore[arg-type]
         person=person,
         conversation_id=uuid.uuid4(),
         origin="https://domo.example.com/",
@@ -395,7 +499,7 @@ def _context(person: Person, scene: Scene) -> ToolContext:
 async def _described(tool: str, arguments: dict[str, Any], who: Person, scene: Scene):
     return await TOOLS[tool].describe(
         arguments,
-        Actor(who.id, who.role),
+        actor_of(who),
         _context(who, scene),  # type: ignore[arg-type]
     )
 
@@ -409,8 +513,11 @@ _CALLS: dict[str, Any] = {
         lambda s: {
             "role": "guest",
             "days": GUEST_DAYS_DEFAULT,
+            "no_end": False,
             "display_name": "Léa",
             "owner_first": False,
+            "exception_of": None,
+            "serves_the_speaker": False,
         },
     ),
     "household.change_role": (
@@ -421,18 +528,58 @@ _CALLS: dict[str, Any] = {
             "current_role": "adult",
             "role": "guest",
             "days": 5,
+            "no_end": False,
+            "returns": False,
+            "made_role": None,
+            "has_account": True,
+            "state": "has_access",
+            "exception_of": None,
+            "serves_the_speaker": False,
+            "comes_to_live": False,
+            "off_the_guests_key_rule": False,
+            "may_then_agree_for_a_child": False,
+        },
+    ),
+    "access.promise_keep": (
+        "promise_keep",
+        lambda s: {"promise": s.promise_id, "person": "Dana"},
+        lambda s: {
+            "role": "adult",
+            "days": None,
+            "exception_of": None,
+            "serves_the_speaker": False,
         },
     ),
     "household.remove": (
         "household_remove",
         {"person": "Sam"},
-        lambda s: {"person": f"person:{s.sam.id}", "current_role": "child", "is_self": False},
+        lambda s: {
+            "person": f"person:{s.sam.id}",
+            "current_role": "child",
+            "is_self": False,
+            # Sam was not given his access by the assistant.
+            "given_by_domo": False,
+            "made_role": None,
+            "has_account": False,
+            "state": "has_access",
+        },
     ),
     "household.leave": ("household_leave", {}, lambda s: {"current_role": "child"}),
     "household.bring_back": (
         "household_bring_back",
-        {"person": "Kim", "role": "child"},
-        lambda s: {"person": f"person:{s.kim.id}", "role": "child", "days": None},
+        {"person": "Dana", "role": "child"},
+        lambda s: {
+            "person": f"person:{s.dana.id}",
+            "role": "child",
+            "days": None,
+            "no_end": False,
+            "returns": False,
+            "made_role": None,
+            "has_account": False,
+            "state": "gone",
+            "exception_of": None,
+            "serves_the_speaker": False,
+        },
     ),
     "household.transfer_ownership": (
         "household_transfer_ownership",
@@ -447,12 +594,28 @@ _CALLS: dict[str, Any] = {
     "household.cancel_invitation": (
         "household_cancel_invitation",
         {"display_name": "Jo"},
-        lambda s: {"role": "child"},
+        lambda s: {"role": "child", "given_by_domo": False},
     ),
     "household.invite_again": (
         "invitation_link_again",
         {"display_name": "Jo"},
-        lambda s: {"role": "child", "days": None, "display_name": "Jo", "owner_first": False},
+        lambda s: {
+            "role": "child",
+            "days": None,
+            "no_end": False,
+            "display_name": "Jo",
+            "owner_first": False,
+            "exception_of": None,
+            "serves_the_speaker": False,
+            "given_by_domo": False,
+        },
+    ),
+    "people.forget": ("record_forget", {"person": "Alex"}, lambda s: {"loses_access": True}),
+    "people.forget_me": ("forget_me", {}, lambda s: {"loses_access": False}),
+    "people.open": (
+        "record_open",
+        {"name": "Tom", "standing": "visiting", "ground": "comes"},
+        lambda s: {"exception_of": None},
     ),
     "note.leave": (
         "note_leave",
@@ -471,7 +634,22 @@ _CALLS: dict[str, Any] = {
     "note.keep": (
         "note_keep",
         lambda s: {"note": str(s.guest_note.id), "until": s.in_ten_days},
-        lambda s: {"recipient": f"person:{s.robin.id}", "days": 10},
+        lambda s: {"recipient": f"person:{s.tom.id}", "days": 10},
+    ),
+    "people.link": (
+        "link_note",
+        {"person": "Alex", "relation": "friend of", "to": "Sam"},
+        lambda s: {"from": f"person:{s.alex.id}", "to": f"person:{s.sam.id}"},
+    ),
+    "people.unlink": (
+        "link_drop",
+        {"person": "Alex", "relation": "friend of", "to": "Sam"},
+        lambda s: {"from": f"person:{s.alex.id}", "to": f"person:{s.sam.id}"},
+    ),
+    "people.merge": (
+        "records_merge",
+        {"keep": "Sam", "absorb": "Dana"},
+        lambda s: {"kept": f"person:{s.sam.id}", "absorbed": f"person:{s.dana.id}"},
     ),
     "device.remove": (
         "device_remove",
@@ -584,6 +762,7 @@ _CALLS: dict[str, Any] = {
             # Never removed by the owner: no day (Task 27).
             "removed_by_owner": False,
             "removed_on": None,
+            "removed_at": "",
         },
     ),
     "account.remove": (
@@ -608,13 +787,18 @@ _CALLERS: dict[str, Any] = {
     "spending.limit": lambda s: s.alex,
     "key.admin": lambda s: s.alex,
     "account.remove": lambda s: s.alex,
+    "people.forget_me": lambda s: s.tom,
 }
 
 
-def _the_kind_is_respected(kind: str, value: object) -> bool:
+def _the_kind_is_respected(kind: str, value: object, name: str = "") -> bool:
     match kind:
         case "text":
-            return isinstance(value, str)
+            # The exception of a directive is none for a call that is no exception, and so is a
+            # made role for a built-in role alone.
+            return isinstance(value, str) or (
+                name in ("exception_of", "made_role") and value is None
+            )
         case "number":
             return value is None or (isinstance(value, int) and not isinstance(value, bool))
         case "boolean":
@@ -641,6 +825,12 @@ _DESCRIBED_ELSEWHERE: Final = frozenset(
         "program.run",
         "net.open_host",
         "program.out",
+        # The gestures of the people of the house that have no tool yet (later tasks): their
+        # facts are the exception of a directive and whether it serves the person who speaks.
+        "household.send_link",
+        # A split needs a merge to split first: its facts name the two records of the merge
+        # (``test_people_merge.py``, where what it undoes is read from them).
+        "people.split",
         # Described with a speaker and the person's words (``test_voice_tools``).
         "proof.phrase_remove",
     }
@@ -671,7 +861,11 @@ async def test_each_tool_describes_exactly_the_facts_the_catalog_declares(action
     assert set(action.facts) == set(declared)
     assert dict(action.facts) == expected(scene)
     for name, kind in declared.items():
-        assert _the_kind_is_respected(kind, action.facts[name]), (name, kind, action.facts[name])
+        assert _the_kind_is_respected(kind, action.facts[name], name), (
+            name,
+            kind,
+            action.facts[name],
+        )
     # What is stored is what the people and the audit log get, and it reads back.
     assert DescribedAction.from_json(json.loads(json.dumps(action.as_json()))) == action
 
@@ -706,7 +900,7 @@ async def test_a_guest_stays_the_days_the_call_says_or_the_default(scene):
     assert changed.facts["days"] == GUEST_DAYS_DEFAULT
     back = await _described(
         "household_bring_back",
-        {"person": "Kim", "role": "guest", "guest_days": 4},
+        {"person": "Dana", "role": "guest", "guest_days": 4},
         scene.owner,
         scene,
     )
@@ -754,7 +948,9 @@ async def test_removing_oneself_is_described_as_such(scene):
 
 async def test_leaving_is_described_with_the_role_of_now_and_oneself_as_target(scene):
     async with scene.session_factory() as writer:
-        await writer.execute(update(Person).where(Person.id == scene.alex.id).values(role="child"))
+        await writer.execute(
+            update(Person).where(Person.id == scene.alex.id).values(role="child", is_child=True)
+        )
         await writer.commit()
     # Alex asks with the role Domo knew: the role of now is read again from the database.
     action = await _described("household_leave", {}, scene.alex, scene)

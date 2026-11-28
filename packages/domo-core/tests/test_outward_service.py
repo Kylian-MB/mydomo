@@ -331,9 +331,11 @@ async def test_the_accounts_of_someone_who_left_are_frozen_and_taken_back(sessio
         )
 
     dana.disabled_at = NOW - timedelta(days=1)
+    dana.state = "gone"
     await session.flush()
     assert await for_dana() is None
     dana.disabled_at = None
+    dana.state = "has_access"
     await session.flush()
     found = await for_dana()
     assert found is not None and found.id == own.id

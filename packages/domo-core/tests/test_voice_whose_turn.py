@@ -768,7 +768,7 @@ def test_a_voice_heard_at_someone_elses_page_says_so(owner, paul, live_clock):
         ("voice", "for", "weak"),
         ("session", "against", "weak"),
     ]
-    assert actor_of(speaker, "child").page_person_id == owner.id
+    assert actor_of(speaker, paul).page_person_id == owner.id
 
 
 def test_nothing_is_ordinary_for_a_voice_at_someone_elses_page():
