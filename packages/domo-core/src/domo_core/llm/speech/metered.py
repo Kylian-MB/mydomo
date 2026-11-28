@@ -109,13 +109,15 @@ class MeteredSpeech:
         if self._route.task != task:
             raise ValueError("a call of sound on a route of another kind of task")
 
-    async def transcribe(self, pcm: bytes, *, language: str | None = None) -> Heard:
+    async def transcribe(
+        self, pcm: bytes, *, language: str | None = None, hint: str | None = None
+    ) -> Heard:
         self._expects("hear")
         seconds = len(pcm) / BYTES_PER_SECOND
         call_id = await self._reserve(heard_seconds=seconds, said_chars=0)
         answered = False
         try:
-            heard = await self._client.transcribe(self._route, pcm, language=language)
+            heard = await self._client.transcribe(self._route, pcm, language=language, hint=hint)
             answered = True
             return heard
         except SpeechError as error:

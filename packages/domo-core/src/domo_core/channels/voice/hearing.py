@@ -13,11 +13,11 @@ before for a short sound) under their reference, or under the reference of an un
 the reading says it resembles nobody known (``prints.reference_for``). Nothing is learnt here:
 learning is the session's, which knows whether the words were a reserved moment's.
 
-The hearing model is given the known language of the page's person, else the house's (the owner,
-2026-11-28, "donner la langue connue"): it hears in that language instead of guessing it. Its cost:
-a sentence said in another language is heard poorly (often put into the person's language), and
-the reply follows the person's language; a model that does not know the language guesses as
-before.
+The house's speech service is given the known language of the page's person, else the house's,
+as a hint (the owner, 2026-11-28, "donner la langue connue"): it hears in that language when its
+own detection is not clear (a short sound, a low probability), and in the language it detects
+when that is clear, so a sentence plainly said in another language is still heard in it and
+answered in it. A provider outside the house gets no hint and detects as before.
 
 When nothing can hear (no model where it may go, a service still preparing, down, or a firm
 limit), ``CannotHear`` says what the page is told (``protocol.Hearing``): ``preparing``, or
@@ -148,7 +148,7 @@ class _Got:
 
 
 async def _hint(deps: VoiceDeps, person: Person) -> str | None:
-    """The language the hearing model is told to hear in: the page person's, else the house's,
+    """The language the hearing is hinted to hear in: the page person's, else the house's,
     its first part only (``fr`` for ``fr-BE``); ``None`` (the model guesses) when neither is a
     language tag."""
     known = person.language
@@ -162,13 +162,14 @@ async def _hint(deps: VoiceDeps, person: Person) -> str | None:
 async def _both(
     hearing: MeteredSpeech, printing: MeteredSpeech | None, pcm: bytes, language: str | None
 ) -> tuple[Heard, Print | None]:
-    """The words of ``pcm``, heard in ``language`` (``None``: as the model guesses), and its print,
-    asked at once. ``CannotHear`` when the words cannot be had; a print that fails is no print."""
+    """The words of ``pcm``, with ``language`` as the hint of the language they are in
+    (``None``: none), and its print, asked at once. ``CannotHear`` when the words cannot be had;
+    a print that fails is no print."""
     got = _Got()
 
     async def listen() -> None:
         try:
-            got.words = await hearing.transcribe(pcm, language=language)
+            got.words = await hearing.transcribe(pcm, hint=language)
         except SpeechError as error:
             got.failed = error.reason
         except Exception as error:

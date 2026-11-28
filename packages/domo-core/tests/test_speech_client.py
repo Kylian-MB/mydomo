@@ -260,3 +260,33 @@ async def test_the_error_never_carries_the_text_or_the_sound(client, respx_mock,
         assert error.__cause__ is None
     assert SECRET_TEXT not in caplog.text and "Bearer" not in caplog.text
     assert SECRET_SOUND.hex()[:16] not in caplog.text and repr(SECRET_SOUND[:8]) not in caplog.text
+
+
+async def test_a_language_hint_goes_to_the_houses_speech_service_only(client, respx_mock):
+    """The person's known language is a hint the house's own service understands
+    (``language_hint``: heard in when its detection is not clear); another provider gets none,
+    and detects as before."""
+    from domo_core.llm.speech.home_key import HOME_SPEECH_ID
+
+    sent: list[bytes] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        sent.append(request.content)
+        return httpx.Response(200, json={"text": "oui", "language": "fr", "duration": 0.5})
+
+    home = route_for()
+    home = Route(
+        provider=Provider(id=HOME_SPEECH_ID, kind="openai_compatible", base_url="http://speech/v1"),
+        model_id=home.model_id,
+        level=home.level,
+        prices=home.prices,
+        task=home.task,
+    )
+    respx_mock.post(f"http://gatekeeper.test/llm/{HOME_SPEECH_ID}/audio/transcriptions").mock(
+        side_effect=answer
+    )
+    respx_mock.post(f"{RELAY}/audio/transcriptions").mock(side_effect=answer)
+    await client.transcribe(home, SECRET_SOUND, hint="fr")
+    await client.transcribe(route_for(), SECRET_SOUND, hint="fr")
+    assert b'name="language_hint"' in sent[0] and b"\r\nfr\r\n" in sent[0]
+    assert b"language_hint" not in sent[1] and b'name="language"' not in sent[1]

@@ -8,7 +8,7 @@ neither the sound nor the heard text is ever logged or written to disk.
 
 | Route | What it does |
 |---|---|
-| `POST /v1/audio/transcriptions` | multipart `file` (WAV or raw PCM s16le, 16 kHz, mono), `model`, optional `language`, `response_format=verbose_json`, `timestamp_granularities[]=word` |
+| `POST /v1/audio/transcriptions` | multipart `file` (WAV or raw PCM s16le, 16 kHz, mono), `model`, optional `language` (heard in), optional `language_hint` (the speaker's known language: heard in only when the detection is not clear, under 1.5 s or a probability of 0.8), `response_format=verbose_json`, `timestamp_granularities[]=word` |
 | `POST /v1/audio/speech` | JSON `{"model","input","voice"?,"language"?,"response_format":"pcm"}`, answers streamed PCM s16le, 24 000 Hz, mono |
 | `POST /v1/voice/print` | multipart `file`, answers the vector and the measures of the voice |
 | `GET /v1/models` | the models that hold on this machine, what each one does (`hear`, `say`, `voice_print`), what was measured of it, how many requests it serves at once (`at_once`), its `licence` (`id`, `url`, `restricted`) and, for a print model, its `thresholds` |

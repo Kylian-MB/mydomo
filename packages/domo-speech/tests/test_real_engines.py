@@ -128,8 +128,12 @@ def test_two_hearings_at_once_on_one_model_both_hear_right() -> None:
 
 
 @pytest.mark.parametrize("language", ["fr", "en"])
-def test_a_sentence_heard_in_the_language_given_is_heard_back(language: str) -> None:
-    """The core gives the person's known language (the owner, 2026-11-28)."""
-    transcript = _engine(HEAR).transcribe(_said(language, "M1"), language)
+def test_a_sentence_clearly_in_another_language_than_the_hint_is_heard_in_its_own(
+    language: str,
+) -> None:
+    """The core gives the person's known language as a hint (the owner, 2026-11-28): a full
+    sentence clearly said in another language is still heard in that one."""
+    other = "en" if language == "fr" else "fr"
+    transcript = _engine(HEAR).transcribe(_said(language, "M1"), None, hint=other)
     assert transcript.language == language
     assert heard_back(TRIAL_SENTENCES[language], transcript.text) >= 0.8

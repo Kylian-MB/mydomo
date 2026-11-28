@@ -232,7 +232,9 @@ class _Held:
             self.cancelled.append(name)
             raise
 
-    async def transcribe(self, pcm: bytes, *, language: str | None, model: str | None = None):
+    async def transcribe(
+        self, pcm: bytes, *, language: str | None, model: str | None = None, hint: str | None = None
+    ):
         await self._wait("hear")
 
     async def voice_print(self, pcm: bytes, *, model: str | None = None):
@@ -301,3 +303,17 @@ async def test_a_caller_still_there_gets_the_answer(engines: Engines) -> None:
             files={"file": ("u.pcm", b"text:hello there", "audio/pcm")},
         )
     assert (response.status_code, response.json()["text"]) == (200, "hello there")
+
+
+async def test_a_language_hint_reaches_the_hearing_as_a_hint(
+    client: httpx.AsyncClient, wav_of: Callable[..., bytes]
+) -> None:
+    """``language_hint`` (the person's known language) is not a language asked: the fake hears
+    in it only because it detects nothing of its own."""
+    response = await client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("utterance.wav", wav_of(b"text:bonjour"), "audio/wav")},
+        data={"model": "fake-hear", "language_hint": "fr"},
+    )
+    assert response.status_code == 200
+    assert response.json()["language"] == "fr"

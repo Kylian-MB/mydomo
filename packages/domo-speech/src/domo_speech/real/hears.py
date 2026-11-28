@@ -19,6 +19,11 @@ from domo_speech.real.device import cuda_libraries, runtime
 from domo_speech.real.sound import floats_of
 
 _BYTES_PER_SECOND: Final = 32_000
+# A detected language is clear from this probability, on a sound of at least this many seconds:
+# below either, the speaker's known language (a hint) is heard in instead. The trials: every full
+# sentence was detected right; a half-second "Oui." was read as English by every model.
+CLEAR_AT: Final = 0.8
+CLEAR_FROM_S: Final = 1.5
 
 # The library logs the length and the language of every sound it hears: not worth a trace of who
 # spoke when.
@@ -59,16 +64,28 @@ class Hearing:
         )
         self._languages: frozenset[str] = frozenset(self._model.supported_languages)
 
-    def transcribe(self, pcm: bytes, language: str | None) -> Transcript:
+    def transcribe(
+        self, pcm: bytes, language: str | None, *, hint: str | None = None
+    ) -> Transcript:
+        """The words of ``pcm``, heard in ``language`` when the model knows it; else the model
+        detects the language, and ``hint`` (the speaker's known language) is heard in instead
+        when that detection is not clear: a sound shorter than ``CLEAR_FROM_S`` or a detected
+        language under ``CLEAR_AT``. The detection is made before any decoding (the library
+        decodes lazily), so going to the hint costs one more pass of the encoder, not two
+        transcriptions."""
         asked = language if language in self._languages else None
-        segments, info = self._model.transcribe(
-            floats_of(pcm),
-            language=asked,
-            beam_size=5,
-            word_timestamps=True,
-            condition_on_previous_text=False,
-            vad_filter=False,
-        )
+        audio = floats_of(pcm)
+        segments, info = self._hear(audio, asked)
+        if (
+            asked is None
+            and hint in self._languages
+            and str(info.language) != hint
+            and (
+                len(pcm) / _BYTES_PER_SECOND < CLEAR_FROM_S
+                or float(info.language_probability) < CLEAR_AT
+            )
+        ):
+            segments, info = self._hear(audio, hint)
         parts = list(segments)
         words = tuple(
             Word(text=w.word.strip(), start=float(w.start), end=float(w.end))
@@ -80,6 +97,16 @@ class Hearing:
             language=str(info.language),
             seconds=len(pcm) / _BYTES_PER_SECOND,
             words=words,
+        )
+
+    def _hear(self, audio: Any, language: str | None) -> tuple[Any, Any]:
+        return self._model.transcribe(
+            audio,
+            language=language,
+            beam_size=5,
+            word_timestamps=True,
+            condition_on_previous_text=False,
+            vad_filter=False,
         )
 
     def close(self) -> None:

@@ -136,8 +136,9 @@ def _field(form: FormData, name: str) -> str | None:
 
 async def _read_sound(
     request: Request,
-) -> tuple[bytes, str | None, str | None] | JSONResponse:
-    """The PCM, the language and the model asked for in a multipart request, or the refusal to
+) -> tuple[bytes, str | None, str | None, str | None] | JSONResponse:
+    """The PCM, the language, the model and the language hint asked for in a multipart request
+    (the hint is the speaker's known language: ``language_hint``), or the refusal to
     answer with. A request that is not multipart (an empty one, for one: the core's health probe)
     is a bad upload.
 
@@ -162,7 +163,7 @@ async def _read_sound(
         pcm = pcm_of(upload)
     except ValueError:
         return _refusal(400, "sound_not_16k_mono")
-    return pcm, _field(form, "language"), _field(form, "model")
+    return pcm, _field(form, "language"), _field(form, "model"), _field(form, "language_hint")
 
 
 def create_app(engines: Engines) -> FastAPI:
@@ -220,9 +221,9 @@ def create_app(engines: Engines) -> FastAPI:
         heard = await _read_sound(request)
         if isinstance(heard, JSONResponse):
             return heard
-        sound, language, model = heard
+        sound, language, model, hint = heard
         transcript = await _while_there(
-            request, engines.hears.transcribe(sound, language=language, model=model)
+            request, engines.hears.transcribe(sound, language=language, model=model, hint=hint)
         )
         if isinstance(transcript, JSONResponse):
             return transcript
@@ -268,7 +269,7 @@ def create_app(engines: Engines) -> FastAPI:
         heard = await _read_sound(request)
         if isinstance(heard, JSONResponse):
             return heard
-        sound, _, model = heard
+        sound, _, model, _ = heard
         result = await _while_there(request, engines.prints.voice_print(sound, model=model))
         if isinstance(result, JSONResponse):
             return result
