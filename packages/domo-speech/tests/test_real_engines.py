@@ -125,3 +125,11 @@ def test_two_hearings_at_once_on_one_model_both_hear_right() -> None:
     assert tried.work_seconds > 0 and tried.seconds_of_sound > 0
     for sample in samples:
         assert heard_back(sample.text, tried.heard[sample.key]) >= 0.8
+
+
+@pytest.mark.parametrize("language", ["fr", "en"])
+def test_a_sentence_heard_in_the_language_given_is_heard_back(language: str) -> None:
+    """The core gives the person's known language (the owner, 2026-11-28)."""
+    transcript = _engine(HEAR).transcribe(_said(language, "M1"), language)
+    assert transcript.language == language
+    assert heard_back(TRIAL_SENTENCES[language], transcript.text) >= 0.8

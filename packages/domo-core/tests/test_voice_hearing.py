@@ -16,7 +16,8 @@ from domo_core.channels.voice.models import VoicePrint, VoiceRef
 from domo_core.config import CoreSettings
 from domo_core.llm.speech.client import SpeechError
 from domo_core.llm.spending_models import ModelCall
-from domo_core.policy.settings import HEAR_OUTSIDE_KEY
+from domo_core.policy.models import PolicySetting
+from domo_core.policy.settings import HEAR_OUTSIDE_KEY, HOUSE_LANGUAGE, update_policy_setting
 from fakes import FakeChatModel
 from sqlalchemy import select
 from voice_session_support import (
@@ -222,3 +223,51 @@ async def test_a_phrase_with_nothing_at_home_to_hear_it_is_not_no_model(
     with pytest.raises(CannotHear) as cannot:
         await _hear(deps, owner, live_clock(), for_a_proof=True)
     assert (cannot.value.hearing, cannot.value.no_model) == ("unavailable", False)
+
+
+async def test_hearing_is_given_the_page_persons_language(
+    deps, owner, service: FakeSpeechService, session_factory, live_clock
+):
+    """The known language of the person (the owner, 2026-11-28, "donner la langue connue"): the
+    hearing model hears in it instead of guessing, its first part only (``fr`` for ``fr-BE``)."""
+    await a_household_that_hears_at_home(session_factory, owner)
+    async with session_factory() as writer:
+        found = await writer.get(Person, owner.id)
+        assert found is not None
+        found.language = "fr-BE"
+        await writer.commit()
+    owner.language = "fr-BE"
+    await _hear(deps, owner, live_clock())
+    assert service.asked_languages == ["fr"]
+
+
+async def test_a_person_with_no_language_is_heard_in_the_houses(
+    deps, owner, service: FakeSpeechService, session_factory, live_clock
+):
+    await a_household_that_hears_at_home(session_factory, owner)
+    owner.language = None
+    async with session_factory() as writer:
+        await update_policy_setting(
+            writer, key=HOUSE_LANGUAGE, value="nl", by=owner.id, now=live_clock()
+        )
+        await writer.commit()
+    await _hear(deps, owner, live_clock())
+    assert service.asked_languages == ["nl"]
+
+
+async def test_a_language_that_is_no_tag_is_never_given(
+    deps, owner, service: FakeSpeechService, session_factory, live_clock
+):
+    """A person's language that is no tag reads the house's; a house's that is no tag reads its
+    default, as everywhere (Ruling R35)."""
+    await a_household_that_hears_at_home(session_factory, owner)
+    owner.language = "French"
+    async with session_factory() as writer:
+        writer.add(
+            PolicySetting(
+                key=HOUSE_LANGUAGE, value="French", updated_by=owner.id, updated_at=live_clock()
+            )
+        )
+        await writer.commit()
+    await _hear(deps, owner, live_clock())
+    assert service.asked_languages == ["en"]
