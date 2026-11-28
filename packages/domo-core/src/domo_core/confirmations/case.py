@@ -12,12 +12,14 @@ from its words; and nothing kept private by anyone but ``private_of`` enters
 (``memory.service.visible_to``, in every query). Everything in it is data, never instructions.
 """
 
+import json
 import logging
 import math
+import re
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime
-from typing import Any, Final, Literal, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -62,6 +64,9 @@ from domo_core.policy.subjects import Subject, owner_of_now
 from domo_core.prompts import sendable, today_of
 from domo_core.texts.view import REFERENCE
 from domo_core.trust.service import facts_of, trust_of
+
+if TYPE_CHECKING:
+    from domo_core.tools.context import OutsideSource
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +190,9 @@ class KnownLine:
     author (``by``): the person who asks (``them``), the owner of now (``owner``), anyone else
     (``other``), or the assistant himself (``domo``). ``who`` is the display name of the one who
     said it, for ``other`` and ``owner`` only (``None`` when that person is gone; ``"a program or a
-    tool"`` for what was kept from a program's text when nobody wrote, origin ``external``);
+    tool"`` for what was kept from a program's text when nobody wrote, origin ``external``;
+    "probably <name>: a voice the house was not sure was theirs" for origin ``unsure_voice``,
+    ``unsure_voice_of``);
     ``unconfirmed`` that it is someone's word about another person of the household that this
     person has not confirmed (``memory.service.unconfirmed``). ``answer`` and ``keep_asking``
     are, for what he told them before an action (``told_by_domo``), the answer they gave and
@@ -249,19 +256,134 @@ class SubjectState:
     reason: str | None
 
 
+# What the judge reads in ``after_outside_words`` when a note born of a source nobody of the house
+# is known for is in the turn (``ToolContext.told_unknown``, ``Note.from_unknown``): where the
+# words not theirs come from, in plain words (the owner's rule, 2026-11-26: the judge is told the
+# source and weighs it like a person would).
+UNKNOWN_SOURCE_WORDS: Final = (
+    "a note born of an unknown source: a voice nobody knows, or the assistant's own note written "
+    "after reading a program's, a site's or a tool's text"
+)
+# What the judge reads in ``after_outside_words`` of each kind of a program's, a site's or a
+# tool's text in the turn (``ToolContext.outside_kinds``), as far as the code knows it (the owner,
+# 2026-11-26: the assistant tells each source apart, and the judge weighs it).
+PROGRAM_TEXT_WORDS: Final[Mapping[str, str]] = {
+    "tool": "what a tool the assistant made gave (it may carry a site's text)",
+    "program": "what a program the assistant ran by hand gave",
+    "wake": "what a tool or a program gave, which started this turn",
+}
+_THEIR_WORDS_TOO: Final = (
+    "; the person's own words, said in this turn or kept by a plan of theirs, are theirs"
+)
+# What the judge reads when the code does not know which tool or program gave the text: said so,
+# never guessed.
+NOT_KNOWN_WHICH: Final = "a tool, not known which"
+# What the judge reads of a fact the house's own voice channel reports (a phrase held back, hearing
+# unavailable, a proof that did not work): the code's own words, never a tool's name.
+CHANNEL_FACT_WORDS: Final = (
+    "a fact reported by the house's own voice channel, not a person's words and not a tool's text"
+)
+_PROGRAM_NOT_KNOWN: Final = "a program, not known which"
+# What the judge reads when such text is the only words in the turn that are not the assistant's
+# own (``ToolContext.anyones_words``: no message, no note, no plan keeping someone's words, nobody
+# heard).
+PROGRAM_TEXT_ALONE_WORDS: Final = (
+    "these are the only words in this turn not the assistant's own: no person said or wrote "
+    "anything in it"
+)
+# The most programs named, the most addresses of each (the rest is counted).
+_MOST_SOURCES: Final = 5
+_MOST_REACHES: Final = 8
+_NOT_IN_A_NAME: Final = re.compile(r"[^a-z0-9_]")
+_NOT_IN_A_RUN: Final = re.compile(r"[^0-9a-f-]")
+
+
+def _reach_words(reaches: Sequence[str] | None) -> str:
+    if reaches is None:
+        return "what it is built to reach is not known"
+    if not reaches:
+        return "built to reach no address"
+    shown = json.dumps(list(reaches[:_MOST_REACHES]), ensure_ascii=False)
+    more = len(reaches) - _MOST_REACHES
+    return f"built to reach {shown}" + (f" and {more} more" if more > 0 else "")
+
+
+def source_words(source: "OutsideSource") -> str:
+    """Which program ``source`` is, as the judge reads it: a tool by its name of the household, a
+    program run by hand by its run, with what it is built to reach as declared; or that the code
+    does not know which (``NOT_KNOWN_WHICH``). Kept to the characters a name or a run has."""
+    if source.kind == "channel":
+        return CHANNEL_FACT_WORDS
+    if source.run is not None:
+        run = _NOT_IN_A_RUN.sub("", source.run)
+        return f'a program run by hand (run "{run}"), {_reach_words(source.reaches)}'
+    if source.name is not None and not source.program:
+        name = _NOT_IN_A_NAME.sub("", source.name)
+        return f'the tool "{name}", {_reach_words(source.reaches)}'
+    return _PROGRAM_NOT_KNOWN if source.kind == "program" or source.program else NOT_KNOWN_WHICH
+
+
+def _kind_words(kind: str, sources: Sequence["OutsideSource"]) -> str:
+    named = [source_words(source) for source in sources if source.kind == kind]
+    if not named:
+        named = [_PROGRAM_NOT_KNOWN if kind == "program" else NOT_KNOWN_WHICH]
+    more = len(named) - _MOST_SOURCES
+    which = " and ".join(named[:_MOST_SOURCES]) + (f" and {more} more" if more > 0 else "")
+    return f"{PROGRAM_TEXT_WORDS[kind]}, from {which}"
+
+
+def outside_words(
+    *,
+    unknown: bool,
+    kinds: Sequence[str],
+    their_words: bool,
+    sources: Sequence["OutsideSource"] = (),
+    alone: bool = False,
+) -> str | None:
+    """Where the words not theirs in the turn come from, for ``IdeaTold.after_outside_words``: a
+    note born of an unknown source (``unknown``: ``UNKNOWN_SOURCE_WORDS``), a program's, a site's
+    or a tool's text of each kind (``kinds``, ``PROGRAM_TEXT_WORDS``), each named by which
+    program it is and what it is built to reach (``sources``, ``source_words``: "not known which"
+    when the code does not know), with the person's own words named as theirs when there are
+    some (``their_words``), or, when nobody's words are in the turn at all (``alone``), that this
+    text is the only words not the assistant's own (``PROGRAM_TEXT_ALONE_WORDS``); ``None`` when
+    neither a note nor such text is in it."""
+    parts: list[str] = []
+    if unknown:
+        parts.append(UNKNOWN_SOURCE_WORDS)
+    programs = [kind for kind in kinds if kind != "channel"]
+    if programs:
+        text = "a program's, a site's or a tool's text, nobody's wish: " + "; ".join(
+            _kind_words(kind, sources) for kind in programs
+        )
+        if their_words:
+            text += _THEIR_WORDS_TOO
+        elif alone:
+            text += "; " + PROGRAM_TEXT_ALONE_WORDS
+        parts.append(text)
+    if "channel" in kinds:
+        # The house's own code speaking, apart from any program's text.
+        text = CHANNEL_FACT_WORDS
+        if alone and not programs and not their_words:
+            text += "; " + PROGRAM_TEXT_ALONE_WORDS
+        parts.append(text)
+    return ". Also, ".join(parts) or None
+
+
 @dataclass(frozen=True)
 class IdeaTold:
     """Whose idea the action is (``of``: the person's, or the assistant's own), his ``reason``
     for it, whose words it was born of (``born_of_words_of``, a display name), whether the
     person concerned lacks the right to do it themselves (``they_lack_the_right``), and whether
     the turn carries text nobody of the house said (``after_outside_words``: a note, a tool's or a
-    program's output; ruling R77)."""
+    program's output; ruling R77): ``True``, or ``UNKNOWN_SOURCE_WORDS`` when those words hold a
+    note born of an unknown source."""
 
     of: Literal["person", "domo"]
     reason: str | None = None
     born_of_words_of: str | None = None
     they_lack_the_right: bool = False
-    after_outside_words: bool = False
+    after_outside_words: bool | str = False
 
 
 @dataclass(frozen=True)
@@ -752,7 +874,8 @@ def _author(
     """Who a memory is from, read from its columns only: the assistant's conclusion (he wrote it,
     or it is a deduction); the words of the person who asks (said in their turn, their own words
     or what he told them); someone else's words (another's, or relayed from someone or from
-    outside); the owner's; anyone else's."""
+    outside, or heard from a voice not sure to be theirs: never the words of whom it seemed, the
+    owner's included); the owner's; anyone else's."""
     if memory.by_domo or memory.origin == "deduced":
         return "domo"
     if memory.origin == "told_by_domo" and told_of is not None and memory.said_by_id == told_of:
@@ -764,11 +887,21 @@ def _author(
         and memory.origin in ("own_words", "told_by_domo")
     ):
         return "them"
-    if memory.origin in ("others_words", "external"):
+    if memory.origin in ("others_words", "external", "unsure_voice"):
         return "other"
     if owner is not None and memory.said_by_id == owner:
         return "owner"
     return "other"
+
+
+# How the judge's case names who said a memory kept from a voice the house was not sure was theirs
+# (origin ``unsure_voice``): whom it seemed, probably, and that it is not sure.
+UNSURE_VOICE_WHO: Final = "a voice the house was not sure was theirs"
+
+
+def unsure_voice_of(name: str | None) -> str:
+    """``who`` of a line kept from a voice not sure to be ``name``'s (``None``: they are gone)."""
+    return UNSURE_VOICE_WHO if name is None else f"probably {name}: {UNSURE_VOICE_WHO}"
 
 
 def _told_someone_else(memory: Memory, told_of: UUID | None) -> bool:
@@ -834,6 +967,11 @@ def _known_line(
             # conversation it was.
             A_PROGRAM_OR_A_TOOL
             if by == "other" and memory.origin == "external"
+            # Kept from a voice not sure to be theirs: whom it seemed, and that it is not sure.
+            else unsure_voice_of(
+                None if memory.said_by_id is None else names.get(memory.said_by_id)
+            )
+            if by == "other" and memory.origin == "unsure_voice"
             else names.get(memory.said_by_id)
             if by in ("other", "owner") and memory.said_by_id is not None
             else None

@@ -31,7 +31,7 @@ from domo_core.channels.page.speaker import page_speaker
 from domo_core.channels.turns import app_turn_deps
 from domo_core.chat.agent import KEPT_MARKER
 from domo_core.chat.models import Conversation as Stored
-from domo_core.chat.models import Message
+from domo_core.chat.models import Message, MessageAction
 from domo_core.confirmations.models import Confirmation
 from domo_core.conversation import turn as conversation_turn
 from domo_core.conversation.service import Conversation
@@ -48,7 +48,7 @@ from domo_core.llm.types import (
 )
 from domo_core.tools.notes import _EXACT_KEPT as EXACT_KEPT  # pyright: ignore[reportPrivateUsage]
 from fakes import FakeCall, FakeChatModel, is_judge_call, is_reader_call
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 
 class Gated:
@@ -426,3 +426,150 @@ async def test_a_turn_stopped_with_the_core_opens_no_turn_after_it(
     assert chat_server.app.state.wakes.pending == 0
     stored = await conversation_of(chat_server, owner_chat.person.id)
     assert [(m.role, m.content) for m in stored][-1] == ("user", "still there?")
+
+
+# --- the voice (Task 27): words heard during a turn of his own ------------------------------------
+
+
+async def test_words_kept_during_a_turn_he_started_have_the_judge_weigh_his_idea(
+    adult_chat, chat_server, adult_member
+):
+    # The voice's gate: a known voice is erased as his idea only where nobody spoke. Words that
+    # come while his own turn runs are read between two rounds, and close it for the rest.
+    from domo_core.channels.voice.models import VoicePrint, VoiceRef
+    from voice_support import ALEX, learnt_voice
+
+    async with chat_server.session_factory() as writer:
+        await learnt_voice(writer, adult_chat.person, ALEX)
+        await writer.commit()
+    asked = await adult_chat.say_with_tool("profile_rename", {"name": "Alex B"})
+    mark = ToolCall("w1", "act_on_my_own", json.dumps({"reason": "her prints look wrong"}))
+    erase = ToolCall(
+        "w2",
+        "voice_unlearn",
+        json.dumps({"since_minutes": None, "person": adult_chat.person.display_name}),
+    )
+    # Final fix wave, case 4: from then on his idea is weighed by the judge, never refused.
+    model = adult_chat.use_model(Gated(mark, erase, "Done.", judge="do_not: she just spoke"))
+    async with chat_server.browser(adult_member, waits_for_wakes=False) as page:
+        approved = await page.post(
+            f"/confirmations/{asked.pending_confirmation_id}/approve",
+            headers={"hx-request": "true"},
+        )
+        assert approved.status_code == 200
+        await started(model)  # Domo writes the wake's reply
+        kept = await page.post("/chat/messages", data={"text": "you got my voice wrong"})
+        model.go.set()
+        await chat_server.wait_for_wakes()
+    assert kept.status_code == 202
+    async with chat_server.session_factory() as reader:
+        status = await reader.scalar(
+            select(MessageAction.status).where(MessageAction.tool_name == "voice_unlearn")
+        )
+        left = await reader.scalar(
+            select(func.count())
+            .select_from(VoicePrint)
+            .join(VoiceRef, VoiceRef.id == VoicePrint.ref_id)
+            .where(VoiceRef.person_id == adult_chat.person.id)
+        )
+    assert status == "refused"
+    assert left == 2
+    assert model.inner.judge_calls()
+
+
+# --- a turn is as sure as the least sure of those it reads (final fix wave, C1) ------------------
+
+INVITE_TOM = ToolCall(
+    "i1", "household_invite", json.dumps({"display_name": "Tom", "role": "guest", "guest_days": 1})
+)
+# A judge that answers nothing it can read: silent (``confirmations.judge.fallback``).
+SILENT = "garbled"
+
+
+def unsure_voice(person_id: uuid.UUID, now: Any) -> Any:
+    """A voice that reads for the person, but not enough to be sure of them."""
+    from domo_core.conversation.speaker import Clue, Speaker
+
+    return Speaker(
+        person_id,
+        "voice",
+        clues=(Clue("voice", "for", "weak", "code", now, degree=0.45),),
+        microphone="mic-1",
+    )
+
+
+def short_voice(person_id: uuid.UUID, now: Any) -> Any:
+    """Their signed-in page heard a voice too short to tell who said it."""
+    from dataclasses import replace as replaced
+
+    return replaced(page_speaker(person_id, now), channel="voice", voice_too_short=True)
+
+
+async def asked_of(server: ChatServer) -> list[tuple[str | None, str | None, str]]:
+    async with server.session_factory() as reader:
+        rows = await reader.execute(
+            select(Confirmation.ask, Confirmation.asked_by, Confirmation.status)
+        )
+        return [tuple(row) for row in rows.all()]  # type: ignore[misc]
+
+
+async def kept_from(pilot: ChatPilot, model: Gated, first: str, *heard: tuple[Any, str]) -> None:
+    """``pilot`` writes ``first``; while the model holds its answer back, each ``heard`` (a
+    speaker and their words) is said in their conversation; then the model goes on."""
+    reply_id = await post_message(pilot.client, first)
+    reading = asyncio.create_task(consume_sse(pilot.client, f"/chat/stream/{reply_id}"))
+    await started(model)
+    conversation = Conversation(app_turn_deps(pilot.server.app))
+    for speaker, text in heard:
+        if speaker is None:
+            await conversation.say(
+                pilot.person, text, page_speaker(pilot.person.id, pilot.server.clock())
+            )
+        else:
+            await conversation.say(pilot.person, text, speaker)
+    model.go.set()
+    await reading
+    await pilot.server.wait_for_wakes()
+
+
+async def test_a_sure_turn_alone_does_it_with_a_silent_judge(owner_chat, chat_server):
+    # What the tests below change: with nothing heard meanwhile, a silent judge asks nothing.
+    model = owner_chat.use_model(Gated(RENAME, INVITE_TOM, "Done.", judge=SILENT))
+    await kept_from(owner_chat, model, "rename me, then invite Tom")
+    assert await asked_of(chat_server) == []
+
+
+async def test_an_unsure_voice_joined_makes_the_turn_unsure(owner_chat, chat_server):
+    model = owner_chat.use_model(Gated(RENAME, INVITE_TOM, "Asked.", judge=SILENT))
+    now = chat_server.clock()
+    await kept_from(
+        owner_chat, model, "rename me", (unsure_voice(owner_chat.person.id, now), "invite Tom")
+    )
+    assert await asked_of(chat_server) == [("proof", "judge", "pending")]
+
+
+async def test_a_voice_too_short_joined_makes_the_turn_unsure_for_the_sensitive(
+    owner_chat, chat_server
+):
+    model = owner_chat.use_model(Gated(RENAME, INVITE_TOM, "Asked.", judge=SILENT))
+    now = chat_server.clock()
+    await kept_from(
+        owner_chat, model, "rename me", (short_voice(owner_chat.person.id, now), "invite Tom")
+    )
+    assert await asked_of(chat_server) == [("proof", "judge", "pending")]
+
+
+async def test_kept_words_answered_after_are_as_sure_as_the_least_sure_of_them(
+    owner_chat, chat_server
+):
+    # No round left to read them: an unsure voice, then a typed message, answered together.
+    model = owner_chat.use_model(Gated("First.", INVITE_TOM, "Asked.", judge=SILENT))
+    now = chat_server.clock()
+    await kept_from(
+        owner_chat,
+        model,
+        "hello",
+        (unsure_voice(owner_chat.person.id, now), "invite Tom"),
+        (None, "and tell me when it is done"),
+    )
+    assert await asked_of(chat_server) == [("proof", "judge", "pending")]

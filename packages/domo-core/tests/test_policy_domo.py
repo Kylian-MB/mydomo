@@ -134,6 +134,8 @@ def test_the_risks_of_the_code_are_these_and_no_other():
         "memory.forget",
         "note.withdraw",
         "successors.note_death",
+        "proof.phrase_remove",
+        "voice.unlearn",
     }
     for action_type, risks in CODE_RISKS.items():
         expected = Risks(
@@ -363,6 +365,12 @@ def test_the_person_s_texts_profile_and_devices_stay_theirs():
         "people.nickname_keep",
         "people.nickname_forget",
         "spending.show",
+        # The voice (spec 6.2, 6.5, 6.9): the person's phrase and their listening. What was
+        # learnt of a voice is his own recording (Task 27): not among them.
+        "proof.phrase_agree",
+        "proof.phrase_change",
+        "proof.phrase_remove",
+        "voice.stop_listening",
     } == NOT_ON_HIS_OWN
     alone = on_his_own_tables(DEFAULT_POLICY)
     for action_type in NOT_ON_HIS_OWN:

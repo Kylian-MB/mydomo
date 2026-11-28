@@ -37,7 +37,13 @@ class Note(Base):
     A note is a person's (``author_id``) or Domo's own (``by_domo``, the owner, 2026-11-21:
     left in a turn he acts in on his own, or in someone's turn as his own word,
     ``tools.notes.NoteLeave``), exactly one of them: a note of his has no person for author, and
-    whoever reads it reads that it is his, never someone else's."""
+    whoever reads it reads that it is his, never someone else's.
+
+    ``from_unknown`` marks a note of his born of words nobody of the house is known for: a voice
+    nobody knows (``channels.voice.stranger``), or a turn that read a program's, a site's or a
+    tool's text (``tools.notes.NoteLeave``). Such words can never, alone, cause what the voice
+    tools do (``ToolContext.told_unknown``); his other notes, and a person's, are weighed by the
+    judge. A person's note never carries it."""
 
     __tablename__ = "notes"
     __table_args__ = (
@@ -45,6 +51,8 @@ class Note(Base):
         CheckConstraint("char_length(exact_text) BETWEEN 1 AND 1000", name="exact_text_length"),
         # A person's, or Domo's own: exactly one author.
         CheckConstraint(ONE_AUTHOR, name="one_author"),
+        # Words of an unknown source are only ever carried in a note of his own.
+        CheckConstraint("NOT from_unknown OR by_domo", name="unknown_is_his"),
         # "The notes of this person" (the context of each of their turns).
         Index("ix_notes_recipient_id", "recipient_id"),
     )
@@ -52,6 +60,7 @@ class Note(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=func.gen_random_uuid())
     author_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("persons.id"))
     by_domo: Mapped[bool] = mapped_column(server_default=text("false"), default=False)
+    from_unknown: Mapped[bool] = mapped_column(server_default=text("false"), default=False)
     recipient_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("persons.id"))
     text: Mapped[str]
     # The exact words: the passage of the author's message that is the note, as they wrote it

@@ -70,13 +70,17 @@ async def note(
     noted_for_id: uuid.UUID | None = None,
     reported_by_id: uuid.UUID | None = None,
 ) -> TrustFact:
-    """A new fact about ``person_id``'s word. ``reported_by_id`` is who reported it, required for
-    a ``reported`` fact and refused for another (``ValueError``). Raises ``SecretRefused`` for a
-    sentence that has the shape of a secret and ``ValueError`` for one out of bounds; nothing is
-    written then. Flushed."""
+    """A new fact about ``person_id``'s word. ``reported_by_id`` is who reported it, refused for
+    a fact that is not ``reported`` (``ValueError``); a ``reported`` fact names its reporter or
+    rests on a memory (``memory_id``: one heard from a voice not sure to be its sayer's, which
+    names no reporter, ``tools.trust_tools``). Raises ``SecretRefused`` for a sentence that has
+    the shape of a secret and ``ValueError`` for one out of bounds; nothing is written then.
+    Flushed."""
     _check_about(about)
-    if (established == "reported") != (reported_by_id is not None):
+    if established != "reported" and reported_by_id is not None:
         raise ValueError("Who reported a fact goes with a reported fact, and only with one.")
+    if established == "reported" and reported_by_id is None and memory_id is None:
+        raise ValueError("A reported fact names who reported it, or the memory it rests on.")
     fact = TrustFact(
         person_id=person_id,
         outcome=outcome,

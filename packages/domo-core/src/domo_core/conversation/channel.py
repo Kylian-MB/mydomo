@@ -15,6 +15,7 @@ class Abilities:
     safe_screen: bool  # can open a vault form
     hears_unasked: bool  # receives what Domo says on his own
     proof_kinds: frozenset[str]  # the kinds of proof the person can give here
+    spoken: bool = False  # what Domo says is said aloud, not read
 
 
 NOBODY_LISTENS: Final = Abilities(False, False, False, False, frozenset())

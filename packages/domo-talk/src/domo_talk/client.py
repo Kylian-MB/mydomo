@@ -10,7 +10,7 @@ import codecs
 import json
 import re
 import ssl
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Self, cast
 from urllib.parse import urlsplit
@@ -26,17 +26,38 @@ _LINE_END = re.compile(r"\r\n|\r|\n")
 # every 20 seconds, so a longer silence is a connection that died. In seconds.
 _LISTEN_QUIET_LIMIT = 90.0
 
-_SENTENCES = {
-    "no_key": "The assistant cannot answer yet: he has no key to think with.",
-    "too_long": "That is too long to send.",
-    "not_sayable": "The assistant cannot take that message.",
+# What pairing answers. Before it there is no person, so no language and no texts to ask for: these
+# stay plain English (a recorded ruling), and are what a refusal says when no texts were fetched.
+_PAIRING_SENTENCES = {
     "held_back": "Too many tries. Wait a little, then try again.",
     "unknown_code": "That code is not valid: it may be wrong, already used, or too old.",
     "bad_name": "That name cannot be used.",
 }
 
+# The text of the server that says each refusal; any other refusal says ``TEXT_REFUSED``.
+_REFUSAL_TEXTS = {
+    "no_key": "talk.no_key",
+    "too_long": "talk.too_long",
+    "not_sayable": "talk.not_sayable",
+    "held_back": "talk.held_back",
+}
+TEXT_REFUSED = "talk.refused"
+TEXT_PROOF_BUSY = "talk.proof.busy"
+TEXTS_PATH = "/texts"
 
-_PROOF_BUSY = "The assistant is checking too many passwords at once. Try again in a moment."
+
+def refusal_sentence(error: str, texts: Mapping[str, str]) -> str:
+    """What a refusal says: the server's sentence in the person's language when ``texts`` has
+    one; else, for what pairing answers, its plain English; else the bare code in brackets, so
+    that the program says nothing of its own that it cannot say in the person's language."""
+    key = _REFUSAL_TEXTS.get(error)
+    if key is not None and key in texts:
+        return texts[key]
+    if error in _PAIRING_SENTENCES and not texts:
+        return _PAIRING_SENTENCES[error]
+    if TEXT_REFUSED in texts:
+        return texts[TEXT_REFUSED].replace("{error}", error)
+    return f"[{error}]"
 
 
 class TalkError(Exception):
@@ -51,19 +72,38 @@ class Unpaired(TalkError):
 
     exit_status = 2
 
-    def __init__(self) -> None:
+    def __init__(self, sentence: str | None = None) -> None:
         super().__init__(
-            "The assistant does not know this computer (any more). Pair it again: domo-talk pair "
-            "<url>"
+            sentence
+            or "The assistant does not know this computer (any more). Pair it again: domo-talk "
+            "pair <url>"
         )
 
 
 class Unreachable(TalkError):
-    def __init__(self, url: str, error: Exception) -> None:
-        message = f"Cannot reach the assistant at {url}."
-        if "CERTIFICATE" in str(error).upper():
-            message += " His certificate is not trusted here: pair with --ca <path to his ca.crt>."
+    def __init__(self, url: str, error: Exception, texts: Mapping[str, str] | None = None) -> None:
+        untrusted = "CERTIFICATE" in str(error).upper()
+        if texts and "talk.unreachable" in texts:
+            message = texts["talk.unreachable"].replace("{url}", url)
+            if untrusted and "talk.not_trusted" in texts:
+                message += f" {texts['talk.not_trusted']}"
+        else:
+            # Before the texts were ever fetched (pairing, or an older server).
+            message = f"Cannot reach the assistant at {url}."
+            if untrusted:
+                message += (
+                    " His certificate is not trusted here: pair with --ca <path to his ca.crt>."
+                )
         super().__init__(message)
+
+
+class Held:
+    """The sentences of the program, held by the clients of one device. Only ever replaced whole
+    (never emptied, never filled in place), so that a thread reading them between two fetches
+    reads either the old or the new, never a part."""
+
+    def __init__(self) -> None:
+        self.texts: dict[str, str] = {}
 
 
 class Refused(TalkError):
@@ -71,9 +111,7 @@ class Refused(TalkError):
 
     def __init__(self, error: str, sentence: str | None = None) -> None:
         self.error = error
-        super().__init__(
-            sentence or _SENTENCES.get(error, f"The assistant refused that ({error}).")
-        )
+        super().__init__(sentence or refusal_sentence(error, {}))
 
 
 class Event(NamedTuple):
@@ -100,6 +138,8 @@ class Past:
 
     messages: list[Message]
     domo_name: str | None = None
+    # The language of the person's texts as the server says it now (``None``: it does not say).
+    language: str | None = None
 
 
 @dataclass(frozen=True)
@@ -212,14 +252,17 @@ def _json_object(response: httpx.Response) -> dict[str, Any] | None:
     return found if isinstance(found, dict) else None  # pyright: ignore[reportUnknownVariableType]
 
 
-def _check(response: httpx.Response) -> None:
-    """Nothing for a good answer; ``Unpaired`` for a 401, ``Refused`` for any other failure."""
+def _check(response: httpx.Response, texts: Mapping[str, str] | None = None) -> None:
+    """Nothing for a good answer; ``Unpaired`` for a 401, ``Refused`` for any other failure, each
+    saying what ``texts`` (the server's sentences) says for it."""
+    texts = texts or {}
     if response.status_code == 401:
-        raise Unpaired
+        raise Unpaired(texts.get("talk.unpaired_now"))
     if response.status_code >= 400:
         response.read()
-        error = (_json_object(response) or {}).get("error")
-        raise Refused(error if isinstance(error, str) else f"http_{response.status_code}")
+        found = (_json_object(response) or {}).get("error")
+        error = found if isinstance(found, str) else f"http_{response.status_code}"
+        raise Refused(error, refusal_sentence(error, texts))
 
 
 def _object(response: httpx.Response) -> dict[str, Any]:
@@ -242,11 +285,71 @@ def _event_of(name: str, data: str) -> Event | None:
 class Client:
     """What this computer says to Domo, with the device's secret."""
 
-    def __init__(self, saved: Saved) -> None:
+    def __init__(self, saved: Saved, held: Held | None = None) -> None:
         self._url = _checked_url(saved.url)
         self._http = _http(self._url, saved.ca, {"Authorization": f"Bearer {saved.secret}"})
         # The reply ``say`` read last, if any.
         self.last_reply: str | None = None
+        # The sentences of the program as the server wrote them for the person. Given another
+        # client's holder, both read what either fetched.
+        self._held = Held() if held is None else held
+        self._language: str | None = None
+        self._no_texts_here = False
+
+    @property
+    def held(self) -> "Held":
+        """What holds the sentences, to give to another client of the same device."""
+        return self._held
+
+    @property
+    def _texts(self) -> dict[str, str]:
+        return self._held.texts
+
+    @property
+    def known_texts(self) -> dict[str, str]:
+        """The sentences held now."""
+        return self._held.texts
+
+    @property
+    def language(self) -> str | None:
+        """The language of the sentences held."""
+        return self._language
+
+    def text(self, key: str, **holes: str) -> str | None:
+        """The sentence the server wrote for ``key``, its holes filled; ``None`` when there is
+        none (the program then says nothing of its own)."""
+        sentence = self._texts.get(key)
+        if sentence is None:
+            return None
+        for name, value in holes.items():
+            sentence = sentence.replace("{" + name + "}", value)
+        return sentence
+
+    def texts(self) -> dict[str, str]:
+        """Fetch the sentences of the program in the person's language (``GET /texts``) and hold
+        them; what is held stays when they cannot be fetched (an older server, or none reached).
+        Never raises."""
+        if self._no_texts_here:
+            return self._texts
+        try:
+            answer = _object(self._call("GET", TEXTS_PATH))
+        except Refused as refused:
+            # An older server has no such route: it is not asked again.
+            self._no_texts_here = refused.error in ("not_found", "http_404")
+            return self._texts
+        except TalkError:
+            return self._texts
+        found = answer.get("texts")
+        language = answer.get("language")
+        if isinstance(found, dict):
+            fresh = {
+                k: v
+                for k, v in cast(dict[object, object], found).items()
+                if isinstance(k, str) and isinstance(v, str)
+            }
+            self._held.texts = fresh  # one assignment: a reader never sees it half filled
+            self._language = language if isinstance(language, str) else None
+        return self._texts
 
     def __enter__(self) -> Self:
         return self
@@ -300,6 +403,7 @@ class Client:
         params = {} if after is None else {"after": after}
         answer = _object(self._call("GET", "/since", params=params))
         name: object = answer.get("domo_name")
+        language: object = answer.get("language")
         found = answer.get("messages")
         items: list[Any] = found if isinstance(found, list) else []  # pyright: ignore[reportUnknownVariableType]
         messages: list[Message] = []
@@ -318,7 +422,11 @@ class Client:
                     else (),
                 )
             )
-        return Past(messages, name if isinstance(name, str) and name else None)
+        return Past(
+            messages,
+            name if isinstance(name, str) and name else None,
+            language if isinstance(language, str) and language else None,
+        )
 
     def prove(self, confirmation_id: str, means: str, answer: str) -> Proved:
         """Give a proof for the request ``confirmation_id``. ``answer`` goes into the body of the
@@ -331,7 +439,7 @@ class Client:
             )
         except Refused as refused:
             if refused.error == "busy":  # too many passwords wait to be checked
-                raise Refused("busy", _PROOF_BUSY) from None
+                raise Refused("busy", self.text(TEXT_PROOF_BUSY) or "[busy]") from None
             raise
         found = _object(response)
         request = found.get("request")
@@ -347,8 +455,8 @@ class Client:
         try:
             response = self._http.request(method, path, **kwargs)
         except httpx.HTTPError as error:
-            raise Unreachable(self._url, error) from None
-        _check(response)
+            raise Unreachable(self._url, error, self._texts) from None
+        _check(response, self._texts)
         return response
 
     def _events(self, path: str, *, read_timeout: float | None) -> Iterator[Event]:
@@ -358,11 +466,11 @@ class Client:
             with self._http.stream("GET", path, timeout=timeout) as response:
                 if response.status_code == 204:
                     return
-                _check(response)
+                _check(response, self._texts)
                 for chunk in response.iter_bytes():
                     for name, data in parser.feed(chunk):
                         event = _event_of(name, data)
                         if event is not None:
                             yield event
         except httpx.HTTPError as error:
-            raise Unreachable(self._url, error) from None
+            raise Unreachable(self._url, error, self._texts) from None

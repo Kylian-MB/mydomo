@@ -17,12 +17,16 @@ import base64
 import json
 import re
 from collections.abc import Iterable, Sequence
+from typing import Final
 from urllib.parse import quote
 
 MASK = "[REDACTED]"
 
 _MASK_BYTES = MASK.encode()
 _MIN_ENCODED_LENGTH = 8
+# The shortest secret, in bytes, looked for in sound (``SecretDetector``). Eight random bytes
+# turn up by chance once in about 10**19 bytes; two, every few seconds of sound.
+SHORTEST_DETECTED: Final = 8
 
 
 def _encode(text: str) -> bytes:
@@ -65,6 +69,20 @@ def _json_forms(secret: str) -> set[bytes]:
     return forms
 
 
+def _matcher(secrets: Iterable[str]) -> tuple[re.Pattern[bytes] | None, int]:
+    """The pattern of every form of ``secrets`` (``None`` for none) and how many bytes a stream
+    must keep back so that a secret cut between two chunks is still seen whole."""
+    variants: set[bytes] = set()
+    for secret in secrets:
+        if secret:
+            variants |= _variants(secret)
+    # Longest first: where several variants start at the same place, the longest wins (a padded
+    # base64 form is masked whole, not just up to its padding).
+    ordered = sorted(variants, key=lambda variant: (-len(variant), variant))
+    pattern = re.compile(b"|".join(re.escape(v) for v in ordered)) if ordered else None
+    return pattern, max((len(v) for v in ordered), default=1) - 1
+
+
 class Scrubber:
     """Masks secrets in a stream of bytes fed chunk by chunk.
 
@@ -74,15 +92,7 @@ class Scrubber:
     """
 
     def __init__(self, secrets: Iterable[str]) -> None:
-        variants: set[bytes] = set()
-        for secret in secrets:
-            if secret:
-                variants |= _variants(secret)
-        # Longest first: where several variants start at the same place, the longest wins (a
-        # padded base64 form is masked whole, not just up to its padding).
-        ordered = sorted(variants, key=lambda variant: (-len(variant), variant))
-        self._pattern = re.compile(b"|".join(re.escape(v) for v in ordered)) if ordered else None
-        self._holdback = max((len(v) for v in ordered), default=1) - 1
+        self._pattern, self._holdback = _matcher(secrets)
         self._pending = b""
 
     def feed(self, chunk: bytes) -> bytes:
@@ -112,6 +122,49 @@ class Scrubber:
         if self._pattern is None:
             return pending
         return self._pattern.sub(_MASK_BYTES, pending)
+
+
+class SecretFound(Exception):
+    """A secret was found in a stream that is never masked (``SecretDetector``). The message
+    says nothing of which secret, or where."""
+
+
+class SecretDetector:
+    """Finds secrets in a stream of bytes that must reach its reader unchanged (sound).
+
+    It matches what ``Scrubber`` masks, in the same forms, but never alters a byte: ``feed``
+    returns the bytes now known to start no secret, and raises ``SecretFound`` when a secret is
+    whole in what it was given. Like the scrubber it keeps back ``longest variant - 1`` bytes, so
+    no part of a secret is released before the secret is seen whole; ``flush`` releases them at
+    the end of the stream. The chunks it returns may be cut differently from the ones it took.
+
+    Only secrets of ``SHORTEST_DETECTED`` bytes or more are looked for: a shorter one (a code of
+    a few digits) turns up by chance in any long sound and would cut them all. Text keeps being
+    scrubbed of every secret (``Scrubber``).
+    """
+
+    def __init__(self, secrets: Iterable[str]) -> None:
+        self._pattern, self._holdback = _matcher(
+            secret for secret in secrets if len(_encode(secret)) >= SHORTEST_DETECTED
+        )
+        self._pending = b""
+
+    def feed(self, chunk: bytes) -> bytes:
+        """Take the next chunk; return what is now safe to emit, or raise ``SecretFound``."""
+        if self._pattern is None:
+            return chunk
+        data = self._pending + chunk
+        if self._pattern.search(data) is not None:
+            self._pending = b""
+            raise SecretFound("A secret was found in a stream that is relayed unchanged.")
+        limit = max(len(data) - self._holdback, 0)
+        self._pending = data[limit:]
+        return data[:limit]
+
+    def flush(self) -> bytes:
+        """End of the stream: release what was kept back (it holds no whole secret)."""
+        pending, self._pending = self._pending, b""
+        return pending
 
 
 def scrub_text(text: str, secrets: Sequence[str]) -> str:

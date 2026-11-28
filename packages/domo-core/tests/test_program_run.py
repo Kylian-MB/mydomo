@@ -41,7 +41,7 @@ from domo_core.madetools.settings import set_house
 from domo_core.madetools.upkeep import toolmaking_pass
 from domo_core.policy.roles import Actor, as_role
 from domo_core.prompts import ToolWake, tool_wake_heading
-from domo_core.tools.context import InvalidArguments, ToolContext, ToolOutcome
+from domo_core.tools.context import InvalidArguments, OutsideSource, ToolContext, ToolOutcome
 from domo_core.tools.registry import TOOLS
 from fakes import FakeAsk, FakeChatModel, FakeRefused, FakeSandbox, is_judge_call
 from pydantic import JsonValue
@@ -164,6 +164,8 @@ async def test_a_program_by_hand_runs_at_once_for_the_person_of_the_turn(
         # What speaks: a program run by hand, built to reach what its call declared (nothing).
         "from": {"program": "run by hand", "built_to_reach": [], "read_as": READ_AS},
     }
+    # The judge is told it is a program run by hand, by its run.
+    assert came.source == OutsideSource("program", run=str(run.id), reaches=())
     # Checked by the analyser, then run once: no dry run, no review.
     assert sandbox.scans == [CODE]
     [request] = sandbox.runs
@@ -194,7 +196,17 @@ async def test_a_long_run_is_handed_over_like_a_tools_and_wakes_domo_with_its_re
     # Domo is woken for Dana with what it gave, as a program he ran by hand, by its run id
     # (Task 12): never as a tool of his named "program_run".
     assert woken == [
-        (dana.id, [ToolWake("program_run", {"status": "done", "result": 42}, run=str(run.id))])
+        (
+            dana.id,
+            [
+                ToolWake(
+                    "program_run",
+                    {"status": "done", "result": 42},
+                    run=str(run.id),
+                    given_by="program",
+                )
+            ],
+        )
     ]
     heading = tool_wake_heading("program_run", str(run.id))
     assert heading == (

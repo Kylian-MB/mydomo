@@ -30,7 +30,7 @@ are kept by what he does as his own (``acts_alone``). Neither refuses anything: 
 or changed all the same.
 A plan due counts as asked only by the words it keeps (``conversation.prepare``). Without them,
 in a turn that answers no message of theirs (a plan's turn included), the plan is Domo's own
-(``made_by_domo``), unless words or text from outside are in it (``_his_alone``).
+(``made_by_domo``), unless someone spoke or words or text from outside are in it (``_his_alone``).
 What has the shape of a secret is refused in why it is set and in those words
 (``memory.service.refuses_secret_shapes``).
 
@@ -178,9 +178,15 @@ def _build_id(value: object) -> uuid.UUID:
 
 def _his_alone(ctx: ToolContext) -> bool:
     """Whether a plan set or given a new why in this turn is the assistant's alone: it answers no
-    message of theirs (or he acts alone), and no words came from outside (Task 27: such words
-    never become his)."""
-    return (ctx.reply_message_id is None or acts_alone(ctx)) and not ctx.outside_text
+    message of theirs (or he acts alone), and nobody spoke meanwhile, no sentence was heard and no
+    words came from outside (Task 27: such words never become his)."""
+    speaker = ctx.speaker
+    return (
+        (ctx.reply_message_id is None or acts_alone(ctx))
+        and not ctx.outside_text
+        and not ctx.heard_meanwhile.raised
+        and (speaker is None or speaker.nobody_spoke)
+    )
 
 
 async def _build_to_wait_for(session: AsyncSession, build_id: uuid.UUID) -> uuid.UUID:
@@ -370,7 +376,7 @@ class PlanSet:
                     # The turn answers no message of theirs, and it comes from no words of
                     # theirs: his own (one he sets in a turn a plan woke him for, to put something
                     # off, too; on his own it is the conversation's person's, as the keys are, but
-                    # his). Never where words came from outside (Task 27): in a
+                    # his). Never where someone spoke or words came from outside (Task 27): in a
                     # turn they wrote in, it follows who began the turn, so it is theirs.
                     made_by_domo=words is None and _his_alone(ctx),
                     after_build_id=after_build,

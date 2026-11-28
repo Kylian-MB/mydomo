@@ -1241,12 +1241,13 @@ async def test_the_judge_reads_who_speaks(owner_chat, owner_member, chat_server)
 
 
 async def _what_an_unestablished_speaker_may_do(
-    chat_server, owner_member, settings, gk_client, call: ToolCall
-) -> Any:
+    chat_server, owner_member, settings, gk_client, call: ToolCall, judge: str = "do"
+) -> tuple[Any, FakeChatModel]:
     owner = owner_member.person
+    model = FakeChatModel(tool_script=[call, "Voilà."], judge=judge)
     deps = turn_deps(
         session_factory=chat_server.session_factory,
-        model=FakeChatModel(tool_script=[call, "Voilà."], judge="do"),
+        model=model,
         settings=settings,
         gatekeeper=gk_client,
         clock=chat_server.clock,
@@ -1257,23 +1258,40 @@ async def _what_an_unestablished_speaker_may_do(
     turn = await prepare_turn(deps, person=owner, reply=reply, request=request)
     await turn.run(Collecting())
     async with chat_server.session_factory() as reader:
-        return await last_audit(reader, "policy.decision")
+        return await last_audit(reader, "policy.decision"), model
 
 
-async def test_an_unestablished_speaker_has_nobodys_rights(
+async def test_an_unestablished_speaker_is_judged_with_the_probable_persons_rights(
     chat_server, owner_member, settings, gk_client
 ):
+    # Not refused out of hand (POL-4): the judge weighs who asks, from the clues it is given.
     invite = ToolCall("c1", "household_invite", json.dumps(INVITE_ROBIN))
-    entry = await _what_an_unestablished_speaker_may_do(
+    entry, model = await _what_an_unestablished_speaker_may_do(
         chat_server, owner_member, settings, gk_client, invite
     )
-    assert (entry.details["decision"], entry.details["reason"]) == ("refuse", "untrusted_identity")
-    # What the barrier lets an untrusted identity do is unchanged: renaming themselves.
+    assert entry.details["decision"] == "allow"
+    [judged] = model.judge_calls()
+    case = json.loads(judged.messages[0].content)
+    assert case["speaker"]["channel"] == "api" and case["speaker"]["clues"] == []
+    # Renaming oneself is ordinary: done as for anyone.
     rename = ToolCall("c2", "profile_rename", json.dumps({"name": "Alexa"}))
-    entry = await _what_an_unestablished_speaker_may_do(
+    entry, _ = await _what_an_unestablished_speaker_may_do(
         chat_server, owner_member, settings, gk_client, rename
     )
     assert entry.details["decision"] == "allow"
+
+
+async def test_a_silent_judge_asks_a_proof_of_an_unestablished_speaker(
+    chat_server, owner_member, settings, gk_client
+):
+    invite = ToolCall("c1", "household_invite", json.dumps(INVITE_ROBIN))
+    _, model = await _what_an_unestablished_speaker_may_do(
+        chat_server, owner_member, settings, gk_client, invite, judge="no verdict here"
+    )
+    assert len(model.judge_calls()) == 1
+    async with chat_server.session_factory() as reader:
+        asked = (await reader.execute(select(Confirmation.ask, Confirmation.status))).all()
+    assert [tuple(row) for row in asked] == [("proof", "pending")]
 
 
 # --- an agreement left to the judge first (task 25) ----------------------------------------------

@@ -228,7 +228,7 @@ async def test_their_exact_words_are_kept_only_when_they_are_in_their_message(se
         "plan_set", {**base, "their_words": "Remind me"}, alex, session_factory, answers=False
     )
     # Words that are not theirs told to a turn they wrote in: the plan follows who began the
-    # turn, so it is theirs.
+    # turn, so it is theirs, never his (Task 27: words from outside never become his).
     await run("plan_set", base, alex, session_factory, said=said, told_outside=True)
     kept = [(p.their_words, p.made_by_domo) for p in await stored(session_factory)]
     assert kept == [
@@ -507,3 +507,42 @@ async def test_the_audit_holds_no_why(owner_chat: ChatPilot):
     ]
     log = json.dumps([entry.details for entry in entries]).lower()
     assert "ferns" not in log and "orchids" not in log
+
+
+# --- whose plan it is (Task 27): words heard or from outside never become his own ---------------
+
+
+async def test_a_plan_set_where_someone_spoke_is_never_his_own(session_factory):
+    alex, _ = await two_people(session_factory)
+    arguments = {"why": "Forget a voice tonight.", "on_return": True}
+    # A turn he started, but someone wrote or spoke while it ran.
+    heard = context(alex, session_factory, answers=False)
+    heard.heard_meanwhile.raised = True
+    # A turn he started with words from outside in it.
+    outside = context(alex, session_factory, answers=False, told_outside=True)
+    for ctx in (heard, outside):
+        await TOOLS["plan_set"].describe(arguments, ctx.actor, ctx)
+        await TOOLS["plan_set"].execute(arguments, ctx)
+    assert [p.made_by_domo for p in await stored(session_factory)] == [False, False]
+
+
+async def test_his_plan_given_a_new_why_in_a_person_s_turn_is_no_longer_his(session_factory):
+    alex, _ = await two_people(session_factory)
+    his = context(alex, session_factory, answers=False)
+    arguments = {"why": "Check the bins myself.", "on_return": True}
+    await TOOLS["plan_set"].describe(arguments, his.actor, his)
+    made = await TOOLS["plan_set"].execute(arguments, his)
+    plan_id = made.model_result["id"]
+    # Changed when nobody spoke: still his.
+    await TOOLS["plan_change"].execute({"id": plan_id, "on_return": True}, his)
+    [plan] = await stored(session_factory)
+    assert plan.made_by_domo
+    await TOOLS["plan_change"].execute({"id": plan_id, "why": "Check the bins again."}, his)
+    [plan] = await stored(session_factory)
+    assert plan.made_by_domo
+    # A new why in a turn where someone spoke: theirs now.
+    await run(
+        "plan_change", {"id": plan_id, "why": "Forget a voice tonight."}, alex, session_factory
+    )
+    [plan] = await stored(session_factory)
+    assert not plan.made_by_domo

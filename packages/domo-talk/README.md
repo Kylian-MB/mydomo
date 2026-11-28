@@ -35,8 +35,17 @@ the certificate off.
     domo-talk
 
 Your recent conversation is shown, then a prompt. Type to talk to the assistant. When a request waits for
-a proof that can be given here, type `/prove` to give your password (it is read without echo and
-sent to the assistant only). `/quit` leaves.
+a password, the program opens a hidden line by itself, once for each request (what you type is not
+shown, and is sent to the assistant only); an empty line gives up, and the next reply that shows the
+request asks again. `/quit` leaves.
+
+A line typed while a reply is still being written is never refused: it is sent, kept by the assistant
+and answered next, and the program says nothing about it.
+
+The program says nothing of its own once paired: the few sentences it needs (a refusal, the hidden
+line's prompt, an unknown command) are fetched from the assistant, written by him in your language.
+Against a server that cannot give them, it shows only the bare code of a refusal and a hidden line
+with no words.
 
 If the assistant no longer knows this computer, the program says so (exit code 2): pair it again.
 

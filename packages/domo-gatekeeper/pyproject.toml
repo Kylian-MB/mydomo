@@ -1,6 +1,6 @@
 [project]
 name = "domo-gatekeeper"
-version = "0.13.3"
+version = "0.14.0"
 description = "The assistant gatekeeper: encrypted secret vault and provider relay."
 requires-python = ">=3.12"
 license = "MIT"

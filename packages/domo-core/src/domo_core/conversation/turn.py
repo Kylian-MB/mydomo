@@ -32,7 +32,10 @@ A yes with a change to the one request shown goes on to Domo with the request ma
 (``ToolContext.change_grant``); to one of several, nothing is decided and every request shown is
 marked so, without that right: Domo asks what they meant. A yes that does not give what a request
 asks (an explicit yes, a proof) goes on with the request marked ``plain_yes_not_enough``, and the
-reply presents it again; anything else goes on as a plain turn.
+reply presents it again. A no in words from a speaker the code is not sure of is weighed by the
+judge (``_a_no_taken``): taken for theirs, the request is refused; otherwise it stays waiting,
+the reply presents it again and Domo is told the no was not taken (``NO_NOT_TAKEN``). Anything
+else goes on as a plain turn.
 
 A wake (``decided``: a button, an approver's words or an arrival decided a request) has no words
 of the person to read: Domo is told what was decided, and nothing answers in his stead. An
@@ -58,7 +61,9 @@ What the person writes while the turn runs is kept (spec 11.3, ``conversation.ke
 two rounds of calls, Domo is given it as their own words (``chat.agent.KEPT_MARKER``, never words
 from outside), and the reply answers the last of it from then on; he judges whether to stop,
 change or go on, and what was done before stays done. What the turn had no round left to read is
-answered once it is over, by a reply of its own (``Conversation.answer_kept``). A yes said so is
+answered once it is over, by a reply of its own (``Conversation.answer_kept``). Whoever the
+channel of such words says hears them besides (``TurnRequest.also_hears``: the voice that heard
+them) is given the reply's events from when it reads them (``Turn.hear_also``). A yes said so is
 read as any yes in words only at the start of a turn: the one after.
 
 The end of the turn
@@ -75,11 +80,11 @@ count as told, and the news it read are taken away.
 
 import logging
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Mapping, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import TYPE_CHECKING, Final, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
 import anyio
 from sqlalchemy import select
@@ -98,7 +103,8 @@ from domo_core.chat.agent import (
 )
 from domo_core.chat.models import Message
 from domo_core.chat.store import ConversationStore
-from domo_core.confirmations.chain import just_decided
+from domo_core.confirmations.case import RightsSay
+from domo_core.confirmations.chain import just_decided, request_told
 from domo_core.confirmations.describe import (
     description_for_a_model,
     request_description,
@@ -116,12 +122,14 @@ from domo_core.confirmations.service import (
     AmendOutcome,
     DecideOutcome,
     action_type_of,
+    asked_of_a_yes,
     awaiting_approval,
     confirmations_by_id,
     decide_confirmation,
     mark_shown,
     mark_shown_to_approver,
     requester_context,
+    what_the_yes_gave,
 )
 from domo_core.confirmations.store import (
     ANSWER_AS_APPROVER_EXPLICITLY,
@@ -129,6 +137,7 @@ from domo_core.confirmations.store import (
     ANSWER_EXPLICITLY,
     ANSWER_WHEN_THEY_JOIN,
     ANSWER_WITH_A_PROOF,
+    NO_NOT_TAKEN,
     ask_of,
     asked_by_of,
     how_to_answer,
@@ -138,14 +147,24 @@ from domo_core.confirmations.store import (
 )
 from domo_core.conversation.cards import card_sentence, made_good, storable
 from domo_core.conversation.channel import NOBODY_LISTENS, Abilities, Listener, ListenerGone
-from domo_core.conversation.events import Acted, Decided, Ended, Failed, FailureReason, Words
+from domo_core.conversation.events import (
+    Acted,
+    Decided,
+    Ended,
+    Event,
+    Failed,
+    FailureReason,
+    Words,
+)
 from domo_core.conversation.execution import (
+    consult_the_judge,
     failed_record,
     handle_tool_call,
     read_the_person_again,
     store_action,
 )
 from domo_core.conversation.once import said_once
+from domo_core.conversation.speaker import joined_by
 from domo_core.conversation.visits import clear_news
 from domo_core.db import SessionFactory
 from domo_core.llm.catalog import Catalog
@@ -166,8 +185,11 @@ from domo_core.llm.types import (
 from domo_core.memory.embedder import Embedder
 from domo_core.memory.search import embed_missing
 from domo_core.memory.service import mark_served
+from domo_core.policy.actions import DescribedAction
+from domo_core.policy.asks import Ask, most_demanding
 from domo_core.policy.catalog import is_silent
 from domo_core.policy.catalog import shown as action_shown
+from domo_core.policy.decision import doubted
 from domo_core.policy.rights import load_rights
 from domo_core.policy.roles import Role
 from domo_core.policy.settings import PolicySettings
@@ -209,7 +231,7 @@ from domo_core.trust.service import Trust
 
 if TYPE_CHECKING:
     # Only for the type of what a turn is given: the preparation makes the turn.
-    from domo_core.conversation.prepare import TurnDeps
+    from domo_core.conversation.prepare import TurnDeps, TurnRequest
 
 logger = logging.getLogger(__name__)
 
@@ -441,7 +463,9 @@ class Prompt:
     the tools Domo made for them, or that they asked for, that are set aside, with why
     (``madetools.offered.set_aside_for``). ``tool_wakes`` are what tools of Domo woke him with,
     for a turn they woke him for (``conversation.tool_wakes.tool_wake_turn``). ``building`` are the
-    builds of tools they opened that are in progress (``madetools.offered.being_built_for``)."""
+    builds of tools they opened that are in progress (``madetools.offered.being_built_for``).
+    ``speaking`` is who probably speaks, when the code is not sure of it
+    (``prompts.speaking_line``), ``None`` when it is."""
 
     display_name: str
     role: Role
@@ -481,6 +505,7 @@ class Prompt:
     building: tuple[BeingBuilt, ...] = ()
     agreements: tuple[AgreementLine, ...] = ()
     expiring: AboutToExpire | None = None
+    speaking: str | None = None
 
     def build(
         self,
@@ -538,6 +563,7 @@ class Prompt:
             building=self.building,
             agreements=self.agreements,
             expiring=self.expiring,
+            speaking=self.speaking,
         )
 
 
@@ -612,8 +638,9 @@ class _Read:
     were decided), with the sentences that answer in his stead if he cannot (``fallback``); the
     requests it answered with a yes and a change (``changed``), with the right to apply that change
     in this turn (``change_grant``) when it was the one request shown; and those it answered with
-    a yes that did not give what they ask (``not_enough``, each with what it asks then). Nothing
-    set: it answered no request.
+    a yes that did not give what they ask (``not_enough``, each with what it asks then); and
+    those it answered with a no the judge did not take for the person's (``no_not_taken``: they
+    still wait). Nothing set: it answered no request.
 
     A ``fallback`` without ``decided`` is a decision that was carried out but that Domo could
     not be told of: the sentences answer alone, he is not asked."""
@@ -623,6 +650,7 @@ class _Read:
     changed: tuple[uuid.UUID, ...] = ()
     change_grant: uuid.UUID | None = None
     not_enough: tuple[tuple[uuid.UUID, Needed], ...] = ()
+    no_not_taken: tuple[uuid.UUID, ...] = ()
 
     def needed_by(self, c: Confirmation) -> Needed | None:
         """What ``c`` asks that this message's yes did not give; ``None`` when it gave it, or
@@ -631,7 +659,10 @@ class _Read:
 
     def answer_with(self, c: Confirmation) -> str | None:
         """How ``c`` is answered when this message's yes did not give what it asks (its own
-        request's words); ``None`` for any other request."""
+        request's words), or after a no that was not taken (``NO_NOT_TAKEN``, then how it is
+        answered); ``None`` for any other request."""
+        if c.id in self.no_not_taken:
+            return f"{NO_NOT_TAKEN}; it is answered with {how_to_answer(c)}"
         needed = self.needed_by(c)
         if needed is None:
             return None
@@ -639,6 +670,8 @@ class _Read:
 
     def approve_with(self, c: Confirmation) -> str | None:
         """The same, for a request of someone else the person answers as its approver."""
+        if c.id in self.no_not_taken:
+            return f"{NO_NOT_TAKEN}; it is answered with {how_to_approve(ask_of(c))}"
         needed = self.needed_by(c)
         if needed is None:
             return None
@@ -681,6 +714,58 @@ class _SoFar:
         return said_once(rounds) + "".join(self.received[end:])
 
 
+class _Joined:
+    """The listener of a turn (``primary``) and those who hear it besides (``also``: joined
+    while it runs, for words of theirs the turn answers, ``Turn.hear_also``). Each event goes to
+    the others first, then to ``primary``, as it would alone (whether someone reads, an error it
+    raises). What the others do never stops the turn: one that fails is dropped; what is shown
+    only once stays the primary's; the end is given to them apart (``spawn``), so that a voice
+    still saying the reply never holds the turn back."""
+
+    def __init__(
+        self,
+        primary: Listener,
+        also: list[Listener],
+        spawn: Callable[[Coroutine[Any, Any, None]], object],
+    ) -> None:
+        self._primary = primary
+        self._also = also
+        self._spawn = spawn
+
+    @property
+    def reading(self) -> bool:
+        return self._primary.reading
+
+    async def open(self) -> None:
+        await self._primary.open()
+
+    async def emit(self, event: Event) -> None:
+        for other in list(self._also):
+            if isinstance(event, Acted) and event.record.card_once is not None:
+                continue
+            if isinstance(event, Ended):
+                self._also.remove(other)
+                self._spawn(_given_apart(other, event))
+                continue
+            try:
+                await other.emit(event)
+            except Exception as error:
+                if not isinstance(error, ListenerGone):
+                    logger.error("A listener besides failed (%s)", type(error).__name__)
+                self._also.remove(other)
+        await self._primary.emit(event)
+
+
+async def _given_apart(listener: Listener, event: Event) -> None:
+    """Give ``event`` to ``listener``, never raising: what fails is logged by its kind."""
+    try:
+        await listener.emit(event)
+    except ListenerGone:
+        pass
+    except Exception as error:
+        logger.error("A listener besides failed (%s)", type(error).__name__)
+
+
 def _decided_card(
     request: Confirmation, outcome: DecideOutcome, record: ActionRecord | None
 ) -> JsonObject:
@@ -702,8 +787,9 @@ class Turn:
         # The context of the turn's calls: given the turn's models once the words are read, and a
         # change to apply when they asked for one; told when nobody reads any more.
         self._ctx = prepared.tool_context
-        # Whoever listens, once the turn runs.
+        # Whoever listens, once the turn runs, and who hears it besides (``hear_also``).
         self._listener: Listener | None = None
+        self._also: list[Listener] = []
         # How the turn ended, once it ran, whether it acted (an action that is never shown does
         # not count), and whether such an action took effect (done, or waiting for a yes).
         self._ended: TurnEnd = "failed"
@@ -737,6 +823,7 @@ class Turn:
         stopped with the core (cancelled), what the person wrote meanwhile and it did not read is
         answered after it (``_answer_what_was_kept``); stopping, nothing new is started, and it
         stays stored, as after a restart."""
+        listener = _Joined(listener, self._also, self._deps.wakes.spawn)
         self._listener = listener
         stopped = False
         try:
@@ -750,9 +837,28 @@ class Turn:
         finally:
             self._deps.streaming_replies.discard(self._p.reply_id)
             self._after_memories()
+            # Those who heard it besides and were not given its end (the turn's own listener left
+            # before it): it is over for them too.
+            while self._also:
+                self._deps.wakes.spawn(_given_apart(self._also.pop(), Ended("partial")))
             if not stopped:
                 self._answer_what_was_kept()
         return self._ended
+
+    async def hear_also(self, requests: Sequence["TurnRequest"]) -> None:
+        """Words of ``requests`` are answered by this turn's reply: whoever else they say hears
+        it (``TurnRequest.also_hears``) is given its events from now on, beside the turn's own
+        listener. Never raises: one that cannot be had is logged by its kind and left out."""
+        for request in requests:
+            if request.also_hears is None:
+                continue
+            try:
+                other = await request.also_hears(self._p.reply_id)
+                if other is not None:
+                    await other.open()
+                    self._also.append(other)
+            except Exception as error:
+                logger.error("A listener besides could not be had (%s)", type(error).__name__)
 
     def _answer_what_was_kept(self) -> None:
         """Once the turn is over (its reply settled, its claim let go): what the person wrote
@@ -780,8 +886,16 @@ class Turn:
         turn (``said_later``: an exact passage of any one of their messages is theirs, never one
         across two). In a turn Domo
         started himself, nothing of whose acts those are changes (ruling R61): he is only handed
-        their words."""
+        their words.
+
+        A turn of someone heard at a page signed in as another person knows only what was said
+        there: what they wrote meanwhile (elsewhere, with their whole context) is not read by it
+        nor said at that page; it stays kept, answered after it by a turn of their own
+        (``_answer_what_was_kept``)."""
         deps = self._deps
+        speaker = self._ctx.speaker
+        if speaker is not None and speaker.page_person_id is not None:
+            return []
         conversation_id = self._ctx.conversation_id
         taken = deps.kept.take(conversation_id)
         if not taken:
@@ -805,6 +919,18 @@ class Turn:
                 deps.kept.keep(conversation_id, message_id, request)
             return []
         theirs = [message_id for message_id, _ in taken if message_id in stored]
+        if theirs:
+            # Someone spoke while the turn ran, in every copy of its context.
+            self._ctx.heard_meanwhile.raised = True
+        # Whoever spoke them hears what answers them from now on.
+        joined = [request for message_id, request in taken if message_id in stored]
+        await self.hear_also(joined)
+        # From now on the turn is as sure as the least sure of those whose words it read
+        # (ruling C1): an unsure or too short voice joined makes every decision after it doubted.
+        actor, speaker = joined_by(
+            self._ctx.actor, self._ctx.speaker, [request.speaker for request in joined]
+        )
+        self._ctx = replace(self._ctx, actor=actor, speaker=speaker)
         ctx = self._ctx
         if theirs and ctx.reply_message_id is not None:
             texts = tuple(stored[message_id] for message_id in theirs)
@@ -1360,7 +1486,8 @@ class Turn:
             ShownRequest(
                 number=number,
                 says=description_for_a_model(c),
-                ask=ask_of(c),
+                # A raise for a doubted yes binds only a yes that is not sure (case 10).
+                ask=asked_of_a_yes(c, self._ctx.actor.trusted),
                 asked_by=asked_by_of(c),
             )
             for number, c in enumerate(shown, start=1)
@@ -1385,18 +1512,42 @@ class Turn:
         decided: list[JustDecided] = []
         sentences: list[str] = []
         not_enough: list[tuple[uuid.UUID, Needed]] = []
+        no_not_taken: list[uuid.UUID] = []
         untold = False
         # Whether a decision was carried out already: a later one that fails leaves it told.
         carried_out = False
         for request, reading in zip(shown, readings, strict=True):
             theirs_to_approve = request.id in as_approver
+            if reading.verdict == "approve" and reading.source is not None:
+                asks = await self._who_agrees_weighed(request)
+                given = what_the_yes_gave(reading.source)
+                if asks is not None and most_demanding(asks, given) != given:
+                    # Not this person's agreement by itself: the request now asks what the
+                    # judge asks of them, and is shown again.
+                    await self._ask_at_least(request.id, asks)
+                    await self._present_again(request.id, as_approver=theirs_to_approve)
+                    needs: Literal["needs_explicit", "needs_proof"] = (
+                        "needs_proof" if asks == "proof" else "needs_explicit"
+                    )
+                    # Told as a decision that needs more: a channel that hears the next words
+                    # as a proof (the voice) opens its moment now, before the reply ends.
+                    await listener.emit(Decided(request.id, None, needs))
+                    not_enough.append((request.id, "proof" if asks == "proof" else "explicit_yes"))
+                    continue
             if reading.not_enough:
                 await self._present_again(request.id, as_approver=theirs_to_approve)
-                not_enough.append(
-                    (request.id, "proof" if ask_of(request) == "proof" else "explicit_yes")
-                )
+                needed = asked_of_a_yes(request, self._ctx.actor.trusted)
+                not_enough.append((request.id, "proof" if needed == "proof" else "explicit_yes"))
                 continue
             if reading.verdict not in ("approve", "refuse") or reading.source is None:
+                continue
+            if reading.verdict == "refuse" and not await self._a_no_taken(
+                request, as_approver=theirs_to_approve
+            ):
+                # Not taken for theirs: nothing is refused, the request waits and is shown again,
+                # and the assistant may ask them again (the owner, 2026-11-27).
+                await self._present_again(request.id, as_approver=theirs_to_approve)
+                no_not_taken.append(request.id)
                 continue
             try:
                 outcome, record = await self._decide_and_record(
@@ -1424,6 +1575,7 @@ class Turn:
                 # What the request asks was raised after the words were read (a rule added
                 # since): the same yes that is not enough.
                 await self._present_again(request.id, as_approver=theirs_to_approve)
+                await listener.emit(Decided(request.id, record, outcome))
                 not_enough.append(
                     (request.id, "proof" if outcome == "needs_proof" else "explicit_yes")
                 )
@@ -1454,7 +1606,102 @@ class Turn:
         if untold:
             # A decision Domo cannot be told of: the sentences answer alone, he is not asked.
             return _Read(fallback=fallback)
-        return _Read(decided=tuple(decided), fallback=fallback, not_enough=tuple(not_enough))
+        return _Read(
+            decided=tuple(decided),
+            fallback=fallback,
+            not_enough=tuple(not_enough),
+            no_not_taken=tuple(no_not_taken),
+        )
+
+    async def _who_agrees_weighed(self, request: Confirmation) -> Ask | None:
+        """What an agreement in words to ``request`` asks more, because the code is not sure that
+        the one who said it is the person of the turn (``Actor.trusted``: unsure, or a voice too
+        short to tell): ``None`` for a sure speaker, and for what is ordinary as the barrier reads
+        it (``policy.decision.doubted``: the owner's ``"judge"`` setting included). Otherwise the
+        judge weighs who agrees from the clues (``consult_the_judge`` with the doubt on who asks):
+        what his verdict asks (a ``do_not`` asks a proof: the request stays theirs); silent, a
+        proof. A request whose action cannot be read asks a proof."""
+        ctx = self._ctx
+        if ctx.actor.trusted:
+            return None
+        try:
+            action = DescribedAction.from_json(request.action)
+        except ValueError:
+            return "proof"
+        async with ctx.session_factory() as session:
+            if not await doubted(session, ctx.actor, action, ctx.policy):
+                return None
+            told = await request_told(session, request, before=(), after=(), now=ctx.clock())
+        judgement = await consult_the_judge(
+            self._weighing(),
+            actor=ctx.actor,
+            action=action,
+            says=description_for_a_model(request),
+            rights=RightsSay(allowed=True, needs=None, question=None),
+            request=told,
+            identity_doubted=True,
+        )
+        return "proof" if judgement.verdict == "do_not" else judgement.as_ask()
+
+    async def _a_no_taken(self, request: Confirmation, *, as_approver: bool) -> bool:
+        """Whether a no in words to ``request`` is taken for the one whose answer it is, the
+        mirror of ``_who_agrees_weighed`` (the owner, 2026-11-27: "the assistant judges"): at once
+        from a speaker the code is sure of; otherwise (unsure, a voice too short to tell, to be
+        learnt again, at another person's page) the judge weighs, with the clues of the speaker,
+        that dropping it is really their wish (``confirmation.expire`` on that request). Only his
+        ``do`` takes it; any other verdict, his silence or a judge that fails leaves it waiting
+        (a waiting request does nothing by itself: it lapses or is answered again)."""
+        ctx = self._ctx
+        if ctx.actor.trusted:
+            return True
+        action = DescribedAction(
+            connector="core",
+            action_type="confirmation.expire",
+            target=f"confirmation:{request.id}",
+            effect="own_requests",
+            destination="household",
+        )
+        whose = (
+            "a request of someone else that waits for their yes"
+            if as_approver
+            else "their own waiting request"
+        )
+        judgement = await consult_the_judge(
+            self._weighing(),
+            actor=ctx.actor,
+            action=action,
+            says=f"Refuses with a no in words {whose}, which would: "
+            + description_for_a_model(request),
+            rights=RightsSay(allowed=True, needs=None, question=None),
+            identity_doubted=True,
+        )
+        return judgement.verdict == "do" and judgement.fallback is None
+
+    def _weighing(self) -> ToolContext:
+        """The turn's context with its models, for the judge that weighs who said a yes or a no
+        in words while the answer is read: the turn's own context gets them only after (a yes
+        carried out runs without them), and without them the judge would always be silent."""
+        return replace(self._ctx, models=self._models)
+
+    async def _ask_at_least(self, confirmation_id: uuid.UUID, asks: Ask) -> None:
+        """The request ``confirmation_id``, while it waits, asks at least ``asks``, as the judge
+        asked it (``asked_by`` ``judge``, no reason kept). What a rule asked before is not kept
+        beside it: the request has one record of who asks, and the rule is read again at the yes
+        (``decide_confirmation``)."""
+        async with self._deps.session_factory() as session:
+            c = await session.get(Confirmation, confirmation_id, with_for_update=True)
+            if c is None or c.status != "pending":
+                return
+            stored = ask_of(c)
+            if most_demanding(stored, asks) == stored:
+                return
+            if c.ask_before_doubt is None:
+                # What it asked before a doubt raised it: a later sure yes is held to that.
+                c.ask_before_doubt = stored
+            c.ask = asks
+            c.asked_by = "judge"
+            c.ask_why = None
+            await session.commit()
 
     def _said_since(self, shown: Sequence[Confirmation]) -> tuple[str, ...]:
         """The person's own messages since the requests ``shown`` were asked, oldest first, but
@@ -1594,6 +1841,8 @@ class Turn:
                 policy=ctx.policy,
                 now=ctx.clock(),
                 words=self._p.answer.text,
+                # A yes of a voice the code is not sure of is held to a raise of its doubt.
+                sure=ctx.actor.trusted,
             )
             action_status = _DECIDED_ACTIONS.get(outcome)
             if action_status is not None:

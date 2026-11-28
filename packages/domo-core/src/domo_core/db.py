@@ -66,6 +66,7 @@ MODEL_MODULES = (
     "domo_core.madetools.models",
     "domo_core.toolsdb.spaces",
     "domo_core.outward.models",
+    "domo_core.channels.voice.models",
     "domo_core.learning.models",
 )
 

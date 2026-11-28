@@ -10,6 +10,8 @@
 #   gatekeeper  the vault and the relay to the model providers: the only service that reaches
 #               the Internet.
 #   core        the web page, the chat, the accounts and the audit trail.
+#   speech      the house's speech service (hearing, voice, voice print): only the gatekeeper reaches
+#               it; it fetches its open model weights once, at its first start.
 #   sandbox     runs the small programs the assistant writes for himself, each in a process of its own,
 #               with limits; no network at all. The core reaches it through a Unix socket.
 #   edge        Caddy: HTTPS with a local certificate authority; the only published ports.
@@ -17,6 +19,8 @@
 # Networks
 #   lan       bridge     edge                         where the ports are published (fixed subnet)
 #   core_net  internal   edge, core, gatekeeper, db   no way out, not even to the host
+#   speech_net internal  speech, gatekeeper           the speech service's, shared with the gatekeeper alone
+#   speech_egress bridge speech                       its way to the Internet (its models, once)
 #   egress    bridge     gatekeeper                   the way to the Internet
 #   (none)               sandbox                      network_mode none: no network of any kind
 #
@@ -120,7 +124,7 @@ services:
       # own network wins over a host address, so the lan's gateway is never reachable either.
       # egress is the way out, not one of them: the machine that hosts the assistant (its gateway) is
       # detected.
-      DOMO_OWN_NETWORKS: ${DOMO_CORE_NET_PREFIX:-10.247.81}.0/24,${DOMO_LAN_NET_PREFIX:-10.247.80}.0/24
+      DOMO_OWN_NETWORKS: ${DOMO_CORE_NET_PREFIX:-10.247.81}.0/24,${DOMO_LAN_NET_PREFIX:-10.247.80}.0/24,${DOMO_SPEECH_NET_PREFIX:-10.247.83}.0/24,${DOMO_SPEECH_EGRESS_NET_PREFIX:-10.247.89}.0/24
       # The edge's published ports (the same as the edge's, below): never reachable on the
       # machine that hosts the assistant. The page's addresses, as the core and the edge have them: the
       # IP literals among them are that machine.
@@ -144,7 +148,43 @@ services:
       - core-auth:/run/domo/core-auth:ro
     networks:
       - core_net
+      - speech_net
       - egress
+
+  speech:
+    <<: *hardened
+    build:
+      context: .
+      dockerfile: packages/domo-speech/Dockerfile
+    # Hears, says and prints voices at home. Reached by the gatekeeper alone, on a network of
+    # their own: no port is published, and it is on neither core_net nor lan. It writes only in
+    # its models volume (the owner can place it on the disk of his choice: see the README of
+    # domo-speech). It has a way out for one reason: the first start fetches the open model
+    # weights (or finds the folder already filled). `preparing` counts as healthy while it
+    # measures them, and nothing waits for it.
+    environment:
+      DOMO_SPEECH_HOST: 0.0.0.0
+      DOMO_SPEECH_MODEL_DIR: /models
+      DOMO_SPEECH_DEVICE: ${DOMO_SPEECH_DEVICE:-auto}
+      # Each one empty when unset (the service then takes its default): see .env.example.
+      DOMO_SPEECH_RESTRICTED_MODELS: ${DOMO_SPEECH_RESTRICTED_MODELS:-yes}
+      DOMO_SPEECH_AT_ONCE: ${DOMO_SPEECH_AT_ONCE:-}
+      DOMO_SPEECH_VOICE_PROGRAM: ${DOMO_SPEECH_VOICE_PROGRAM:-}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - speech-models:/models
+    networks:
+      - speech_net
+      - speech_egress
+    # One copy of the check, shipped in the image (the Dockerfile runs it too): healthy when
+    # ready, or preparing with no failure; failed, whatever the reason, is not.
+    healthcheck:
+      test: ["CMD", "python", "/app/healthcheck.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 600s
+      start_interval: 5s
 
   sandbox:
     build:
@@ -204,6 +244,8 @@ services:
       DOMO_UPKEEP_SECONDS: ${DOMO_UPKEEP_SECONDS:-60}
       # Where the sandbox's launcher listens (the volume below, shared with it alone).
       DOMO_SANDBOX_SOCKET: /run/domo/sandbox/launcher.sock
+      # The house's speech service, declared as a key without a secret once there is an owner.
+      DOMO_SPEECH_URL: http://speech:8083/v1
       TZ: ${TZ:-UTC}
     volumes:
       - db-auth:/run/domo/db-auth:ro
@@ -283,6 +325,26 @@ networks:
         # Dynamic addresses in the upper half: the edge's fixed .2 is never taken by another.
         - subnet: ${DOMO_CORE_NET_PREFIX:-10.247.81}.0/24
           ip_range: ${DOMO_CORE_NET_PREFIX:-10.247.81}.128/25
+  # The speech service and the gatekeeper, alone: closed, with no way out and no address on the
+  # host. A fixed subnet, so that the gatekeeper counts it among the assistant's own networks (a
+  # program is never let reach it); DOMO_SPEECH_NET_PREFIX in .env changes it, as the others.
+  speech_net:
+    driver: bridge
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+    ipam:
+      config:
+        - subnet: ${DOMO_SPEECH_NET_PREFIX:-10.247.83}.0/24
+  # The speech service's way out, to fetch its models, and its alone: the gatekeeper is not on it,
+  # so a compromised speech container reaches none of the gatekeeper's listeners. A fixed subnet
+  # too, listed among the gatekeeper's own networks: an address on a dynamic, unlisted private
+  # subnet would be "house" to its zone logic (DOMO_SPEECH_EGRESS_NET_PREFIX changes it).
+  speech_egress:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${DOMO_SPEECH_EGRESS_NET_PREFIX:-10.247.89}.0/24
   egress:
     driver: bridge
 
@@ -294,6 +356,10 @@ volumes:
   core-auth:
   # The launcher's socket: mounted by the core and the sandbox only. Nothing secret in it.
   sandbox-socket:
+  # The speech service's weights and its measure of this machine: re-fetchable, but large (a few
+  # hundred megabytes, a few gigabytes with a graphics card). To put it on another disk, make it a
+  # bind mount in a compose override.
+  speech-models:
   # The local certificate authority: losing it means trusting a new one on every device.
   caddy-data:
   caddy-config:

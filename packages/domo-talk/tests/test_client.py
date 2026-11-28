@@ -445,9 +445,66 @@ def test_busy_on_a_proof_says_too_many_passwords_are_being_checked() -> None:
     with pytest.raises(Refused) as caught:
         Client(SAVED).prove(REPLY, "password", "hunter2")
     text = str(caught.value)
-    assert "writing" not in text
-    assert "moment" in text
+    assert text == "[busy]"  # no texts held: nothing of its own
     assert "hunter2" not in text
+
+
+@respx.mock
+def test_busy_on_a_proof_says_the_servers_sentence() -> None:
+    respx.get(f"{API}/texts").respond(
+        json={"language": "fr", "texts": {"talk.proof.busy": "Trop de mots de passe."}}
+    )
+    respx.post(f"{API}/confirmations/{REPLY}/prove").respond(503, json={"error": "busy"})
+    client = Client(SAVED)
+    assert client.texts() == {"talk.proof.busy": "Trop de mots de passe."}
+    assert client.language == "fr"
+    with pytest.raises(Refused) as caught:
+        client.prove(REPLY, "password", "hunter2")
+    assert str(caught.value) == "Trop de mots de passe."
+
+
+@respx.mock
+def test_the_texts_are_fetched_with_the_secret_and_never_fail() -> None:
+    route = respx.get(f"{API}/texts").mock(
+        side_effect=[
+            httpx.Response(404, json={"error": "not_found"}),
+        ]
+    )
+    client = Client(SAVED)
+    assert client.texts() == {}
+    assert client.texts() == {}  # an older server is not asked again
+    assert route.call_count == 1
+    assert route.calls.last.request.headers["authorization"] == f"Bearer {SECRET}"
+    unreachable = respx.get(f"{API}/texts").mock(side_effect=httpx.ConnectError("boom"))
+    other = Client(SAVED)
+    assert other.texts() == {}
+    assert unreachable.called
+    assert other.text("talk.too_long") is None
+
+
+@respx.mock
+def test_cannot_reach_says_the_servers_sentence_once_it_was_fetched() -> None:
+    respx.get(f"{API}/texts").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "language": "fr",
+                    "texts": {
+                        "talk.unreachable": "Injoignable à {url}.",
+                        "talk.not_trusted": "Non.",
+                    },
+                },
+            ),
+            httpx.ConnectError("CERTIFICATE_VERIFY_FAILED"),
+        ]
+    )
+    client = Client(SAVED)
+    client.texts()
+    assert str(Unreachable(URL, ssl.SSLError("CERTIFICATE"), client.known_texts)) == (
+        f"Injoignable à {URL}. Non."
+    )
+    assert str(Unreachable(URL, OSError("x"))).startswith("Cannot reach the assistant")
 
 
 def test_a_failed_write_leaves_no_temporary_file_behind(
@@ -460,3 +517,22 @@ def test_a_failed_write_leaves_no_temporary_file_behind(
     with pytest.raises(OSError):
         config.save(SAVED)
     assert list(config.config_dir().iterdir()) == []
+
+
+@respx.mock
+def test_new_texts_replace_the_old_whole_and_both_connections_read_them() -> None:
+    respx.get(f"{API}/texts").mock(
+        side_effect=[
+            httpx.Response(200, json={"language": "fr", "texts": {"talk.too_long": "Long."}}),
+            httpx.Response(200, json={"language": "en", "texts": {"talk.too_long": "Too long."}}),
+        ]
+    )
+    client = Client(SAVED)
+    hearing = Client(SAVED, client.held)
+    client.texts()
+    before = hearing.known_texts
+    client.texts()
+    # The dictionary a reader holds is never emptied or changed: the new one is put in its place.
+    assert before == {"talk.too_long": "Long."}
+    assert hearing.known_texts == {"talk.too_long": "Too long."}
+    assert hearing.known_texts is not before

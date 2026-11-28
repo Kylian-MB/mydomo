@@ -43,6 +43,14 @@ false), so that a memory without their exact words is
 ``others_words``; otherwise it is ``deduced`` (``reply_message_id`` is never set: a review answers
 no message).
 
+A sentence of the person heard from a voice the house was not sure was theirs
+(``Message.heard_unsure``: an unsure voice, one too short to tell, or one heard at another person's
+page, stored in the conversation of the person it probably was) is shown too, marked
+``probably_they``, never as their own words (the owner, 2026-11-27: "Domo juge quoi garder"): it is
+not among ``said`` (no passage of it is theirs) and sets ``told_unsure``, so that what is kept or
+changed in that slice, short of their checked words of a sure line, is ``unsure_voice``
+(``tools.memory_tools.origin_for``). A stranger's words are never a message, so never here.
+
 A reply of Domo's is read with what became of its actions (``_actions_of``): refused and by whom
 (a role, never a name), expired, failed, undone, his own idea. It is data like the rest, and a
 reason to write a lesson with what it was about (``lesson_of``, ``lesson_subject``).
@@ -101,7 +109,7 @@ from domo_core.llm.choices import (
 from domo_core.llm.costs import estimate_tokens, max_cost_usd
 from domo_core.llm.models import Provider
 from domo_core.llm.picker import ModelPicker
-from domo_core.llm.router import Route, choose_key, usable_keys
+from domo_core.llm.router import Route, choose_key, text_keys
 from domo_core.llm.spending import at_limit
 from domo_core.llm.types import ChatMessage, ErrorKind, JsonObject, ToolCall, ToolDefinition
 from domo_core.memory.models import Memory
@@ -182,8 +190,16 @@ def _text_of(message: Message) -> str:
 
 def _shown(message: Message, actions: _Actions) -> bool:
     """Whether a message is shown to the review: one with text, or a reply of Domo's with
-    actions (a reply that failed is shown by its actions alone)."""
+    actions (a reply that failed is shown by its actions alone). A sentence the code was not
+    sure was theirs (``_doubted``) is shown too, marked as such (``_message_of``)."""
     return bool(_text_of(message)) or bool(actions.get(message.id))
+
+
+def _doubted(message: Message) -> bool:
+    """Whether ``message`` is a sentence of the person the code was not sure was theirs when it
+    was heard (``Message.heard_unsure``: an unsure voice, one too short to tell, or one heard at
+    another person's page): shown as probably theirs, never as their own words."""
+    return message.role == "user" and bool(message.heard_unsure)
 
 
 def _weight(message: Message, actions: _Actions) -> int:
@@ -215,26 +231,35 @@ def _said(messages: Sequence[Message]) -> tuple[str, ...]:
     """The person's own messages of a slice, as they are stored, each on its own: a passage of
     their exact words is found in one of them, never across two (ruling R62,
     ``ToolContext.said_messages``)."""
-    return tuple(m.content for m in messages if m.role == "user" and m.content)
+    return tuple(m.content for m in messages if m.role == "user" and m.content and not _doubted(m))
 
 
 def _words_of_others(messages: Sequence[Message]) -> bool:
     """Whether a slice holds words that are neither the person's nor Domo's own answer to them:
     a reply written in a turn that was given words from outside, or that Domo started himself
-    (``Message.own_answer``, false then), as ``ToolContext.told_outside`` says of a turn."""
+    (``Message.own_answer``, false then), as ``ToolContext.told_outside`` says of a turn. A
+    sentence of a voice not sure to be theirs is not one: it is ``_unsure_in``."""
     return any(m.role == "assistant" and _text_of(m) and not m.own_answer for m in messages)
+
+
+def _unsure_in(messages: Sequence[Message]) -> bool:
+    """Whether a slice holds a sentence of the person heard from a voice the house was not sure
+    was theirs (``_doubted``), as ``ToolContext.told_unsure`` says of a turn."""
+    return any(_doubted(m) and _text_of(m) for m in messages)
 
 
 def _message_of(messages: Sequence[Message], actions: _Actions) -> str:
     """The one message the model is sent: the messages of the slice, as data, each with who said
-    it (``they``: the person; ``you``: Domo) and when, and for a reply of Domo's what became of
-    its actions (``_actions_of``)."""
+    it (``they``: the person; ``probably_they``: a voice the house was not sure was theirs,
+    ``_doubted``; ``you``: Domo) and when, and for a reply of Domo's what became of its actions
+    (``_actions_of``)."""
     listed: list[JsonObject] = []
     for m in messages:
         if not _shown(m, actions):
             continue
+        who = "you" if m.role != "user" else "probably_they" if _doubted(m) else "they"
         line: JsonObject = {
-            "who": "they" if m.role == "user" else "you",
+            "who": who,
             "when": m.created_at.astimezone(UTC).isoformat(),
             "text": _text_of(m),
         }
@@ -510,7 +535,7 @@ async def _models(
     the task ``memory`` on the key ``choose_key`` takes among the keys they may use (for someone
     who left whom no key serves any more, the household's general key), whose calls count for
     them; a key without margin for a first call of ``size`` tokens is passed over."""
-    keys = await usable_keys(session, person)
+    keys = await text_keys(session, person)
     if not keys and departing:
         general = (await session.scalars(select(Provider).where(Provider.is_general))).first()
         keys = [] if general is None else [general]
@@ -664,12 +689,7 @@ async def _review(deps: TurnDeps, person_id: uuid.UUID, now: datetime) -> Review
         await _move_on(deps, conversation_id, upto)
         return outcome
     person = reading.person
-    registry: dict[str, InternalTool] = {
-        name: tool for name, tool in deps.registry.items() if name in MEMORY_TOOLS
-    }
-    tools = tools_for(
-        as_role(person.role), registry, deps.policy, person_id=person.id, rights=reading.rights
-    )
+    tools, registry = memory_tools_of(deps, person, reading.rights)
     window = bounded(
         reading.choices.history_chars, least=MIN_HISTORY_CHARS, most=deps.settings.max_history_chars
     )
@@ -729,31 +749,86 @@ async def _go_over(
     )
     message = _message_of(part, reading.actions)
     reading.picker.min_context = estimate_tokens(len(system) + len(message))
-    offered = {tool.name: registry[tool.name] for tool in tools}
+    ended = await memory_turn(
+        deps,
+        person=person,
+        picker=reading.picker,
+        system=system,
+        message=message,
+        tools=tools,
+        registry=registry,
+        conversation_id=reading.conversation_id,
+        output_tokens=choices.output_tokens,
+        # Their messages one by one: a passage is checked in one, never across two.
+        said=said,
+        told_outside=_words_of_others(part),
+        told_unsure=_unsure_in(part),
+    )
+    if ended == "done":
+        return None
+    return "failed" if ended is None else _waits(ended)
+
+
+def memory_tools_of(
+    deps: TurnDeps,
+    person: Person,
+    rights: RightsTable,
+    names: frozenset[str] = MEMORY_TOOLS,
+) -> tuple[list[ToolDefinition], dict[str, InternalTool]]:
+    """The tools of a memory-only turn for ``person``: those of ``names`` their rights leave them
+    (``tools_for``), and each one's tool."""
+    registry = {name: tool for name, tool in deps.registry.items() if name in names}
+    tools = tools_for(
+        as_role(person.role), registry, deps.policy, person_id=person.id, rights=rights
+    )
+    return list(tools), {tool.name: registry[tool.name] for tool in tools}
+
+
+async def memory_turn(
+    deps: TurnDeps,
+    *,
+    person: Person,
+    picker: ModelPicker,
+    system: str,
+    message: str,
+    tools: Sequence[ToolDefinition],
+    registry: Mapping[str, InternalTool],
+    conversation_id: uuid.UUID | None,
+    output_tokens: int | None,
+    said: Sequence[str] = (),
+    told_outside: bool,
+    told_unsure: bool = False,
+) -> Literal["done"] | ErrorKind | None:
+    """One call of a memory-only turn for ``person`` (a review, the sorting of what was heard):
+    ``message`` under ``system``, with ``tools`` (of ``registry``) and its own tool loop. Each call
+    goes to the tool's ``execute`` directly, with a ``ToolContext`` that answers no message and
+    writes no reply: nothing is stored with a message, no card is made, nothing reaches a channel.
+    ``said``: the person's own messages, one by one; ``told_outside``: words of others are in it;
+    ``told_unsure``: sentences of a voice not sure to be theirs are in it.
+    ``done`` once it ended, the kind of the failure, or ``None`` when it stopped with neither."""
     ctx = ToolContext(
         session_factory=deps.session_factory,
         actor=Actor(person.id, as_role(person.role)),
         person=person,
-        conversation_id=reading.conversation_id or _NO_CONVERSATION,
+        conversation_id=conversation_id or _NO_CONVERSATION,
         origin="",
         gatekeeper=deps.gatekeeper,
         clock=deps.clock,
-        registry=offered,
+        registry=registry,
         policy=deps.policy,
-        # A review answers no message, and writes no reply.
         reply_message_id=None,
         domo_message_id=None,
-        models=reading.picker,
+        models=picker,
         no_reader=True,
         embedder=deps.embedder,
-        # Their messages one by one: a passage is checked in one, never across two.
         said=said[0] if said else None,
-        said_later=said[1:],
-        told_outside=_words_of_others(part),
+        said_later=tuple(said[1:]),
+        told_outside=told_outside,
+        told_unsure=told_unsure,
     )
 
     async def handle(call: ToolCall, *, over_limit: bool = False) -> ActionRecord:
-        tool = offered.get(call.name)
+        tool = registry.get(call.name)
         if tool is None:
             return invalid_record(call.name, None, "unknown_tool")
         if over_limit:
@@ -764,11 +839,11 @@ async def _go_over(
         return await execute_allowed(tool, call.name, tool.action_type, arguments, ctx)
 
     events = run_turn(
-        models=reading.picker,
+        models=picker,
         system_prompt=system,
         history=[ChatMessage("user", message)],
         max_output_tokens=bounded(
-            choices.output_tokens, least=MIN_OUTPUT_TOKENS, most=deps.settings.max_output_tokens
+            output_tokens, least=MIN_OUTPUT_TOKENS, most=deps.settings.max_output_tokens
         ),
         tools=tools,
         handle_tool_call=handle,
@@ -777,10 +852,10 @@ async def _go_over(
     async with aclosing(events) as stream:
         async for event in stream:
             if isinstance(event, TurnFailed):
-                return _waits(event.kind)
+                return event.kind
             if isinstance(event, TurnDone):
-                return None
-    return "failed"
+                return "done"
+    return None
 
 
 def review_pass(deps: TurnDeps) -> UpkeepPass:

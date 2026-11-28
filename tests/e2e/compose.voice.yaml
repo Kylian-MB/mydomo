@@ -1,0 +1,16 @@
+# For the voice trials only (tests/e2e/test_voice_stack.py), added after compose.yaml and
+# compose.test.yaml (and compose.gpu.yaml for a graphics card): the speech service keeps its
+# weights and its measure in a folder of this machine that already holds them, never in a volume
+# of the test project (a few gigabytes fetched again at every run).
+#
+#   DOMO_VOICE_MODELS_DIR=D:/domo-voice-models/models
+#
+# The service writes its measure there (measure.json): the trials keep a copy of the one they
+# found and put it back at the end.
+
+services:
+  speech:
+    volumes:
+      - type: bind
+        source: ${DOMO_VOICE_MODELS_DIR:?set DOMO_VOICE_MODELS_DIR to the folder of the speech weights}
+        target: /models

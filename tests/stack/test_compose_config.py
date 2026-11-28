@@ -136,8 +136,12 @@ def test_the_gatekeeper_is_told_the_core_and_the_lan_networks_are_its_own(tmp_pa
     lan_subnet = config["networks"]["lan"]["ipam"]["config"][0]["subnet"]
     assert core_subnet == f"{core or '10.247.81'}.0/24"
     assert lan_subnet == f"{lan or '10.247.80'}.0/24"
+    speech_subnet = config["networks"]["speech_net"]["ipam"]["config"][0]["subnet"]
+    assert speech_subnet == "10.247.83.0/24"
     own = config["services"]["gatekeeper"]["environment"]["DOMO_OWN_NETWORKS"]
-    assert own == f"{core_subnet},{lan_subnet}"
+    egress_subnet = config["networks"]["speech_egress"]["ipam"]["config"][0]["subnet"]
+    assert egress_subnet == "10.247.89.0/24"
+    assert own == f"{core_subnet},{lan_subnet},{speech_subnet},{egress_subnet}"
 
 
 @pytest.mark.parametrize(
@@ -280,13 +284,18 @@ def test_the_test_stacks_can_run_side_by_side():
     networks = [
         ipaddress.ip_network(f"{env[name]}.0/24")
         for env in settings
-        for name in ("DOMO_CORE_NET_PREFIX", "DOMO_LAN_NET_PREFIX")
+        for name in (
+            "DOMO_CORE_NET_PREFIX",
+            "DOMO_LAN_NET_PREFIX",
+            "DOMO_SPEECH_NET_PREFIX",
+            "DOMO_SPEECH_EGRESS_NET_PREFIX",
+        )
     ]
     for index, network in enumerate(networks):
         assert not any(network.overlaps(other) for other in networks[index + 1 :])
     # And none of them is a default network of a real instance.
     defaults = resolved(REPO_ROOT / ".env.example")["networks"]
-    for name in ("core_net", "lan"):
+    for name in ("core_net", "lan", "speech_net", "speech_egress"):
         default = ipaddress.ip_network(defaults[name]["ipam"]["config"][0]["subnet"])
         assert not any(network.overlaps(default) for network in networks)
 

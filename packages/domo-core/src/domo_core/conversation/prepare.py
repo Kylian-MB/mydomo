@@ -35,7 +35,7 @@ says what became of its request since (R73), with the note of an approver who de
 The key and the money
 ---------------------
 
-Every call of the turn goes on one key, chosen among the person's (``router.usable_keys``) rank by
+Every call of the turn goes on one key, chosen among the person's (``router.text_keys``) rank by
 rank (``router.choose_key``): a key with no margin left under one of its limits for the request's
 first call is passed over, and the context says so (``prompts.KeysNote``). When no key is left,
 the turn calls no model: its reply is the fixed message of ``limit_reached`` or ``no_model``. The
@@ -113,9 +113,9 @@ from domo_core.confirmations.service import (
 )
 from domo_core.confirmations.store import paused_chains_of, pending_for_others
 from domo_core.conversation.changes import changes_for
-from domo_core.conversation.channel import Abilities
+from domo_core.conversation.channel import Abilities, Listener
 from domo_core.conversation.kept import KeptMessages
-from domo_core.conversation.speaker import Speaker, actor_of
+from domo_core.conversation.speaker import Speaker, actor_of, heeded_proofs, standing
 from domo_core.conversation.turn import Answer, CardHeads, News, Prepared, Prompt, Turn
 from domo_core.conversation.visits import ArrivalTurns, unanswered_in, untold_decision
 from domo_core.db import SessionFactory, read_or_nothing
@@ -141,7 +141,7 @@ from domo_core.llm.lessons import recent_lessons
 from domo_core.llm.listing import ModelLister
 from domo_core.llm.models import Provider
 from domo_core.llm.newcomers import newcomers_told
-from domo_core.llm.router import KeyChoice, Route, choose_key, key_label, usable_keys
+from domo_core.llm.router import KeyChoice, Route, choose_key, key_label, text_keys
 from domo_core.llm.spending import LimitNote, at_limit, limit_notes
 from domo_core.llm.types import ChatMessage, ErrorKind
 from domo_core.madetools.launch import LaunchDeps
@@ -178,14 +178,22 @@ from domo_core.prompts import (
     SpendingNote,
     ToolWake,
     WriterTime,
+    elsewhere_line,
+    speaking_line,
     today_of,
 )
 from domo_core.sandbox_client import NO_SANDBOX, Sandbox
 from domo_core.texts.scheduler import TextWriting
 from domo_core.texts.view import Texts, person_texts
 from domo_core.tools.agreements import agreements_of
-from domo_core.tools.context import Notify, ToolContext, WakeStarter, tools_kept_from
-from domo_core.tools.notes import notes_to_tell
+from domo_core.tools.context import (
+    Notify,
+    OutsideSource,
+    ToolContext,
+    WakeStarter,
+    tools_kept_from,
+)
+from domo_core.tools.notes import from_unknown_among, notes_to_tell
 from domo_core.tools.registry import InternalTool, tools_for
 from domo_core.tools.rights_tools import writer_timeouts
 from domo_core.toolsdb.store import ToolsBase
@@ -285,18 +293,53 @@ class TurnDeps:
 class TurnRequest:
     """What a channel says of a turn: who speaks (``speaker``), what it can do (``abilities``),
     the address the person reached Domo at (``origin``, for the links of an invitation; ``""``
-    when Domo starts the turn) and, for the proofs a request may ask, where the person can give a
-    passkey (``passkey_site``; ``None`` off the page)."""
+    when Domo starts the turn), for the proofs a request may ask, where the person can give a
+    passkey (``passkey_site``; ``None`` off the page), and the language the words were heard in
+    (``language``, a tag: the turn answers in it, before the person's and the house's; ``None``
+    when the channel cannot tell). ``also_hears``: for words kept while a reply was being written
+    (``conversation.kept``), who else hears the reply that answers them, from when it reads them
+    (given that reply's id; ``None``: nobody more): a channel whose words are answered in another
+    channel's reply still reaches the one who spoke (the voice says it aloud).
+    ``heard_here``: for someone heard at a page signed in as another person
+    (``Speaker.page_person_id``), the messages said and answered at that microphone during this
+    visit of their voice: the turn is told of those alone of their history (their words of now
+    always), and of nothing else of theirs: no note left for them, no plan, no request but those
+    shown here, no memory kept private (``prepare_turn``)."""
 
     speaker: Speaker
     abilities: Abilities
     origin: str = ""
     passkey_site: PasskeySite | None = None
+    language: str | None = None
+    also_hears: "AlsoHears | None" = None
+    heard_here: "frozenset[uuid.UUID] | None" = None
+
+
+# Who else hears a reply that answers kept words, given its id (see ``TurnRequest``).
+type AlsoHears = Callable[[uuid.UUID], Awaitable[Listener | None]]
 
 
 class NoKey(Exception):
     """The person has no key Domo may use for them, and no upkeep turn answers them: a turn
     cannot be written (``prepare_turn``)."""
+
+
+def wake_sources(
+    wakes: Sequence[ToolWake], reaches: Mapping[str, tuple[str, ...]]
+) -> tuple[OutsideSource, ...]:
+    """Which tools or programs woke Domo, as the judge is told (``ToolContext.woke_by``), by
+    what gave each wake (``ToolWake.given_by``), never by the name alone: a fact of a channel of
+    the house's own code has no name (``channel``); a program run by hand is one even when its
+    run is not known; a tool he made is named, with what it is built to reach (``reaches``, by
+    name: ``None`` when it is not among them)."""
+    return tuple(
+        OutsideSource("channel")
+        if wake.given_by == "channel"
+        else OutsideSource("wake", run=wake.run, program=True)
+        if wake.given_by == "program" or wake.run is not None
+        else OutsideSource("wake", name=wake.tool, reaches=reaches.get(wake.tool))
+        for wake in wakes
+    )
 
 
 def made_tool_finder(deps: TurnDeps) -> Callable[[str], Awaitable[InternalTool | None]]:
@@ -380,6 +423,7 @@ async def memory_and_trust_shown(
     embedder: Embedder,
     now: datetime,
     with_speaker: bool,
+    private_too: bool = True,
     by_name: bool = False,
 ) -> tuple[MemoryBlock, Trust | None]:
     """What the turn of ``person_id`` gives Domo of his memory (spec 6.4): his core, as much as
@@ -394,7 +438,10 @@ async def memory_and_trust_shown(
     on its line, and, ``with_speaker``, what the person's own word has been worth so far (``None``
     otherwise), for those who are in the household at ``now``; no figure when that read fails.
     ``by_name`` (a review: nobody talks there) gives what the person said under their name, as
-    ``who_said`` does then."""
+    ``who_said`` does then.
+
+    Without ``private_too`` (the code is not sure who speaks), nothing he keeps to himself
+    (``Memory.kept_private``) is brought in of itself."""
     core: tuple[Memory, ...] = ()
     left_out = 0
     if choices.memory_core_size > 0:
@@ -412,6 +459,10 @@ async def memory_and_trust_shown(
             exclude={m.id for m in core},
         )
         remembered, by_meaning = found_now.memories, found_now.by_meaning
+    if not private_too:
+        # The code is not sure who speaks: nothing he keeps to himself comes of itself.
+        core = tuple(m for m in core if not m.kept_private)
+        remembered = tuple(m for m in remembered if not m.kept_private)
     said_by = await who_said(session, (*core, *remembered), person_id, by_name=by_name)
     trusts = await trust_shown(
         session,
@@ -695,10 +746,11 @@ class _Money:
 async def _speaking(
     session: AsyncSession, speaker: Speaker, conversation_id: uuid.UUID, now: datetime
 ) -> Speaker:
-    """``speaker`` with the clues kept for the person on that channel and that device
-    (``identity.clues.kept_clues``) added to those the channel brings, and, when someone speaks,
-    when they were heard before in the conversation ``conversation_id`` (``last_heard_at``: their
-    message before their last one, ``None`` when there is none)."""
+    """``speaker`` with the clues kept for the person on that channel, that device and that
+    microphone (``identity.clues.kept_clues``) added to those the channel brings, when it has not
+    brought them already and its voice does not contradict them (``heeded_proofs``), and, when
+    someone speaks, when they were heard before in the conversation ``conversation_id``
+    (``last_heard_at``: their message before their last one, ``None`` when there is none)."""
     if speaker.person_id is None:
         return speaker
     kept = await kept_clues(
@@ -707,6 +759,7 @@ async def _speaking(
         channel=speaker.channel,
         device_id=speaker.device_id,
         now=now,
+        microphone=speaker.microphone,
     )
     heard = None
     if not speaker.nobody_spoke:
@@ -721,7 +774,45 @@ async def _speaking(
             .offset(1)
             .limit(1)
         )
-    return replace(speaker, clues=(*speaker.clues, *kept), last_heard_at=heard)
+    return replace(
+        speaker, clues=(*speaker.clues, *heeded_proofs(speaker.clues, kept)), last_heard_at=heard
+    )
+
+
+def speaking_shown(speaker: Speaker, name: str | None, now: datetime) -> str | None:
+    """The context's line of who probably speaks (``prompts.speaking_line``), from the clues the
+    code made (``standing``): ``None`` when it is sure of them. A voice too short to tell is
+    told as unsure (``Speaker.voice_too_short``: unsure for what is sensitive). ``name`` is the
+    probable person's display name; the line carries the clues as the judge reads them, never an
+    identifier."""
+    shown = standing(speaker)
+    if shown == "sure":
+        if not speaker.voice_too_short:
+            return None
+        shown = "unsure"
+    return speaking_line(shown, speaker.as_json(now), name)
+
+
+def _told_of_the_history(
+    messages: Sequence[Message], reply_id: uuid.UUID, request: TurnRequest
+) -> list[Message]:
+    """The messages of the conversation the turn is told of: all of them, but for someone heard
+    at a page signed in as another person (``Speaker.page_person_id``), whose history is told of
+    the messages said and answered at that microphone in this visit only
+    (``request.heard_here``), and their message this turn answers always: what they said
+    elsewhere is never read where someone else may hear it."""
+    if request.speaker.page_person_id is None:
+        return list(messages)
+    here = request.heard_here or frozenset()
+    before = list(takewhile(lambda m: m.id != reply_id, messages))
+    answered = next((m.id for m in reversed(before) if m.role == "user"), None)
+    return [m for m in messages if m.id in (reply_id, answered) or m.id in here]
+
+
+def _speaking_line(speaker: Speaker, person: Person, now: datetime) -> str | None:
+    """``speaking_shown`` for the turn of ``person``, who is the probable speaker
+    (``prepare_turn``): the line names the one whose conversation and history the turn reads."""
+    return speaking_shown(speaker, person.display_name, now)
 
 
 async def _display_names(session: AsyncSession, ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, str]:
@@ -904,7 +995,13 @@ async def prepare_turn(
     (``ToolContext.turn_reason``, ``tools.context.idea_of``), though it stays the person's act, with
     their rights, unless he marks it; and what he remembers is looked for from it first
     (``recall_query``). Raises
-    ``NoKey``."""
+    ``NoKey``.
+
+    The turn is the speaker's own: ``request.speaker`` must be ``person`` (``ValueError``
+    otherwise), so that what the turn reads, the rights it acts with and the line of who
+    probably speaks are all one person's."""
+    if request.speaker.person_id != person.id:
+        raise ValueError("A turn is the speaker's own")
     async with deps.session_factory() as session:
         # The catalog of this turn, with the kinds Domo opened for his tools: read once, used
         # for the whole turn (never again mid-turn).
@@ -912,9 +1009,11 @@ async def prepare_turn(
         if on_his_own:
             # Nobody asked: what is about the person's own things is not his by default here.
             policy = on_his_own_tables(policy)
-        keys = await usable_keys(session, person)
+        keys = await text_keys(session, person)
         texts = await person_texts(session, person)
         speaker = await _speaking(session, request.speaker, reply.conversation_id, deps.clock())
+        # Who probably speaks, when the code is not sure of it (CNV-4): one line of the context.
+        speaking = _speaking_line(speaker, person, deps.clock())
         if not keys:
             # A message the person wrote, or their arrival: a wake, or a plan, goes on no key.
             general = (
@@ -940,7 +1039,11 @@ async def prepare_turn(
         # The news for the person as the turn reads them, first: what it reads next is told them,
         # and a turn that speaks takes them away (``visits.clear_news``).
         news_seen = await session.scalar(select(Person.news_at).where(Person.id == person.id))
-        messages = await ConversationStore(session).recent_messages(reply.conversation_id)
+        messages = _told_of_the_history(
+            await ConversationStore(session).recent_messages(reply.conversation_id),
+            reply.id,
+            request,
+        )
         actions = await ConversationStore(session).actions_of(
             m.id for m in messages if m.role == "assistant" and m.id != reply.id
         )
@@ -1049,6 +1152,10 @@ async def prepare_turn(
             ),
             (),
         )
+        # Heard at a page signed in as someone else: nothing of theirs but what was said here
+        # (``TurnRequest.heard_here``).
+        elsewhere = request.speaker.page_person_id is not None
+        here = request.heard_here or frozenset()
         # The requests that wait for this person's own answer in this conversation.
         pending = await pending_for(
             session, person.id, reply.conversation_id, policy_settings, deps.clock()
@@ -1069,6 +1176,12 @@ async def prepare_turn(
         for_others = await pending_for_others(
             session, person.id, reply.conversation_id, policy_settings, deps.clock()
         )
+        if elsewhere:
+            pending = [c for c in pending if c.last_shown_message_id in here]
+            to_approve = [
+                (c, name) for c, name in to_approve if c.shown_to_approver_message_id in here
+            ]
+            paused, waiting_for, for_others = [], {}, []
         # The steps of the chains among them: theirs with their own words, the others' and their
         # own that wait for someone else's yes without the words of a note (D4).
         steps = {
@@ -1103,7 +1216,24 @@ async def prepare_turn(
         # The notes left for the person that Domo has not told them yet, as data (spec 4.8):
         # theirs alone.
         # On his own, Domo tells none: they wait for a turn of theirs.
-        notes = () if on_his_own else await notes_to_tell(session, person.id)
+        # Heard at someone else's page: what waits for them is given to a voice the code is sure
+        # of, Domo judging whether to tell it there; for one it is not, only that something
+        # waits (final fix wave, case 9).
+        trusted_here = standing(speaker) == "sure" and not speaker.voice_too_short
+        notes = (
+            ()
+            if on_his_own
+            else await notes_to_tell(session, person.id)
+            if not elsewhere or trusted_here
+            else ()
+        )
+        # Among them, words of a source nobody of the house is known for: a note of his own born
+        # of a voice nobody knows, a program's, a site's or a tool's text (``Note.from_unknown``).
+        # His other notes and a member's are weighed by the judge (final fix wave B2).
+        told_unknown = await from_unknown_among(session, notes)
+        notes_wait = bool(notes) or (
+            elsewhere and not on_his_own and bool(await notes_to_tell(session, person.id))
+        )
         # Who is in the household, for everyone: Domo knows the names without a tool call.
         household = await household_shown(session, person.id, deps.clock())
         # The names the person uses for people of the household, theirs alone (spec 6.7).
@@ -1131,6 +1261,7 @@ async def prepare_turn(
                     embedder=deps.embedder,
                     now=deps.clock(),
                     with_speaker=True,
+                    private_too=standing(speaker) == "sure" and not speaker.voice_too_short,
                 ),
                 (MemoryBlock(), None),
             )
@@ -1138,12 +1269,22 @@ async def prepare_turn(
             else (MemoryBlock(), None)
         )
         # The plans Domo set for this person that wait, theirs alone (spec 6.9).
-        plans = await read_or_nothing(
+        found_plans = await read_or_nothing(
             session,
             "plans",
             lambda: plans_shown(session, person.id, policy_settings.time_zone),
             (),
         )
+        plans = () if elsewhere and not trusted_here else found_plans
+        page_id = request.speaker.page_person_id
+        if page_id is not None:
+            names = await _display_names(session, [page_id])
+            told_here = elsewhere_line(
+                names.get(page_id),
+                sure=trusted_here,
+                waiting=notes_wait or bool(found_plans),
+            )
+            speaking = told_here if speaking is None else f"{speaking} {told_here}"
         # A plan's turn is told how many times Domo woke by himself for them today.
         woken = (
             await read_or_nothing(
@@ -1265,7 +1406,11 @@ async def prepare_turn(
         abilities=request.abilities,
         speaker=speaker,
         told_outside=told_outside,
+        told_unknown=told_unknown,
         tool_woke=bool(tool_wakes) or (decided is not None and decided.from_outside),
+        # Which tools or programs woke him, as the context names them: told to the judge. A
+        # decided request whose result a program gave names none (which is not known here).
+        woke_by=wake_sources(tool_wakes, reaches),
         due_plans=tuple(due_plans),
         # The plans due are what they asked for only when each one keeps their exact words: an
         # action of the turn may be for any of them, and one Domo made alone keeps none.
@@ -1309,7 +1454,7 @@ async def prepare_turn(
             unanswered=unanswered_in(messages),
             offered=frozenset(tool.name for tool in tools),
             kept=kept,
-            reads=person.language or policy_settings.house_language,
+            reads=request.language or person.language or policy_settings.house_language,
             abilities=request.abilities,
             due_plans=tuple(due_plans),
             woke_today=woken,
@@ -1324,6 +1469,7 @@ async def prepare_turn(
             building=building,
             agreements=agreements,
             expiring=expiring,
+            speaking=speaking,
         ),
         history=history,
         tools=tools,
@@ -1444,7 +1590,7 @@ async def _upkeep_turn(
             display_name=person.display_name,
             role=role,
             can_act=bool(tools),
-            upkeep=person.language or policy_settings.house_language,
+            upkeep=request.language or person.language or policy_settings.house_language,
             arrival=arrival,
             abilities=request.abilities,
         ),

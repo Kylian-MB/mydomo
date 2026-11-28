@@ -134,9 +134,14 @@ from domo_core.policy.open_catalog import open_kinds
 from domo_core.policy.rights_drafts import Draft, Example, ImaginedNow, Moment, stored_draft
 from domo_core.policy.roles import ROLES, Role
 from domo_core.policy.settings import (
+    DEFAULT_TOOLS_BASE_MB,
+    HEAR_OUTSIDE_KEY,
     LIFETIME_KEY,
     SETTING_DEFAULTS,
     TIME_ZONE_KEY,
+    TOOLS_BASE_KEY,
+    VOICE_GESTURE_KEY,
+    VOICE_UNSURE_KEY,
     WRITER_SECONDS_KEY,
     InvalidSetting,
     validate_setting,
@@ -421,7 +426,24 @@ def describe_rule_change(arguments: JsonObject, texts: Texts) -> str:
             default = SETTING_DEFAULTS[WRITER_SECONDS_KEY]
             return texts("policy.change.writer_seconds.default", seconds=str(default))
         return texts("policy.change.writer_seconds", seconds=str(value))
+    if key in _SAID_BY_VALUE:
+        # How the voice listens, or what is done for a voice he is not sure of: told by what it
+        # does, a cleared one by what its default does (the judge reads it too).
+        default, words = _SAID_BY_VALUE[key]
+        return texts(f"policy.change.{words}.{default if value is None else value}")
+    if key == TOOLS_BASE_KEY:
+        size = DEFAULT_TOOLS_BASE_MB if value is None else value
+        return texts("policy.change.tools_base", size=str(size))
     raise ValueError("a change of the rules is one of the settings")
+
+
+# The settings told by their value, each with its default and the words of its sentences
+# (``policy.change.<words>.<value>``).
+_SAID_BY_VALUE: Final[Mapping[str, tuple[str, str]]] = {
+    HEAR_OUTSIDE_KEY: ("no", "hear_outside"),
+    VOICE_GESTURE_KEY: ("no", "voice_gesture"),
+    VOICE_UNSURE_KEY: ("do", "voice_unsure"),
+}
 
 
 # The changes of the household that have a sentence of their own (``describe_household_change``).

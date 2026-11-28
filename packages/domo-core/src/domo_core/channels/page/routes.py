@@ -79,7 +79,7 @@ from domo_core.conversation.service import (
 from domo_core.conversation.visits import touch_visit
 from domo_core.gatekeeper_client import GatekeeperClient
 from domo_core.llm.key_flow import KEY_NEW_PATH
-from domo_core.llm.router import usable_keys
+from domo_core.llm.router import text_keys
 from domo_core.naming import name_shown
 from domo_core.policy.catalog import PolicyTables
 from domo_core.policy.key_forms import may_add_a_key, may_add_a_new_key
@@ -190,7 +190,7 @@ async def chat_page(
     once what a message would be answered (spec 4.11), the fixed message ``chat.error.no_key``
     with, when they may open it, the button of the form of a key of their own."""
     now = clock()
-    no_key = not await usable_keys(session, person) and await upkeep_key(session) is None
+    no_key = not await text_keys(session, person) and await upkeep_key(session) is None
     key_new_url = (
         KEY_NEW_PATH if no_key and await may_add_a_new_key(session, person, policy, now) else None
     )

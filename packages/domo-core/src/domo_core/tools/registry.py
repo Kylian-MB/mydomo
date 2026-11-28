@@ -103,6 +103,14 @@ from domo_core.tools.text_tools import (
     WritingChoose,
 )
 from domo_core.tools.trust_tools import TrustCorrect, TrustLook, TrustNote
+from domo_core.tools.voice_tools import (
+    SpeakerMannerNote,
+    SpokenPhraseAgree,
+    SpokenPhraseChange,
+    SpokenPhraseRemove,
+    VoiceStopListening,
+    VoiceUnlearn,
+)
 
 __all__ = ["TOOLS", "InternalTool", "InvalidArguments", "tools_for"]
 
@@ -200,6 +208,14 @@ _TOOLS: tuple[InternalTool, ...] = (
     AccountsLook(),
     DoInOrder(),
     ChainContinue(),
+    # The voice (spec 6.2, 6.5, 6.9): the spoken phrase, stopping the listening, "that was not me".
+    SpokenPhraseAgree(),
+    SpokenPhraseChange(),
+    SpokenPhraseRemove(),
+    VoiceStopListening(),
+    VoiceUnlearn(),
+    # The assistant's own reading of how someone speaks (Task 23): a weak clue of his, never shown.
+    SpeakerMannerNote(),
 )
 
 TOOLS: Mapping[str, InternalTool] = MappingProxyType(

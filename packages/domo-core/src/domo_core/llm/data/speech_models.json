@@ -1,0 +1,32 @@
+{
+  "hear": [
+    "whisper-1",
+    "whisper*",
+    "faster-whisper*",
+    "Systran/faster-whisper*",
+    "gpt-4o-transcribe*",
+    "gpt-4o-mini-transcribe*"
+  ],
+  "say": [
+    "tts-1",
+    "tts-1-hd",
+    "tts*",
+    "gpt-4o-mini-tts*",
+    "kokoro*",
+    "piper*",
+    "supertonic*"
+  ],
+  "voice_print": [
+    "speaker-embedding*",
+    "wespeaker*",
+    "ecapa*"
+  ],
+  "prices": {
+    "openai/whisper-1": {"per_minute_heard": "0.006", "per_million_chars_said": "0"},
+    "openai/gpt-4o-transcribe": {"per_minute_heard": "0.006", "per_million_chars_said": "0"},
+    "openai/gpt-4o-mini-transcribe": {"per_minute_heard": "0.003", "per_million_chars_said": "0"},
+    "openai/tts-1": {"per_minute_heard": "0", "per_million_chars_said": "15"},
+    "openai/tts-1-hd": {"per_minute_heard": "0", "per_million_chars_said": "30"},
+    "openai/gpt-4o-mini-tts": {"per_minute_heard": "0", "per_million_chars_said": "12"}
+  }
+}

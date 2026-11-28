@@ -31,6 +31,7 @@ import logging
 import uuid
 from collections.abc import Sequence
 from datetime import datetime
+from typing import Literal
 
 from pydantic import JsonValue
 
@@ -56,12 +57,19 @@ def tools_reason(wakes: Sequence[ToolWake]) -> str:
     return reason_of("a tool of yours woke you: " + ", ".join(sorted({w.tool for w in wakes})))
 
 
+# How a turn tools woke Domo for ended (``tool_wake_end``): his reply kept words (``spoke``), it
+# ran and left no words (``ran``: silent, dropped, nobody to wake, or failed once something of it
+# got out), or it could not run (``not_run``: to be tried again).
+WakeEnd = Literal["spoke", "ran", "not_run"]
+
+
 async def tool_wake_turn(
     deps: TurnDeps,
     person_id: uuid.UUID,
     wakes: Sequence[ToolWake],
     *,
     on_his_own: bool = False,
+    label: str | None = None,
 ) -> bool:
     """A turn nobody asked for, in the conversation of ``person_id``, because tools of Domo woke
     him with ``wakes`` (one or more tools of the same chain: spec 5.4, 5.8,
@@ -91,19 +99,40 @@ async def tool_wake_turn(
     (``madetools.handover``). Never raises but for a cancellation before anything of the turn got
     out (before it ran, or while nothing of it was out), which goes on untouched: the caller leaves
     the wake to be given again. What goes wrong otherwise is logged, by its kind, and is
-    ``False``."""
+    ``False``. Each way a turn could not run, or ran silently, is logged with ``label`` (the name
+    of what woke him, never its content; none: the tools' names)."""
+    ended = await tool_wake_end(deps, person_id, wakes, on_his_own=on_his_own, label=label)
+    return ended != "not_run"
+
+
+async def tool_wake_end(
+    deps: TurnDeps,
+    person_id: uuid.UUID,
+    wakes: Sequence[ToolWake],
+    *,
+    on_his_own: bool = False,
+    label: str | None = None,
+) -> WakeEnd:
+    """``tool_wake_turn``, saying how it ended (``WakeEnd``): only ``spoke`` means words of Domo
+    were written in the person's conversation."""
     if not wakes:
-        return True
+        return "ran"
+    named = label or ", ".join(sorted({w.tool for w in wakes}))
     try:
-        return await _tool_wake(deps, person_id, wakes, on_his_own=on_his_own)
+        return await _tool_wake(deps, person_id, wakes, on_his_own=on_his_own, label=named)
     except Exception as error:
-        logger.error("A tool's turn failed (%s)", type(error).__name__)
-        return False
+        logger.error("A tool's turn failed (%s: error %s)", named, type(error).__name__)
+        return "not_run"
 
 
 async def _tool_wake(
-    deps: TurnDeps, person_id: uuid.UUID, wakes: Sequence[ToolWake], *, on_his_own: bool
-) -> bool:
+    deps: TurnDeps,
+    person_id: uuid.UUID,
+    wakes: Sequence[ToolWake],
+    *,
+    on_his_own: bool,
+    label: str,
+) -> WakeEnd:
     async with deps.session_factory() as session:
         person = await session.get(Person, person_id)
         if person is not None and not is_active(person, deps.clock()):
@@ -112,14 +141,17 @@ async def _tool_wake(
                 session, actor="system", action=WAKE_DROPPED, details={"tools": tools}
             )
             await session.commit()
-            return True
+            logger.info("A tool's turn was dropped (%s: the person left)", label)
+            return "ran"
         if person is None:
-            return True
+            logger.info("A tool's turn was dropped (%s: nobody to wake)", label)
+            return "ran"
         conversation = await ConversationStore(session).active_conversation(person_id)
         await session.commit()
     opened = await open_reply(deps, conversation.id, person_id)
     if opened is None:
-        return False
+        logger.warning("A tool's turn could not run (%s: no open reply)", label)
+        return "not_run"
     reply, person, _ = opened
     turn: Turn | None = None
     try:
@@ -140,8 +172,12 @@ async def _tool_wake(
             # No turn, and no reply in error either: what the tool said waits to be tried again.
             deps.streaming_replies.discard(reply.id)
             await take_back(deps, reply.id, presented=False)
-    if turn is None or turn.blocked is not None:
-        return False
+    if turn is None:
+        logger.warning("A tool's turn could not run (%s: no key)", label)
+        return "not_run"
+    if turn.blocked is not None:
+        logger.warning("A tool's turn could not run (%s: blocked, %s)", label, turn.blocked)
+        return "not_run"
     try:
         ended = await turn.run(Fanout(deps.listeners, person.id, reply.id))
     except asyncio.CancelledError:
@@ -154,15 +190,18 @@ async def _tool_wake(
         task = asyncio.current_task()
         if task is not None:
             task.uncancel()
-        logger.info("A tool's turn of the assistant was stopped before its end")
-        return True
+        logger.info("A tool's turn of the assistant was stopped before its end (%s)", label)
+        return "ran"
     if ended == "failed":
         # Nobody reads its events: its failure would be seen nowhere.
-        logger.warning("A tool's turn of the assistant ended in error")
+        logger.warning("A tool's turn of the assistant ended in error (%s)", label)
         # Words of it kept, or anything it did (a tool launched silently included): never given
         # again. Only a turn of which nothing got out is tried again.
-        return turn.left_anything
-    return True
+        return "ran" if turn.left_anything else "not_run"
+    if ended == "silent":
+        logger.info("A tool's turn of the assistant ran silently (%s)", label)
+        return "ran"
+    return "spoke"
 
 
 def tool_wakes_pass(deps: TurnDeps) -> UpkeepPass:
