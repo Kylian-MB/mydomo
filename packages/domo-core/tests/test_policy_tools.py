@@ -197,6 +197,60 @@ def _rule_change(key: str) -> DescribedAction:
             "en",
             "Back to the default: the rights writer will have 60 seconds per call.",
         ),
+        # The voice's settings, and the tools' base, are told by what they do (the owner's first
+        # real try, 2026-11-27: the judge read "an action the assistant was asked to do" with no
+        # value, and refused his own choice).
+        (
+            "speech.hear_outside",
+            "yes",
+            "en",
+            "What the microphones hear will go to a model outside the house: the voice listens "
+            "freely, and the sound and the words said near it leave the house.",
+        ),
+        ("speech.hear_outside", "no", "en", "What the microphones hear will stay at home."),
+        ("speech.hear_outside", None, "en", "What the microphones hear will stay at home."),
+        (
+            "voice.after_a_gesture",
+            "yes",
+            "en",
+            "The voice will hear only what is said while a gesture is made, such as a held key; "
+            "what is heard stays at home.",
+        ),
+        ("voice.after_a_gesture", "no", "en", "The voice will not wait for a gesture to hear."),
+        ("voice.after_a_gesture", None, "en", "The voice will not wait for a gesture to hear."),
+        (
+            "voice.ordinary_when_unsure",
+            "judge",
+            "en",
+            "An ordinary thing asked by a voice the assistant is not sure of will be weighed "
+            "first, like a sensitive one.",
+        ),
+        (
+            "voice.ordinary_when_unsure",
+            None,
+            "en",
+            "An ordinary thing asked by a voice the assistant is not sure of will be done with "
+            "the rights of whoever probably speaks.",
+        ),
+        (
+            "tools.base_mb",
+            2048,
+            "en",
+            "The base the assistant's tools keep their data in may grow to 2048 MB.",
+        ),
+        (
+            "tools.base_mb",
+            None,
+            "en",
+            "The base the assistant's tools keep their data in may grow to 1024 MB.",
+        ),
+        (
+            "speech.hear_outside",
+            "yes",
+            "fr",
+            "Ce que les micros entendent ira vers un modèle hors de la maison : la voix écoute "
+            "librement, et le son et les mots dits près d'elle sortent de la maison.",
+        ),
     ],
 )
 def test_each_rule_change_reads_as_a_plain_sentence(key, value, lang, sentence):
