@@ -48,7 +48,7 @@ from domo_core.policy.catalog import (
 )
 from domo_core.policy.decision import decide_now
 from domo_core.policy.facts import facts_of
-from domo_core.policy.models import PolicySetting
+from domo_core.policy.models import PolicyRight, PolicySetting
 from domo_core.policy.rights import NO_RIGHTS, Right, RightsTable
 from domo_core.policy.roles import ROLES, Actor, Role, Standing
 from domo_core.policy.settings import VOICE_UNSURE_KEY, InvalidSetting, validate_setting
@@ -179,11 +179,16 @@ def test_a_missing_right_refuses_before_any_judgement() -> None:
 
 
 def test_an_owners_ask_me_first_still_asks_beside_the_judge() -> None:
+    # Since "Domo makes the people", an adult invites by the owner's right only.
     adult = Actor(uuid.uuid4(), "adult", standing="unsure")
-    rights = RightsTable((_right(role="adult", action_type="household.invite", ask="proof"),))
+    rights = RightsTable(
+        (_right(role="adult", action_type="household.invite", access="allow", ask="proof"),)
+    )
     assert _decide(adult, INVITE, rights=rights) == Allow("proof", judge_identity=True)
     # An approver the owner names is still his to give, and the judge weighs who asks too.
-    rights = RightsTable((_right(role="adult", action_type="household.invite", approver="owner"),))
+    rights = RightsTable(
+        (_right(role="adult", action_type="household.invite", access="allow", approver="owner"),)
+    )
     decided = _decide(adult, INVITE, rights=rights)
     assert isinstance(decided, NeedsApproval) and decided.approver == "owner"
     assert decided.judge_identity
@@ -611,7 +616,11 @@ async def test_an_unsure_persons_side_reaches_the_stricter_decision_of_an_idea(
     ctx = _unsure_ctx(session_factory, alex, conversation)
     mark = ToolCall("m", "act_on_my_own", json.dumps({"reason": "Tom comes tonight"}))
     await handle_tool_call(mark, ctx=ctx, reply_id=reply_id)
-    await handle_tool_call(_invite(), ctx=ctx, reply_id=reply_id)
+    # A gesture of his own on people carries its reason (``memory.review``'s rule too).
+    invite = ToolCall(
+        "i", "household_invite", json.dumps({**INVITE_TOM, "reason": "Alex said Tom comes"})
+    )
+    await handle_tool_call(invite, ctx=ctx, reply_id=reply_id)
     assert seen
     person, decided = seen[0]
     assert person.judge_identity and decided.judge_identity
@@ -960,6 +969,18 @@ async def test_at_someone_elses_page_a_silent_judge_lets_the_ordinary_be_done(
     async with session_factory() as writer:
         dana = Person(display_name="Dana", role="adult")
         writer.add(dana)
+        # Since "Domo makes the people", an adult invites by the owner's right only: Dana's
+        # rules count here too.
+        writer.add(
+            PolicyRight(
+                role="adult",
+                action_type="household.invite",
+                access="allow",
+                summary="Adults may invite",
+                owner_words="adults may invite",
+                created_by=alex.id,
+            )
+        )
         await writer.commit()
     _judge(monkeypatch, fallback("error"))
     ctx = _unsure_ctx(session_factory, alex, conversation)

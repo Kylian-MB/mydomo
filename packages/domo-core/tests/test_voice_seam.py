@@ -4,9 +4,10 @@ something of its own, and nothing that listens.
 A speaker may be a record with no account: the actor carries the record's marks, and is trusted
 only when the code checked who speaks. A discussion, a turn and what it keeps are a person's, by
 their id alone. ``people.reach.can_answer`` is the one switch the voice widens. What an unsure
-speaker may do is a list derived from the catalog (``policy.barrier.may_act_weakly``), not called
-yet. A channel claims an opaque reference for a person (``people.hooks``), finds again what exists
-after a missed notice, and is told of merges, splits, erasures and forgettings after the commit."""
+speaker may do is a list derived from the catalog (``policy.barrier.may_act_weakly``), which the
+barrier reads since the voice (its rule 6: judged, never refused out of hand). A channel claims
+an opaque reference for a person (``people.hooks``), finds again what exists after a missed
+notice, and is told of merges, splits, erasures and forgettings after the commit."""
 
 import ast
 import inspect
@@ -231,7 +232,9 @@ async def test_nothing_sensitive_on_the_word_of_someone_without_a_means_of_proof
     decided = await decision.decide_now(
         session, actor_of(probably(tom), tom), forgetting, DEFAULT_POLICY, NOW
     )
-    assert decided == Refuse("untrusted_identity")
+    # Since the voice, never refused out of hand: the judge weighs who speaks, and the owner's
+    # "ask a proof" still stands.
+    assert decided == Allow(rule="proof", judge_identity=True)
     place = ProofPlace(Abilities(True, True, True, True, frozenset({"password", "passkey"})))
     assert await offers(session, tom, place, NOW) == ()
 
@@ -336,17 +339,24 @@ async def test_someone_without_an_account_still_cannot_be_left_a_note_until_can_
         assert tom.id in {person.id for person in await reach.answerers(writer, NOW)}
 
 
-async def test_an_earlier_proof_does_not_establish_a_channel_s_guess(session, add_person):
+async def test_an_earlier_proof_counts_for_a_voice_unless_the_voice_weighs_against(
+    session, add_person
+):
     alex = await add_person("Alex", "owner")
     await keep_proof_clue(
         session, person_id=alex.id, channel="voice", device_id=None, means="password", now=NOW
     )
     conversation = await add_conversation_for(session, alex)
-    # A stranger the channel takes for Alex, on the channel Alex proved himself on.
+    # The voice decided what such a proof is worth (its spec 6.5, "Après une preuve"): a voice
+    # that does not contradict it keeps it.
     guessed = await _speaking(session, probably(alex), conversation, NOW)
-    assert not established(guessed)
-    assert not actor_of(guessed, alex).trusted
-    assert [clue.kind for clue in guessed.clues] == ["voice"]
+    assert [clue.kind for clue in guessed.clues] == ["voice", "proof"]
+    assert actor_of(guessed, alex).trusted
+    # One that weighs against Alex gets none of it.
+    against = Speaker(alex.id, "voice", clues=(Clue("voice", "against", "weak", "code", NOW),))
+    contradicted = await _speaking(session, against, conversation, NOW)
+    assert [clue.kind for clue in contradicted.clues] == ["voice"]
+    assert not actor_of(contradicted, alex).trusted
     # Where the code tied the turn to Alex itself, the proof kept counts as it always did.
     sure = Speaker(alex.id, "voice", clues=(Clue("session", "for", "strong", "code", NOW),))
     told = await _speaking(session, sure, conversation, NOW)
@@ -431,13 +441,14 @@ ORDINARY = frozenset(
         "models.choose",
         "models.refresh",
         "memory.keep",
-        "plan.set",
         "people.nickname_keep",
         "people.nickname_forget",
         "confirmation.own_idea",
         "learning.note",
         "learning.asked",
-        "texts.language_version",
+        # Of the voice.
+        "voice.stop_listening",
+        "voice.manner_note",
     }
 )
 
@@ -459,8 +470,9 @@ def test_what_is_weak_is_exactly_the_ordinary_list():
         assert may_act_weakly(action_type, DEFAULT_POLICY), action_type
 
 
-def test_making_a_plan_for_oneself_is_weak_and_changing_or_cancelling_one_is_not():
-    assert may_act_weakly("plan.set", DEFAULT_POLICY)
+def test_a_plan_made_changed_or_cancelled_is_never_weak():
+    # Making one too, since the voice's merge: it runs later as the person, sure.
+    assert not may_act_weakly("plan.set", DEFAULT_POLICY)
     assert not may_act_weakly("plan.change", DEFAULT_POLICY)
     assert not may_act_weakly("plan.cancel", DEFAULT_POLICY)
     arguments = PlanSet.definition.parameters["properties"]
@@ -488,7 +500,9 @@ def _with_lights() -> Any:
 
 def test_a_launch_follows_the_risks_its_operation_declares():
     policy = _with_lights()
-    assert may_act_weakly("made.lights", policy, risks=Risks(physical=True))
+    # Acting in the house is ordinary only when it was declared harmless (the voice's rule).
+    assert not may_act_weakly("made.lights", policy, risks=Risks(physical=True))
+    assert may_act_weakly("made.lights", policy, risks=Risks(physical=True, harmless=True))
     assert may_act_weakly("made.lights", policy, risks=Risks())
     for risky in (Risks(costs=True), Risks(outward=True), Risks(irreversible=True)):
         assert not may_act_weakly("made.lights", policy, risks=risky)
@@ -501,7 +515,8 @@ def test_a_launch_follows_the_risks_its_operation_declares():
     outside = OutAsk("GET", "https://93.184.216.34/state", {}, None, None)
     assert may_act_weakly(PROGRAM_OUT, policy, risks=minimum_risks(inside, policy))
     assert not may_act_weakly(PROGRAM_OUT, policy, risks=minimum_risks(outside, policy))
-    assert may_act_weakly(PROGRAM_OUT, policy, risks=Risks(physical=True))
+    assert not may_act_weakly(PROGRAM_OUT, policy, risks=Risks(physical=True))
+    assert may_act_weakly(PROGRAM_OUT, policy, risks=Risks(physical=True, harmless=True))
     for risky in (Risks(costs=True), Risks(outward=True), Risks(irreversible=True)):
         assert not may_act_weakly(PROGRAM_OUT, policy, risks=risky)
     assert not may_act_weakly(PROGRAM_OUT, policy, risks=None)
@@ -515,7 +530,7 @@ def test_writing_changing_removing_or_timing_a_tool_is_never_weak():
             assert not may_act_weakly(action_type, DEFAULT_POLICY, risks=risks), action_type
 
 
-def test_decide_does_not_use_it_yet(monkeypatch):
+def test_decide_reads_it_for_someone_the_code_is_not_sure_of(monkeypatch):
     asked: list[str] = []
 
     def weakly(action_type: str, *_: Any, **__: Any) -> bool:
@@ -532,9 +547,12 @@ def test_decide_does_not_use_it_yet(monkeypatch):
         destination="household",
     )
     unsure = actor_of(probably(tom), tom)
-    assert barrier.decide(unsure, keeping) == Refuse("untrusted_identity")
+    assert barrier.decide(unsure, keeping) == Allow()
+    assert asked == ["memory.keep"]
+    # Someone the code is sure of is never asked about.
+    asked.clear()
+    assert barrier.decide(actor_of(proven(tom), tom), keeping) == Allow()
     assert asked == []
-    assert "may_act_weakly" not in inspect.getsource(barrier.decide)
 
 
 async def test_the_directives_are_checked_before_anything_may_act_weakly_could_allow(
