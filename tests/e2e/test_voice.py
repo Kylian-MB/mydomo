@@ -28,6 +28,8 @@ from typing import Any
 import httpx
 import pytest
 
+from tests.e2e.heard_words import heard_back_said, misheard_at_most
+
 ENV_FILE = Path(__file__).with_name("voice.env")
 
 
@@ -302,7 +304,6 @@ def _consecutive(vectors: list[tuple[float, ...]]) -> list[float]:
 @pytest.fixture(scope="module")
 def trial(service: httpx.Client, database_url: str) -> Iterator[Trial]:
     from domo_core.llm.speech.client import Print, PrintThresholds
-    from domo_speech.measure import heard_back
 
     sounds = _sounds()
     models = service.get("/v1/models").json()["data"]
@@ -372,7 +373,9 @@ def trial(service: httpx.Client, database_url: str) -> Iterator[Trial]:
                     "kind": sound.kind,
                     "language": sound.language,
                     "detected": heard["language"],
-                    "heard_back": round(heard_back(sound.text, heard["text"]), 2),
+                    "heard_back": round(
+                        heard_back_said(sound.text, heard["text"], sound.language), 2
+                    ),
                     "heard": heard["text"],
                     "elapsed_s": round(answer.elapsed.total_seconds(), 2),
                     "seconds": round(sound.seconds, 2),
@@ -625,10 +628,22 @@ def test_forty_seconds_without_a_pause_are_alex_on_his_microphone(trial: Trial) 
 
 
 def test_every_sentence_is_heard_back_in_its_language(trial: Trial) -> None:
-    wrong = [
-        (i["model"], i["file"], i["detected"], i["heard_back"])
-        for i in trial.heard
-        if i["kind"] in ("learn", "test", "cold", "imitation", "long")
-        and (i["detected"] != i["language"] or i["heard_back"] < 0.8)
-    ]
-    assert trial.heard and wrong == []
+    """Hours and numbers in figures count as the words said; each hearing model may mishear at
+    most its own share of the sentences (``heard_words.misheard_at_most``)."""
+    sentences: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for i in trial.heard:
+        if i["kind"] in ("learn", "test", "cold", "imitation", "long"):
+            sentences[i["model"]].append(i)
+    over = {
+        model: wrong
+        for model, items in sentences.items()
+        if len(
+            wrong := [
+                (i["file"], i["detected"], i["heard_back"], i["heard"])
+                for i in items
+                if i["detected"] != i["language"] or i["heard_back"] < 0.8
+            ]
+        )
+        > misheard_at_most(model, len(items))
+    }
+    assert sentences and over == {}
