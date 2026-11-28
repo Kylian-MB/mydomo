@@ -2,6 +2,7 @@
 
 import io
 import json
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -21,6 +22,7 @@ PASSWORD = "correct horse battery"
 REPLY = "11111111-1111-4111-8111-111111111111"
 REQUEST = "22222222-2222-4222-8222-222222222222"
 SAVED = Saved(url=URL, secret=SECRET, ca=None)
+REAL_DRAIN = talk.drain_console
 
 
 @pytest.fixture(autouse=True)
@@ -29,6 +31,15 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def terminal(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The input is a terminal, and emptying the console is noted (``drained``) instead of done."""
+    noted: list[str] = []
+    monkeypatch.setattr(talk, "_is_terminal", lambda: True)
+    monkeypatch.setattr(talk, "drain_console", lambda: noted.append("drained"))
+    return noted
 
 
 def typed(monkeypatch: pytest.MonkeyPatch, *lines: str) -> None:
@@ -51,6 +62,30 @@ def sse(*events: tuple[str, dict[str, object]]) -> bytes:
 
 def nothing_heard() -> None:
     respx.get(f"{API}/listen").respond(204)
+    # An older server: it has no texts for the program (``in_the_persons_words`` gives it some).
+    respx.get(f"{API}/texts", name="texts").respond(404, json={"error": "not_found"})
+
+
+# What the server writes for a person who reads French: the program says these, and no other.
+FRENCH = {
+    "talk.no_key": "L'assistant ne peut pas encore répondre.",
+    "talk.too_long": "C'est trop long.",
+    "talk.not_sayable": "L'assistant ne peut pas prendre ce message.",
+    "talk.held_back": "Trop d'essais.",
+    "talk.refused": "L'assistant a refusé cela ({error}).",
+    "talk.proof.prompt": "Mot de passe :",
+    "talk.proof.nothing_waits": "Aucune preuve n'est attendue ici.",
+    "talk.proof.busy": "Trop de mots de passe à la fois.",
+    "talk.unknown_command": "Cette commande n'existe pas ici.",
+    "talk.unreachable": "L'assistant est injoignable à {url}.",
+    "talk.not_trusted": "Son certificat n'est pas reconnu.",
+    "talk.unpaired_now": "L'assistant ne connaît plus cet ordinateur. Appuie sur Entrée.",
+}
+
+
+def in_the_persons_words(texts: dict[str, str] | None = None) -> None:
+    """The server has texts for the program, in French (after ``nothing_heard``)."""
+    respx.routes["texts"].respond(json={"language": "fr", "texts": texts or FRENCH})
 
 
 def wait_for(condition: Callable[[], bool]) -> None:
@@ -286,11 +321,12 @@ def waiting(proofs: list[str], answer_with: str = "proof") -> bytes:
 
 
 @respx.mock
-def test_a_request_that_waits_for_a_proof_offers_prove_and_the_password_is_never_written(
+def test_the_proof_input_opens_by_itself_when_one_is_awaited(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config.save(SAVED)
     nothing_heard()
+    in_the_persons_words()
     respx.get(f"{API}/since").respond(json={"messages": []})
     respx.post(f"{API}/messages").respond(json={"reply_id": REPLY})
     respx.get(f"{API}/stream/{REPLY}").respond(content=waiting(["password"]))
@@ -304,18 +340,170 @@ def test_a_request_that_waits_for_a_proof_offers_prove_and_the_password_is_never
         return PASSWORD
 
     monkeypatch.setattr("getpass.getpass", getpass)
-    typed(monkeypatch, "delete my files", "/prove")
+    typed(monkeypatch, "delete my files")  # nothing else is typed: no /prove
     assert main([]) == 0
-    assert len(asked) == 1
+    assert asked == ["Mot de passe : "]  # the server's sentence, once, for this request
     assert json.loads(prove.calls.last.request.content) == {
         "means": "password",
         "answer": PASSWORD,
     }
     out = capsys.readouterr()
-    assert "type /prove" in out.out
     assert "Thank you, it is done." in out.out
+    assert "/prove" not in out.out + out.err
     assert PASSWORD not in out.out + out.err
     assert PASSWORD not in config.config_path().read_text("utf-8")
+
+
+@respx.mock
+def test_the_hidden_line_is_opened_once_for_a_request_and_again_when_a_reply_shows_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config.save(SAVED)
+    nothing_heard()
+    in_the_persons_words()
+    respx.get(f"{API}/since").respond(json={"messages": []})
+    respx.post(f"{API}/messages").respond(json={"reply_id": REPLY})
+    other = sse(("words", {"text": "Fine."}), ("ended", {"status": "done"}))
+    respx.get(f"{API}/stream/{REPLY}").mock(
+        side_effect=[
+            httpx.Response(200, content=waiting(["password"])),
+            httpx.Response(200, content=other),
+            httpx.Response(200, content=waiting(["password"])),
+        ]
+    )
+    opened: list[str] = []
+
+    def getpass(prompt: str = "") -> str:
+        opened.append(prompt)
+        return ""  # gives up each time
+
+    monkeypatch.setattr("getpass.getpass", getpass)
+    typed(monkeypatch, "delete my files", "and the weather?", "delete them")
+    assert main([]) == 0
+    # Asked after the first reply; not after the second (it does not show the request); asked
+    # again after the third, which shows it again.
+    assert opened == ["Mot de passe : ", "Mot de passe : "]
+
+
+@respx.mock
+def test_an_empty_proof_sends_nothing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config.save(SAVED)
+    nothing_heard()
+    in_the_persons_words()
+    respx.get(f"{API}/since").respond(json={"messages": []})
+    respx.post(f"{API}/messages").respond(json={"reply_id": REPLY})
+    respx.get(f"{API}/stream/{REPLY}").respond(content=waiting(["password"]))
+    prove = respx.post(f"{API}/confirmations/{REQUEST}/prove")
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": "")
+    typed(monkeypatch, "delete my files", "/prove")
+    assert main([]) == 0
+    assert not prove.called
+    assert FRENCH["talk.proof.nothing_waits"] not in capsys.readouterr().out  # it still waits
+
+
+@respx.mock
+def test_a_hidden_line_never_opens_by_itself_where_the_input_is_not_a_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config.save(SAVED)
+    nothing_heard()
+    in_the_persons_words()
+    respx.get(f"{API}/since").respond(json={"messages": []})
+    respx.post(f"{API}/messages").respond(json={"reply_id": REPLY})
+    respx.get(f"{API}/stream/{REPLY}").respond(content=waiting(["password"]))
+    monkeypatch.setattr(talk, "_is_terminal", lambda: False)
+
+    def refuse(prompt: str = "") -> str:
+        raise AssertionError("getpass would echo here")
+
+    monkeypatch.setattr("getpass.getpass", refuse)
+    typed(monkeypatch, "delete my files")
+    assert main([]) == 0
+
+
+@respx.mock
+def test_what_was_typed_ahead_is_thrown_away_before_the_hidden_line_opens(
+    monkeypatch: pytest.MonkeyPatch, terminal: list[str]
+) -> None:
+    config.save(SAVED)
+    nothing_heard()
+    in_the_persons_words()
+    respx.get(f"{API}/since").respond(json={"messages": []})
+    respx.post(f"{API}/messages").respond(json={"reply_id": REPLY})
+    respx.get(f"{API}/stream/{REPLY}").respond(content=waiting(["password"]))
+
+    def getpass(prompt: str = "") -> str:
+        terminal.append("hidden line")
+        return ""
+
+    monkeypatch.setattr("getpass.getpass", getpass)
+    typed(monkeypatch, "delete my files")
+    assert main([]) == 0
+    assert terminal == ["drained", "hidden line"]
+
+
+def test_the_console_is_emptied_on_windows_and_elsewhere() -> None:
+    class Keys:
+        def __init__(self) -> None:
+            self.waiting = list("abc")
+            self.read: list[str] = []
+
+        def kbhit(self) -> bool:
+            return bool(self.waiting)
+
+        def getwch(self) -> str:
+            self.read.append(self.waiting.pop(0))
+            return self.read[-1]
+
+    keys = Keys()
+    REAL_DRAIN(windows=True, msvcrt=keys)
+    assert keys.read == ["a", "b", "c"] and not keys.waiting
+
+    flushed: list[tuple[int, int]] = []
+
+    class Tty:
+        TCIFLUSH = 0
+
+        @staticmethod
+        def tcflush(fd: int, queue: int) -> None:
+            flushed.append((fd, queue))
+
+    class Input:
+        @staticmethod
+        def fileno() -> int:
+            return 7
+
+    REAL_DRAIN(windows=False, termios=Tty, stdin=Input)
+    assert flushed == [(7, 0)]
+    # Where nothing can be done, nothing fails.
+    REAL_DRAIN(windows=False, termios=object(), stdin=Input)
+
+
+@respx.mock
+def test_prove_still_works_and_is_mentioned_nowhere(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config.save(SAVED)
+    nothing_heard()
+    in_the_persons_words()
+    respx.get(f"{API}/since").respond(json={"messages": []})
+    respx.post(f"{API}/messages").respond(json={"reply_id": REPLY})
+    respx.get(f"{API}/stream/{REPLY}").respond(content=waiting(["password"]))
+    prove = respx.post(f"{API}/confirmations/{REQUEST}/prove").respond(
+        json={"outcome": "approved", "sentence": "Done."}
+    )
+    answers = iter(["", PASSWORD])  # the first line, opened by itself, is given up
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": next(answers))
+    typed(monkeypatch, "delete my files", "/prove", "/weird")
+    assert main([]) == 0
+    assert prove.call_count == 1
+    out = capsys.readouterr()
+    assert FRENCH["talk.unknown_command"] in out.out
+    assert "/prove" not in out.out + out.err
+    for text in FRENCH.values():
+        assert "/prove" not in text
 
 
 @respx.mock
@@ -382,7 +570,88 @@ def test_a_message_that_is_refused_is_said_and_the_talk_goes_on(
 
 
 @respx.mock
-def test_a_message_kept_while_a_reply_is_written_is_no_problem(
+def test_a_refusal_is_said_with_the_servers_sentence(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config.save(SAVED)
+    nothing_heard()
+    in_the_persons_words()
+    respx.get(f"{API}/since").respond(json={"messages": []})
+    respx.post(f"{API}/messages").mock(
+        side_effect=[
+            httpx.Response(409, json={"error": "no_key"}),
+            httpx.Response(413, json={"error": "too_long"}),
+            httpx.Response(400, json={"error": "something_new"}),
+        ]
+    )
+    typed(monkeypatch, "one", "two", "three")
+    assert main([]) == 0
+    assert capsys.readouterr().err.splitlines() == [
+        FRENCH["talk.no_key"],
+        FRENCH["talk.too_long"],
+        FRENCH["talk.refused"].replace("{error}", "something_new"),
+    ]
+
+
+@respx.mock
+def test_without_texts_the_program_says_nothing_of_its_own_and_never_fails(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An older server (no texts) or one whose texts lack a key."""
+    config.save(SAVED)
+    nothing_heard()
+    respx.get(f"{API}/since").respond(json={"messages": []})
+    respx.post(f"{API}/messages").mock(
+        side_effect=[
+            httpx.Response(409, json={"error": "no_key"}),
+            httpx.Response(200, json={"reply_id": REPLY}),
+        ]
+    )
+    respx.get(f"{API}/stream/{REPLY}").respond(content=waiting(["password"]))
+    asked: list[str] = []
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": asked.append(prompt) or "")
+    typed(monkeypatch, "one", "two", "/nothing", "/prove")
+    assert main([]) == 0
+    out = capsys.readouterr()
+    assert out.err.strip() == "[no_key]"
+    # Not by itself (nothing would say why the typing hides): only the person's own /prove opens it.
+    assert asked == [""]
+    assert "/" not in out.out.replace("·", "")
+
+
+@respx.mock
+def test_the_texts_are_read_again_after_a_reply_when_the_language_changes(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config.save(SAVED)
+    nothing_heard()
+    texts = respx.routes["texts"]
+    texts.mock(
+        side_effect=[
+            httpx.Response(200, json={"language": "fr", "texts": FRENCH}),
+            httpx.Response(
+                200,
+                json={"language": "en", "texts": {**FRENCH, "talk.too_long": "Too long."}},
+            ),
+        ]
+    )
+    respx.get(f"{API}/since").respond(json={"messages": []})
+    respx.post(f"{API}/messages").mock(
+        side_effect=[
+            httpx.Response(200, json={"reply_id": REPLY}),
+            httpx.Response(413, json={"error": "too_long"}),
+        ]
+    )
+    respx.get(f"{API}/stream/{REPLY}").respond(
+        content=sse(("words", {"text": "Hi."}), ("ended", {"status": "done"}))
+    )
+    typed(monkeypatch, "hello", "a very long one")
+    assert main([]) == 0
+    assert capsys.readouterr().err.strip() == "Too long."
+
+
+@respx.mock
+def test_a_line_typed_during_a_reply_is_sent_and_nothing_is_said_about_it(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # Spec 11.3: what answers it comes as what Domo says on his own, on the listening stream.
@@ -393,7 +662,9 @@ def test_a_message_kept_while_a_reply_is_written_is_no_problem(
     typed(monkeypatch, "and also this")
     assert main([]) == 0
     assert post.call_count == 1
-    assert capsys.readouterr().err.strip() == ""  # nothing to complain about
+    captured = capsys.readouterr()
+    assert captured.err.strip() == ""  # nothing to complain about
+    assert "kept" not in captured.out and "busy" not in captured.out.lower()
 
 
 @respx.mock
@@ -448,6 +719,7 @@ def test_what_domo_says_on_his_own_is_written_on_its_own_lines() -> None:
     )
     respx.get(f"{API}/listen").mock(side_effect=then_nothing(httpx.Response(200, content=body)))
     respx.get(f"{API}/since").respond(json={"messages": [], "domo_name": None})
+    respx.get(f"{API}/texts").respond(404)
     out = io.StringIO()
     listening = listening_in(out)
     listening.start()
@@ -469,6 +741,7 @@ def test_a_name_given_in_what_domo_said_on_his_own_is_followed() -> None:
     )
     respx.get(f"{API}/listen").mock(side_effect=then_nothing(httpx.Response(200, content=body)))
     since = respx.get(f"{API}/since").respond(json={"messages": [], "domo_name": "Brenda"})
+    respx.get(f"{API}/texts").respond(404)
     out = io.StringIO()
     listening = listening_in(out)
     listening.start()
@@ -502,6 +775,7 @@ def test_listening_tries_again_when_the_server_cannot_be_reached() -> None:
         side_effect=then_nothing(httpx.ConnectError("boom"), httpx.Response(200, content=body))
     )
     respx.get(f"{API}/since").respond(json={"messages": []})
+    respx.get(f"{API}/texts").respond(404)
     out = io.StringIO()
     listening = listening_in(out)
     listening.start()
@@ -522,6 +796,7 @@ def test_a_device_found_unknown_while_listening_ends_the_talk_at_the_next_line(
     config.save(SAVED)
     listen = respx.get(f"{API}/listen").respond(401, json={"error": "unknown_device"})
     respx.get(f"{API}/since").respond(json={"messages": []})
+    respx.get(f"{API}/texts").respond(json={"language": "fr", "texts": FRENCH})
     post = respx.post(f"{API}/messages").respond(json={"reply_id": REPLY})
 
     def read(prompt: str = "") -> str:
@@ -532,9 +807,7 @@ def test_a_device_found_unknown_while_listening_ends_the_talk_at_the_next_line(
     monkeypatch.setattr("builtins.input", read)
     assert main([]) == 2
     assert not post.called
-    err = capsys.readouterr().err.lower()
-    assert "pair" in err
-    assert "enter" in err
+    assert FRENCH["talk.unpaired_now"] in capsys.readouterr().err
 
 
 def test_what_arrives_while_the_prompt_waits_is_written_on_its_own_lines() -> None:
@@ -560,6 +833,7 @@ def test_a_request_that_waits_keeps_its_proof_through_other_messages(
 ) -> None:
     config.save(SAVED)
     nothing_heard()
+    in_the_persons_words()
     respx.get(f"{API}/since").respond(json={"messages": []})
     respx.post(f"{API}/messages").respond(json={"reply_id": REPLY})
     respx.get(f"{API}/stream/{REPLY}").mock(
@@ -573,13 +847,14 @@ def test_a_request_that_waits_keeps_its_proof_through_other_messages(
     prove = respx.post(f"{API}/confirmations/{REQUEST}/prove").respond(
         json={"outcome": "executed", "sentence": "Done.", "request": None}
     )
-    monkeypatch.setattr("getpass.getpass", lambda prompt="": PASSWORD)
+    answers = iter(["", PASSWORD])  # the line opened by itself is given up: the request waits on
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": next(answers))
     typed(monkeypatch, "delete my files", "and the weather?", "/prove", "/prove")
     assert main([]) == 0
     assert prove.call_count == 1  # then the request is over: nothing waits any more
     out = capsys.readouterr().out
     assert "Done." in out
-    assert "Nothing waits for a proof here." in out
+    assert FRENCH["talk.proof.nothing_waits"] in out
 
 
 @respx.mock
@@ -588,6 +863,7 @@ def test_a_proof_that_fails_can_be_given_again(
 ) -> None:
     config.save(SAVED)
     nothing_heard()
+    in_the_persons_words()
     respx.get(f"{API}/since").respond(json={"messages": []})
     respx.post(f"{API}/messages").respond(json={"reply_id": REPLY})
     respx.get(f"{API}/stream/{REPLY}").respond(content=waiting(["password"]))
@@ -599,7 +875,7 @@ def test_a_proof_that_fails_can_be_given_again(
         }
     )
     monkeypatch.setattr("getpass.getpass", lambda prompt="": PASSWORD)
-    typed(monkeypatch, "delete my files", "/prove", "/prove")
+    typed(monkeypatch, "delete my files", "/prove")  # the first line opens by itself
     assert main([]) == 0
     assert prove.call_count == 2
 
@@ -610,6 +886,7 @@ def test_an_event_saying_the_request_has_no_proof_to_give_ends_the_offer(
 ) -> None:
     config.save(SAVED)
     nothing_heard()
+    in_the_persons_words()
     respx.get(f"{API}/since").respond(json={"messages": []})
     respx.post(f"{API}/messages").respond(json={"reply_id": REPLY})
     over = sse(
@@ -625,10 +902,10 @@ def test_an_event_saying_the_request_has_no_proof_to_give_ends_the_offer(
             httpx.Response(200, content=over),
         ]
     )
-    monkeypatch.setattr("getpass.getpass", lambda prompt="": PASSWORD)
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": "")  # given up
     typed(monkeypatch, "delete my files", "what now", "/prove")
     assert main([]) == 0
-    assert "Nothing waits for a proof here." in capsys.readouterr().out
+    assert FRENCH["talk.proof.nothing_waits"] in capsys.readouterr().out
 
 
 @respx.mock
@@ -650,6 +927,7 @@ def test_the_offer_ends_unless_the_server_says_this_request_still_waits_for_a_pr
 ) -> None:
     config.save(SAVED)
     nothing_heard()
+    in_the_persons_words()
     respx.get(f"{API}/since").respond(json={"messages": []})
     respx.post(f"{API}/messages").respond(json={"reply_id": REPLY})
     respx.get(f"{API}/stream/{REPLY}").respond(content=waiting(["password"]))
@@ -657,7 +935,7 @@ def test_the_offer_ends_unless_the_server_says_this_request_still_waits_for_a_pr
         json={"outcome": "whatever", "sentence": "Said.", "request": request_now}
     )
     monkeypatch.setattr("getpass.getpass", lambda prompt="": PASSWORD)
-    typed(monkeypatch, "delete my files", "/prove", "/prove")
+    typed(monkeypatch, "delete my files", "/prove")
     assert main([]) == 0
     assert prove.call_count == 1
 
@@ -668,6 +946,7 @@ def test_what_a_proof_runs_shows_once_is_written_once_and_not_kept(
 ) -> None:
     config.save(SAVED)
     nothing_heard()
+    in_the_persons_words()
     respx.get(f"{API}/since").respond(json={"messages": []})
     respx.post(f"{API}/messages").respond(json={"reply_id": REPLY})
     respx.get(f"{API}/stream/{REPLY}").respond(content=waiting(["password"]))
@@ -677,7 +956,7 @@ def test_what_a_proof_runs_shows_once_is_written_once_and_not_kept(
         json={"outcome": "executed", "sentence": "Invited.", "once": once, "request": None}
     )
     monkeypatch.setattr("getpass.getpass", lambda prompt="": PASSWORD)
-    typed(monkeypatch, "invite someone", "/prove")
+    typed(monkeypatch, "invite someone")
     assert main([]) == 0
     lines = capsys.readouterr().out.splitlines()
     shown = [line for line in lines if link in line]
@@ -714,6 +993,57 @@ def test_the_program_knows_no_outcome_of_the_server() -> None:
             if path == Path(__file__).resolve():
                 continue
             assert name not in path.read_text("utf-8"), (name, path.name)
+
+
+ALLOWED_ENGLISH = {
+    # The line that is not a sentence of the conversation: command-line help (``--help``).
+    "Talk with the assistant from a terminal.",
+    "entrust this computer to the assistant (asks for a code)",
+    "the https address of the assistant",
+    "the ca.crt of the assistant, to trust his certificate",
+    "the name of this computer, as the assistant will show it",
+    "delete the secret saved on this computer",
+    # Pairing and forgetting, before there is a person, a language or a secret (ruling R9).
+    "This computer is not paired yet. Run: domo-talk pair <url>",
+    "That code is not valid: it may be wrong, already used, or too old.",
+    "That name cannot be used.",
+    "Too many tries. Wait a little, then try again.",
+    "Give the https address of the assistant, for example https://domo.example",
+    "The assistant does not know this computer (any more). Pair it again: domo-talk pair <url>",
+    "Cannot read the certificate file ",
+    "This computer is now entrusted to the assistant. Run domo-talk to talk to him.",
+    "The saved secret is deleted from this computer.",
+    "Code from the assistant: ",
+    # Said when no texts were ever fetched (nothing can be asked of the server).
+    "Cannot reach the assistant at ",
+    " His certificate is not trusted here: pair with --ca <path to his ca.crt>.",
+}
+
+
+def test_no_english_sentence_is_left_in_the_code_but_the_pairing_ones() -> None:
+    import ast
+
+    found: set[str] = set()
+    for path in sorted((Path(__file__).resolve().parents[1] / "src" / "domo_talk").glob("*.py")):
+        tree = ast.parse(path.read_text("utf-8"))
+        docstrings = {
+            id(node.body[0].value)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+            and node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+        }
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and id(node) not in docstrings
+                and re.search(r"[A-Za-z]{2,} [A-Za-z]{2,}", node.value)
+                and not node.value.startswith("\\b")  # the pattern that finds Domo's name
+            ):
+                found.add(node.value)
+    assert found == ALLOWED_ENGLISH
 
 
 def test_a_sentence_of_the_program_says_the_name_the_person_gave_domo() -> None:

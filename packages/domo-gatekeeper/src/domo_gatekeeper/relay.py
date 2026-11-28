@@ -22,6 +22,11 @@ What guards the key:
   is refused rather than relayed.
 * Upstream failures are re-raised without the original error: HTTP libraries put header values
   in some of their messages.
+* Sound (a success whose one ``Content-Type`` is ``audio/...``) is never altered: masking bytes
+  inside samples would only break it. A key is still never let through: a secret of eight bytes
+  or more found whole in the sound cuts the answer there (``SecretDetector``), before any part
+  of it was sent on; shorter ones cannot be told from noise and are not looked for in sound. Its
+  headers are scrubbed like any others.
 """
 
 import re
@@ -42,7 +47,7 @@ from domo_gatekeeper.errors import (
     UpstreamTimeoutError,
 )
 from domo_gatekeeper.providers import binding_allows, default_port, require_secure_transport
-from domo_gatekeeper.scrub import Scrubber, scrub_text
+from domo_gatekeeper.scrub import Scrubber, SecretDetector, SecretFound, scrub_text
 from domo_gatekeeper.vault import Vault, secret_parts
 
 HOP_BY_HOP = frozenset(
@@ -247,8 +252,29 @@ def _response_headers(response: httpx.Response, secrets: list[str]) -> list[tupl
     ]
 
 
+def _is_sound(response: httpx.Response) -> bool:
+    """Whether the answer is sound: a success whose one ``Content-Type`` has the media type
+    ``audio/...``.
+
+    Judged on the media type alone, never on a parameter (``text/plain; x=audio/``); two
+    ``Content-Type`` headers make an answer whose kind is unclear, and an answer that is not a
+    success is most likely words about a failure: both are scrubbed as text.
+    """
+    if not response.is_success:
+        return False
+    types = response.headers.get_list("content-type")
+    if len(types) != 1:
+        return False
+    return types[0].partition(";")[0].strip().lower().startswith("audio/")
+
+
 async def _scrubbed_body(response: httpx.Response, secrets: list[str]) -> AsyncIterator[bytes]:
-    scrubber = Scrubber(secrets)
+    """The body, scrubbed of ``secrets``.
+
+    Sound (``_is_sound``) is never altered: a secret found whole in it ends the body with an
+    ``UpstreamError`` instead, before any part of that secret was released.
+    """
+    scrubber = SecretDetector(secrets) if _is_sound(response) else Scrubber(secrets)
     error: UpstreamError | None = None
     try:
         try:
@@ -260,6 +286,8 @@ async def _scrubbed_body(response: httpx.Response, secrets: list[str]) -> AsyncI
                 yield tail
         except httpx.HTTPError as exc:
             error = _upstream_error(exc)
+        except SecretFound:
+            error = UpstreamError("The provider's sound held a secret: it was cut there.")
     finally:
         await _close(response)
     if error is not None:

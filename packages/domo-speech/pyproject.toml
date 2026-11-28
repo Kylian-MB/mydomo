@@ -1,0 +1,35 @@
+[project]
+name = "domo-speech"
+version = "0.14.0"
+description = "The assistant speech service: sound to text, text to sound, sound to voice print."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    "fastapi>=0.143.0",
+    "numpy>=2.0",
+    "pydantic-settings>=2.15.0",
+    "python-multipart>=0.0.32",
+    "uvicorn>=0.54.0",
+]
+
+[project.optional-dependencies]
+# The real engines; never needed by the unit tests. Light runtimes only (CTranslate2, ONNX
+# Runtime), no deep-learning framework. A graphics card needs its own libraries (README).
+models = [
+    "faster-whisper>=1.2.1",
+    "onnxruntime>=1.20",
+]
+# The CUDA 12 libraries a graphics card needs (cuBLAS and cuDNN 9), for the GPU image only: in
+# the lock file like everything else, never installed on a machine without a card.
+gpu = [
+    "nvidia-cublas-cu12>=12,<13",
+    "nvidia-cudnn-cu12>=9,<10",
+]
+
+[project.scripts]
+domo-speech = "domo_speech.__main__:main"
+
+[build-system]
+requires = ["uv_build>=0.12.9,<0.13.0"]
+build-backend = "uv_build"

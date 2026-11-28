@@ -123,6 +123,7 @@ async def create_confirmation(
         asked_by=None if asked is None else asked.by,
         ask_why=None if asked is None else asked.why,
         warned=asked is not None and asked.warned,
+        ask_before_doubt=None if asked is None else asked.before_doubt,
         ask_reason=question,
         chain_basis=None if chain_basis is None else chain_basis.as_json(),
         shown_to_approver_message_id=shown_to_approver,
@@ -414,6 +415,13 @@ ANSWER_AS_APPROVER_EXPLICITLY: Final = (
 ANSWER_AS_APPROVER_WITH_A_PROOF: Final = (
     "a proof that it is the person you talk with (not the one who asked): one of their agreed "
     "means (never in words)"
+)
+# A no in words the judge did not take for the person's (a voice the code is not sure of: the
+# owner, 2026-11-27): nothing was refused, the request waits, and he may ask them again. Followed
+# by how it is answered.
+NO_NOT_TAKEN: Final = (
+    "their no just now was not taken: the voice that said it may not be theirs, so nothing was "
+    "refused and it still waits; ask them again if you see fit"
 )
 # A chain paused until someone's arrival waits for no answer (spec 4.3b).
 ANSWER_WHEN_THEY_JOIN: Final = (

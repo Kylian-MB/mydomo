@@ -18,12 +18,13 @@ from domo_core.accounts.models import Person
 from domo_core.confirmations.judge import RightsSay
 from domo_core.conversation.execution import consult_the_judge
 from domo_core.llm.catalog import UNKNOWN_PRICES, Catalog, ModelInfo, shipped_catalog
-from domo_core.llm.costs import CHARS_PER_TOKEN
+from domo_core.llm.costs import CHARS_PER_TOKEN, speech_cost_usd
 from domo_core.llm.metered import MeteredModel
 from domo_core.llm.models import ModelChoices, Provider, ProviderModel, new_provider_id
 from domo_core.llm.picker import ModelPicker
 from domo_core.llm.provider_keys import check_key
 from domo_core.llm.router import Route, choose_route
+from domo_core.llm.speech.catalog import FREE_SPEECH, SpeechPrices
 from domo_core.llm.spending import (
     RESERVATION_TTL,
     LimitReached,
@@ -33,6 +34,7 @@ from domo_core.llm.spending import (
     period_start,
     reserve,
     set_spending_limit,
+    settle_speech,
     settle_stale,
     spent_usd,
     usd_per,
@@ -1143,3 +1145,57 @@ async def test_a_removed_role_limit_is_gone(owner, session_factory, clock):
         await session.commit()
     async with session_factory() as reader:
         assert (await reader.execute(select(SpendingLimit))).first() is None
+
+
+# --- the calls of sound ---------------------------------------------------------------------------
+
+
+def test_a_call_of_sound_costs_its_minutes_and_its_characters():
+    prices = SpeechPrices(Decimal("0.006"), Decimal(15))
+    assert speech_cost_usd(prices, heard_seconds=90.0, said_chars=0) == Decimal("0.009")
+    assert speech_cost_usd(prices, heard_seconds=0.0, said_chars=2000) == Decimal("0.03")
+    assert speech_cost_usd(FREE_SPEECH, heard_seconds=60.0, said_chars=10**6) == 0
+
+
+async def test_a_sound_reservation_not_settled_is_settled_at_its_maximum(
+    owner, session_factory, clock
+):
+    key = await add_key(session_factory, owner.id, general=True)
+    async with session_factory() as session:
+        first = await reserve(
+            session,
+            route=route_on(key),
+            person_id=owner.id,
+            max_usd=Decimal("0.5"),
+            now=clock(),
+            catalog=shipped_catalog(),
+            zone=None,
+        )
+        second = await reserve(
+            session,
+            route=route_on(key),
+            person_id=owner.id,
+            max_usd=Decimal("0.25"),
+            now=clock(),
+            catalog=shipped_catalog(),
+            zone=None,
+        )
+        assert isinstance(first, uuid.UUID) and isinstance(second, uuid.UUID)
+        cost = await settle_speech(
+            session,
+            first,
+            heard_seconds=1.5,
+            said_chars=0,
+            prices=FREE_SPEECH,
+            failed_before_any_answer=False,
+            now=clock(),
+        )
+        await session.commit()
+    assert cost == 0
+    clock.advance(timedelta(hours=1))
+    async with session_factory() as session:
+        assert await settle_stale(session, clock()) == 1  # only the one never settled
+        await session.commit()
+    done = {c.id: c for c in await calls_of(session_factory, key.id)}
+    assert done[first].cost_usd == 0 and done[first].heard_seconds == Decimal("1.50")
+    assert done[second].cost_usd == Decimal("0.25")

@@ -37,7 +37,7 @@ kept for someone (``Conversation.notify``), or that a decision was made
 import logging
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from itertools import takewhile
 from typing import TYPE_CHECKING, Final
@@ -60,13 +60,18 @@ from domo_core.conversation.prepare import (
     prepare_turn,
     upkeep_key,
 )
-from domo_core.conversation.speaker import Speaker
+from domo_core.conversation.speaker import (
+    Speaker,
+    heard_unsure,
+    least_sure,
+    voice_against,
+)
 from domo_core.conversation.visits import step_aside
 from domo_core.db import SessionFactory
 from domo_core.deliveries.models import Extent
 from domo_core.deliveries.service import DeliveryNotes, Reached, write_fetched
 from domo_core.identity.clues import still_speaking
-from domo_core.llm.router import usable_keys
+from domo_core.llm.router import text_keys
 from domo_core.tools.context import WakeStarter
 
 if TYPE_CHECKING:
@@ -83,6 +88,17 @@ STALE_AFTER: Final = timedelta(minutes=2)
 
 class NotSayable(Exception):
     """The words cannot be said: empty, longer than ``MAX_TEXT_LENGTH``, or holding a NUL."""
+
+
+class ReplyBeingWritten(Exception):
+    """Words heard at a page signed in as someone else (``Speaker.page_person_id``) while a reply
+    is being written in the person's conversation (``reply_id``): never kept for that turn, whose
+    context is the person's whole one; nothing is recorded, and the channel says them again once
+    that reply is over, for a turn of their own."""
+
+    def __init__(self, reply_id: uuid.UUID) -> None:
+        super().__init__("a reply is being written")
+        self.reply_id = reply_id
 
 
 def reply_is_alive(reply: Message, streaming_replies: set[uuid.UUID], now: datetime) -> bool:
@@ -195,14 +211,23 @@ class Conversation:
         writes it, with what the channel says of a turn (``request``; without it, one through
         which nobody listens: ``NOBODY_LISTENS``), see the module docstring. The proofs they gave
         on that channel live on while they speak (``identity.clues.still_speaking``). Raises
-        ``NotSayable`` or ``NoKey`` (see the module docstring); nothing is recorded then."""
+        ``NotSayable`` or ``NoKey`` (see the module docstring); nothing is recorded then. Words
+        heard at a page signed in as someone else are never kept for a turn: while a reply is
+        being written, ``ReplyBeingWritten`` is raised and nothing is recorded.
+
+        The words are the speaker's: ``speaker`` must be ``person`` (``ValueError`` otherwise,
+        nothing recorded): someone else's words, or nobody known's, never go in a person's
+        conversation as theirs. Their proofs live on only while no voice the code heard weighs
+        against them (``voice_against``)."""
+        if speaker.person_id != person.id:
+            raise ValueError("The words are not this person's")
         if not text.strip() or len(text) > MAX_TEXT_LENGTH or "\x00" in text:
             raise NotSayable
         deps = self._deps
         # The reply being written that their words come during, if any.
         during: Message | None = None
         async with deps.session_factory() as session:
-            if not await usable_keys(session, person) and await upkeep_key(session) is None:
+            if not await text_keys(session, person) and await upkeep_key(session) is None:
                 raise NoKey
             store = ConversationStore(session)
             conversation = await store.active_conversation(person.id)
@@ -222,8 +247,18 @@ class Conversation:
                     await store.finish_message(
                         streaming.id, content=streaming.content, status="error"
                     )
+            if during is not None and speaker.page_person_id is not None:
+                # Heard at someone else's page: never read by a turn with their whole context,
+                # nor said there by it (fix round 5 of Task 24). Nothing is stored.
+                raise ReplyBeingWritten(during.id)
             said = await store.add_message(
-                conversation.id, role="user", content=text, status="complete", provenance="person"
+                conversation.id,
+                role="user",
+                content=text,
+                status="complete",
+                provenance="person",
+                # Not sure it is theirs (ruling I1): never read as their own words later.
+                heard_unsure=heard_unsure(speaker),
             )
             # The model that writes it is chosen by the turn, call by call: the reply says which
             # once it is over.
@@ -238,9 +273,14 @@ class Conversation:
                     provenance="model",
                 )
             )
-            await still_speaking(
-                session, person_id=person.id, channel=speaker.channel, now=deps.clock()
-            )
+            if not voice_against(speaker):
+                await still_speaking(
+                    session,
+                    person_id=person.id,
+                    channel=speaker.channel,
+                    now=deps.clock(),
+                    microphone=speaker.microphone,
+                )
             await session.commit()
         if during is None:
             # What was kept for a turn that ended without answering it (one nobody wrote any
@@ -281,15 +321,25 @@ class Conversation:
         """Answer what ``person_id`` wrote in ``conversation_id`` while a turn ran there and that
         it had no round left to read (``kept``, oldest first): a reply of its own, opened after
         them, written by a turn as for a message said once that turn was over, with what the
-        channel of the last one said of a turn (its ``TurnRequest``), its events given to whoever
-        listens to them (``Fanout``). Nothing when a later message of theirs came since (its reply
+        channel of the last one said of a turn (its ``TurnRequest``), whose speaker is the least
+        sure of theirs (``least_sure``: ruling C1), its events given to whoever
+        listens to them (``Fanout``) and to whoever their channels say hears them besides
+        (``TurnRequest.also_hears``). Nothing when a later message of theirs came since (its reply
         answers them all), or when they are no longer in the household. While another reply is
         being written there, they are kept for that one's turn instead. Never raises: what goes
         wrong is logged, by its kind."""
+        theirs = [(m, said) for m, said in kept if said.speaker.person_id == person_id]
+        if len(theirs) != len(kept):
+            # Never answered as theirs, nor kept again: words of someone else, or of nobody
+            # known (``say`` keeps none; this holds whoever kept them).
+            logger.error("Words kept for a person were not theirs: dropped")
+        kept = theirs
         if not kept:
             return
         deps = self._deps
         last, request = kept[-1]
+        # The reply is as sure as the least sure of those it answers (ruling C1).
+        request = replace(request, speaker=least_sure([said.speaker for _, said in kept]))
         try:
             async with deps.session_factory() as session:
                 store = ConversationStore(session)
@@ -332,16 +382,23 @@ class Conversation:
                     deps.kept.keep(conversation_id, message_id, said_with)
                 await self._kept_unless_over(person_id, conversation_id, streaming.id)
                 return
-            await self._write_kept_reply(person, reply, request)
+            await self._write_kept_reply(person, reply, request, [r for _, r in kept])
         except Exception as error:
             logger.error(
                 "What was written during a turn could not be answered (%s)", type(error).__name__
             )
 
-    async def _write_kept_reply(self, person: Person, reply: Message, request: TurnRequest) -> None:
+    async def _write_kept_reply(
+        self,
+        person: Person,
+        reply: Message,
+        request: TurnRequest,
+        kept: Sequence[TurnRequest],
+    ) -> None:
         """Write ``reply``, claimed, opened for what ``person`` wrote during a turn: its events go
-        to whoever listens to them. For a person without a key, it is marked as failed
-        (``no_key``)."""
+        to whoever listens to them, and to whoever the channels of the words it answers (``kept``)
+        say hears them besides (``TurnRequest.also_hears``: the voice that heard them says it
+        aloud). For a person without a key, it is marked as failed (``no_key``)."""
         deps = self._deps
         handed_over = False
         try:
@@ -365,6 +422,7 @@ class Conversation:
         finally:
             if not handed_over:
                 deps.streaming_replies.discard(reply.id)
+        await turn.hear_also(kept)
         await turn.run(Fanout(deps.listeners, person.id, reply.id))
 
     async def answer(

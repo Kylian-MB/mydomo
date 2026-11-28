@@ -72,6 +72,9 @@ ALL_TABLES = {
     "open_addresses",
     "went_wrong",
     "service_accounts",
+    "voice_refs",
+    "voice_prints",
+    "voice_moments",
 }
 # The tables of iteration 1a: what the database holds one revision before the household.
 TABLES_OF_1A = {
@@ -2080,6 +2083,81 @@ async def test_every_account_is_given_its_means_of_proof(scratch_database_url):
         await engine.dispose()
 
 
+async def test_0062_counts_the_sound_of_a_call_and_takes_it_back(scratch_database_url):
+    """The calls of sound gain their seconds and characters and the five kinds of tasks; going
+    back down drops them, and the calls of those kinds, and gives the schema of 0057 back."""
+    config = alembic_config(scratch_database_url)
+    await asyncio.to_thread(command.upgrade, config, "0057")
+    before = await schema_of(scratch_database_url)
+    engine = create_async_engine(scratch_database_url)
+    call = (
+        "INSERT INTO model_calls (task, model_id, status, reserved_usd) "
+        "VALUES ('{task}', 'm', 'settled', 0)"
+    )
+    try:
+        with pytest.raises(IntegrityError):
+            async with engine.begin() as connection:
+                await connection.execute(text(call.format(task="hear")))
+        await asyncio.to_thread(command.upgrade, config, "0062")
+        async with engine.begin() as connection:
+            await connection.execute(text(call.format(task="conversation")))
+            await connection.execute(text(call.format(task="say")))
+            rows = await connection.execute(
+                text("SELECT task, heard_seconds, said_chars FROM model_calls ORDER BY task")
+            )
+            assert [tuple(row) for row in rows] == [("conversation", 0, 0), ("say", 0, 0)]
+        await asyncio.to_thread(command.downgrade, config, "0057")
+        async with engine.connect() as connection:
+            rows = await connection.execute(text("SELECT task FROM model_calls"))
+            assert rows.scalars().all() == ["conversation"]
+    finally:
+        await engine.dispose()
+    assert await schema_of(scratch_database_url) == before
+
+
+async def test_the_task_constraint_takes_the_speech_kinds(session):
+    for task in ("hear", "say", "voice_print", "attention", "heard_sorting"):
+        await session.execute(
+            text(
+                "INSERT INTO model_calls (task, model_id, status, reserved_usd) "
+                f"VALUES ('{task}', 'm', 'settled', 0)"
+            )
+        )
+    with pytest.raises(IntegrityError):
+        await session.execute(
+            text(
+                "INSERT INTO model_calls (task, model_id, status, reserved_usd) "
+                "VALUES ('humming', 'm', 'settled', 0)"
+            )
+        )
+
+
+async def test_0063_makes_the_voice_tables_and_takes_them_back(scratch_database_url):
+    """References, prints and moments of the voice: schema only, symmetric downgrade."""
+    config = alembic_config(scratch_database_url)
+    await asyncio.to_thread(command.upgrade, config, "0062")
+    before = await schema_of(scratch_database_url)
+    await asyncio.to_thread(command.upgrade, config, "0063")
+    after = await schema_of(scratch_database_url)
+    tables = {row[0] for row in after["columns"]}
+    assert {"voice_refs", "voice_prints", "voice_moments"} <= tables
+    assert not [
+        row for row in after["columns"] if row[0].startswith("voice_") and row[2] == "bytea"
+    ]
+    assert any(row[1] == "uq_voice_prints_ref_id" for row in after["constraints"])
+    assert any(row[1] == "ck_voice_prints_vector_size" for row in after["constraints"])
+    assert any(row[:2] == ("voice_prints", "learnt_at") for row in after["columns"])
+    assert any(row[:2] == ("voice_prints", "heard_at") for row in after["columns"])
+    assert any(row[:2] == ("voice_prints", "moved_in_visit") for row in after["columns"])
+    # One live moment per person is the database's guarantee.
+    assert any(
+        row[:2] == ("voice_moments", "ix_voice_moments_person_id") and "UNIQUE" in str(row[2])
+        for row in after["indexes"]
+    )
+    await asyncio.to_thread(command.downgrade, config, "0062")
+    assert await schema_of(scratch_database_url) == before
+
+
 async def test_upgrade_then_downgrade_leaves_no_table(scratch_database_url, list_tables):
     """0055 makes the table of what went wrong; going back down leaves the schema of 0054."""
     config = alembic_config(scratch_database_url)
@@ -2144,4 +2222,73 @@ async def test_0057_gives_actions_and_requests_their_subject_idea_and_who_answer
     assert "(subject_key, created_at DESC)" in indexes["ix_message_actions_subject_key_created_at"]
     assert "WHERE (subject_key IS NOT NULL)" in indexes["ix_message_actions_subject_key_created_at"]
     await asyncio.to_thread(command.downgrade, config, "0056")
+    assert await schema_of(scratch_database_url) == before
+
+
+async def test_0065_marks_a_voice_to_be_learnt_again_and_takes_it_back(scratch_database_url):
+    """``voice_refs.relearn_at`` (empty: nothing to learn again); going back down drops it."""
+    config = alembic_config(scratch_database_url)
+    await asyncio.to_thread(command.upgrade, config, "0064")
+    before = await schema_of(scratch_database_url)
+    await asyncio.to_thread(command.upgrade, config, "0065")
+    after = await schema_of(scratch_database_url)
+    columns = {(row[0], row[1]): row[2:] for row in after["columns"]}
+    assert columns[("voice_refs", "relearn_at")][:2] == ("timestamp with time zone", "YES")
+    await asyncio.to_thread(command.downgrade, config, "0064")
+    assert await schema_of(scratch_database_url) == before
+
+
+async def test_0069_lets_a_memory_come_from_an_unsure_voice_and_takes_it_back(
+    scratch_database_url,
+):
+    """``memories.origin`` may be ``unsure_voice`` (the owner, 2026-11-27: what is kept from a
+    voice the house was not sure of keeps that source); going back down makes such a memory
+    relayed words (``others_words``, the most cautious a person's could be) and brings the schema
+    of 0068 back, every other origin untouched."""
+    config = alembic_config(scratch_database_url)
+    await asyncio.to_thread(command.upgrade, config, "0068")
+    before = await schema_of(scratch_database_url)
+    await asyncio.to_thread(command.upgrade, config, "0069")
+    sam = "00000000-0000-0000-0000-000000000001"
+    origins = ("own_words", "others_words", "deduced", "external", "unsure_voice")
+    engine = create_async_engine(scratch_database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    f"INSERT INTO persons (id, display_name, role) VALUES ('{sam}', 'Sam', 'owner')"
+                )
+            )
+            for origin in origins:
+                await connection.execute(
+                    text(
+                        "INSERT INTO memories (said_by_id, subject, content, kind, origin, "
+                        "kept_private, core, created_at, changed_at) "
+                        f"VALUES ('{sam}', :origin, 'c', 'fact', :origin, false, false, "
+                        "now(), now())"
+                    ),
+                    {"origin": origin},
+                )
+        with pytest.raises(IntegrityError):
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "INSERT INTO memories (said_by_id, subject, content, kind, origin, "
+                        "kept_private, core, created_at, changed_at) "
+                        f"VALUES ('{sam}', 's', 'c', 'fact', 'heard', false, false, now(), now())"
+                    )
+                )
+        await asyncio.to_thread(command.downgrade, config, "0068")
+        async with engine.begin() as connection:
+            found = await connection.execute(text("SELECT subject, origin FROM memories"))
+            assert dict(found.all()) == {
+                "own_words": "own_words",
+                "others_words": "others_words",
+                "deduced": "deduced",
+                "external": "external",
+                "unsure_voice": "others_words",
+            }
+            await connection.execute(text("DELETE FROM persons"))
+    finally:
+        await engine.dispose()
     assert await schema_of(scratch_database_url) == before

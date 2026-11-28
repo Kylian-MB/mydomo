@@ -23,6 +23,9 @@ names (``accounts.passkeys``).
 ``DOMO_TOOLS_DATABASE`` is the name of the tools' own database (``toolsdb``), on the same server
 as the core's, reached with the same host, user and password: ``domo_tools`` by default.
 
+``DOMO_SPEECH_URL`` is where the speech service of the house listens (the compose file sets it);
+without it, no speech service is declared. An empty value means none.
+
 ``DOMO_EMBEDDING_MODEL_DIR`` is the folder of the local model that gives the meaning of memories
 (``memory.embedder``), downloaded into the image when it is built.
 """
@@ -123,6 +126,9 @@ class CoreSettings(BaseSettings):
     tools_database: str = Field(default="domo_tools", pattern=r"^[a-z_][a-z0-9_]{0,62}$")
 
     gatekeeper_url: str = "http://gatekeeper:8081"
+    # The speech service of the house (``llm.speech.home``): its address, ending in ``/v1``. None
+    # when the house has none (nothing is declared then).
+    speech_url: str | None = None
     core_token_file: Path = Path("/run/domo/core-auth/core_token")
     # The Unix socket of the sandbox launcher (``sandbox_client``). It may be absent: the core
     # starts without it, and only a call to the sandbox fails.
@@ -181,11 +187,12 @@ class CoreSettings(BaseSettings):
     def _proxies_are_addresses_or_networks(cls, value: str) -> str:
         return check_trusted_proxies(value)
 
-    @field_validator("database_url_override", mode="before")
+    @field_validator("database_url_override", "speech_url", mode="before")
     @classmethod
     def _blank_url_is_unset(cls, value: object) -> object:
         """``DOMO_DATABASE_URL=`` (empty, as a Compose file passes it when the variable is not
-        set) means "not set": the stack's database is used, not an empty URL."""
+        set) means "not set": the stack's database is used, not an empty URL. The same for the
+        speech service's address: none."""
         if isinstance(value, str) and not value.strip():
             return None
         return value

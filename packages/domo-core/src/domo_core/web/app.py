@@ -24,7 +24,8 @@ deliver the runs of his tools a restart left (``conversation.tool_wakes.tool_wak
 same), build the tools he opened a build of (``madetools.upkeep.toolmaking_pass``, the same) and
 launch his tools whose time came or that wait for someone to join
 (``madetools.triggers.triggers_pass``, the same), give the sandbox how many programs it runs at
-once (``madetools.places.places_pass``, Domo's setting);
+once (``madetools.places.places_pass``, Domo's setting), sweep the voice prints past their end and
+mend the voice references a missed notice of the record left (``channels.voice.people``);
 the catalog of models and the euro's
 rate are read again only when Domo judges it useful (``models_refresh``); and, for a house whose
 language has no default phrases of its own, it writes again the texts missing from the house's
@@ -85,6 +86,11 @@ from domo_core.channels.api import routes as api_routes
 from domo_core.channels.api.auth import ApiRefusal, refusal, refusal_response
 from domo_core.channels.page import key_routes as page_key_routes
 from domo_core.channels.page import routes as page_routes
+from domo_core.channels.program_texts import router as program_texts_router
+from domo_core.channels.voice import routes as voice_routes
+from domo_core.channels.voice.live import LIVE_VOICES
+from domo_core.channels.voice.people import voice_upkeep_pass
+from domo_core.channels.voice.wiring import voice_sessions_of
 from domo_core.config import CoreSettings
 from domo_core.confirmations import routes as confirmation_routes
 from domo_core.confirmations.arrivals import arrivals_pass
@@ -100,6 +106,9 @@ from domo_core.deliveries.service import DeliveryNotes
 from domo_core.gatekeeper_client import GatekeeperClient, load_core_token, new_http_client
 from domo_core.household import routes as household_routes
 from domo_core.household.upkeep import departures_pass
+from domo_core.llm.speech.at_home import AtHome
+from domo_core.llm.speech.client import SpeechClient
+from domo_core.llm.speech.home import speech_home_pass
 from domo_core.madetools.places import places_pass
 from domo_core.madetools.triggers import triggers_pass
 from domo_core.madetools.upkeep import toolmaking_pass
@@ -298,6 +307,13 @@ def create_app(settings: CoreSettings) -> FastAPI:
         app.state.engine = engine
         app.state.session_factory = make_session_factory(engine)
         app.state.gatekeeper = GatekeeperClient(settings.gatekeeper_url, token, http)
+        # The speech service of the house is reached through the gatekeeper's relay, like a model.
+        app.state.speech = SpeechClient(app.state.gatekeeper, http)
+        # One check of where a key leads, shared, so that its answers are kept; the house's own
+        # speech service is at home by its declaration.
+        app.state.at_home = AtHome(app.state.gatekeeper, declared_url=settings.speech_url)
+        # The page's voice is served from now on (``channels.voice.wiring``).
+        app.state.voice_sessions = voice_sessions_of(app)
         # Nothing connects to the sandbox now: the core serves whether or not it is up.
         sandbox_http = new_sandbox_http_client(settings.sandbox_socket)
         app.state.sandbox = SandboxClient(sandbox_http)
@@ -348,6 +364,18 @@ def create_app(settings: CoreSettings) -> FastAPI:
                 writing=app.state.house_writing,
                 now=now,
             ),
+            # The house's speech service, as a key without a secret: at once when there is an
+            # owner and the service has listed its models, and every round until then; after,
+            # its list is read again when a use was missing or a call failed (once a minute).
+            speech_home_pass(
+                app.state.session_factory,
+                lambda: gatekeeper_of(app),
+                lambda: model_lister_of(app),
+                url=settings.speech_url,
+            ),
+            # The voice prints: what is past its end swept, and the references of the people
+            # the record no longer holds mended (at once, then hourly).
+            voice_upkeep_pass(app.state.session_factory),
             # The reads of the world come last: they wait on the network.
             model_lists_pass(
                 app.state.session_factory,
@@ -397,6 +425,10 @@ def create_app(settings: CoreSettings) -> FastAPI:
     # The arrival turns that run, by their reply: a message the person says stops theirs.
     app.state.arrival_turns = ArrivalTurns()
     app.state.house_writing = HouseWriting(app.state.wakes.spawn)
+    # The page's voice sockets that are open (``channels.voice.routes``).
+    app.state.voice_sockets = voice_routes.VoiceSockets()
+    # The voice sessions live, by person, and the moments they share (``channels.voice.live``).
+    app.state.live_voices = LIVE_VOICES
 
     def now() -> datetime:
         # Read at each call: the application's clock may be replaced while it runs (tests).
@@ -450,4 +482,6 @@ def create_app(settings: CoreSettings) -> FastAPI:
     app.include_router(owner_routes.router)
     app.include_router(model_routes.router)
     app.include_router(api_routes.router)
+    app.include_router(program_texts_router)
+    app.include_router(voice_routes.router)
     return app

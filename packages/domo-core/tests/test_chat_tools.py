@@ -169,6 +169,14 @@ async def test_the_model_only_sees_tools_allowed_for_the_role(guest_chat):
         "address_close",
         "addresses_look",
         "accounts_look",
+        # And the voice (spec 6.2, 6.5, 6.9): the spoken phrase, the listening, "that was not me".
+        "spoken_phrase_agree",
+        "spoken_phrase_change",
+        "spoken_phrase_remove",
+        "voice_stop_listening",
+        "voice_unlearn",
+        # And his own reading of how someone speaks (Task 23).
+        "speaker_manner_note",
     ]
 
 

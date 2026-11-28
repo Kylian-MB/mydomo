@@ -34,27 +34,46 @@ DOMO_SUBJECT_ID: Final = UUID(int=0)
 DOMO_LABEL: Final = "domo"
 
 
+# How sure the code is of who speaks (``conversation.speaker.standing``): a fact from its own
+# clues, never a verdict.
+Standing = Literal["sure", "unsure", "unknown"]
+
+
 @dataclass(frozen=True)
 class Actor:
     """Who asks for an action, as the barrier sees them.
 
-    ``trusted`` says whether the identity is certain: someone logged in on the web page is; a
-    caller known only by what they claim (a channel without a strong link to the person, later)
-    is not. ``subject`` says whether it is a person or Domo (``domo_actor``): Domo's rights
-    are his own (``policy.rights``), and his role is only what a rule on roles reads of him.
+    ``standing`` says how sure the code is of the identity (``conversation.speaker.standing``):
+    someone logged in on the web page is ``sure``; a probable person nothing sure confirms is
+    ``unsure`` (the barrier lets the yes-judge weigh what is sensitive); nobody known is
+    ``unknown`` (no rights: they may not act). ``voice_too_short``: the sentence's voice was too
+    short to tell who said it (``conversation.speaker.Speaker.voice_too_short``): sure for what is
+    ordinary, unsure for what is sensitive. ``subject`` says whether it is a person or Domo
+    (``domo_actor``): Domo's rights are his own (``policy.rights``), and his role is only what a
+    rule on roles reads of him.
     """
 
     person_id: UUID
     role: Role
-    trusted: bool = True
+    standing: Standing = "sure"
     subject: Subject = "person"
+    voice_too_short: bool = False
+    # Heard at a page signed in as that other person (``Speaker.page_person_id``): nothing is
+    # ordinary for them then (``barrier.identity_judged``), and that person's rules count too, the
+    # stricter winning (``policy.decision.decide_now``).
+    page_person_id: UUID | None = None
+
+    @property
+    def trusted(self) -> bool:
+        """Whether the code is sure of who it is, for anything (sensitive things included)."""
+        return self.standing == "sure" and not self.voice_too_short
 
 
 def domo_actor() -> Actor:
     """Domo as an actor, for what he does on his own for the house: the role of an adult for
     what reads a role (whose agreement is needed, a limit), certain of who he is, and his own
     rights."""
-    return Actor(DOMO_SUBJECT_ID, "adult", trusted=True, subject="domo")
+    return Actor(DOMO_SUBJECT_ID, "adult", subject="domo")
 
 
 def actor_label(actor: Actor) -> str:

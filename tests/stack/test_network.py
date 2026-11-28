@@ -44,7 +44,8 @@ def test_network_attachments(stack):
 
     p = stack.project
     assert nets("core") == {f"{p}_core_net"} and nets("db") == {f"{p}_core_net"}
-    assert nets("gatekeeper") == {f"{p}_core_net", f"{p}_egress"}
+    assert nets("gatekeeper") == {f"{p}_core_net", f"{p}_speech_net", f"{p}_egress"}
+    assert nets("speech") == {f"{p}_speech_net", f"{p}_speech_egress"}
     assert nets("edge") == {f"{p}_core_net", f"{p}_lan"}
 
 

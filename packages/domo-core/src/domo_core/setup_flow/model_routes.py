@@ -81,6 +81,7 @@ from domo_core.llm.provider_keys import (
     vault_form_path,
 )
 from domo_core.llm.provider_kinds import PROVIDER_KINDS
+from domo_core.llm.speech.home_key import HOME_SPEECH_ID
 from domo_core.policy.settings import (
     HOUSE_LANGUAGE,
     load_policy_settings,
@@ -321,9 +322,13 @@ async def _end_the_step(session: AsyncSession, person: Person, provider: Provide
         .returning(SetupState.id)
     )
     if ended.scalar_one_or_none() is not None:
-        # The attempts the owner abandoned must not outlive the setup: one provider is left, and
-        # it is the household's general key.
-        await session.execute(delete(Provider).where(Provider.id != provider.id))
+        # The attempts the owner abandoned must not outlive the setup: one provider of theirs is
+        # left, and it is the household's general key. The house's speech service
+        # (``HOME_SPEECH_ID``) is no attempt: the upkeep recorded it once the owner existed and
+        # reads its list again only when asked, so a key dropped here would never come back.
+        await session.execute(
+            delete(Provider).where(Provider.id != provider.id, Provider.id != HOME_SPEECH_ID)
+        )
         await session.execute(
             update(Provider).where(Provider.id == provider.id).values(is_general=True)
         )

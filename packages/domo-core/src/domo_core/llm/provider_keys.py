@@ -71,6 +71,8 @@ from domo_core.llm.models import Provider, ProviderModel
 from domo_core.llm.probe import probe_model
 from domo_core.llm.provider_kinds import PROVIDER_KINDS, ProviderKind
 from domo_core.llm.router import Route, owner_levels
+from domo_core.llm.speech.catalog import does_of
+from domo_core.llm.speech.home_key import HOME_SPEECH_ID
 from domo_core.llm.types import ErrorKind, ModelCallError
 from domo_core.texts.store import Reader
 from domo_core.texts.view import RecueilTexts, Texts, person_texts, shown_groups
@@ -259,8 +261,18 @@ async def general_when_none(session: AsyncSession, provider: Provider) -> None:
     """``provider``, a key that works (it lists models), becomes the household's general key when
     there is none and the one who gave it is the owner of now (ruling R65: the general key removed
     with no other key of its giver's to take over leaves none, and the next key of the owner's that
-    works takes its place). Never a key of anyone else. In the caller's transaction, uncommitted."""
-    if provider.is_general:
+    works takes its place). Never a key of anyone else, and never a key whose listed models all
+    hear, say or print voices, nor the house's speech service (``HOME_SPEECH_ID``) whatever it
+    lists: nothing could think with it. In the caller's transaction, uncommitted."""
+    if provider.is_general or provider.id == HOME_SPEECH_ID:
+        return
+    listed = (
+        await session.scalars(
+            select(ProviderModel.model_id).where(ProviderModel.provider_id == provider.id)
+        )
+    ).all()
+    kind = known_kind(provider)
+    if listed and all(does_of(kind, model_id) != "chat" for model_id in listed):
         return
     general = await session.scalar(select(Provider.id).where(Provider.is_general).limit(1))
     if general is not None:

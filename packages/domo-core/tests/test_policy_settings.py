@@ -12,9 +12,11 @@ from domo_core.accounts.models import Person
 from domo_core.audit.models import AuditEntry
 from domo_core.policy.models import PolicySetting
 from domo_core.policy.settings import (
+    HEAR_OUTSIDE_KEY,
     HOUSE_LANGUAGE,
     INVITEE_DEFAULT_KEY,
     INVITEE_GENERAL_KEY,
+    KEYS_SETTINGS,
     LIFETIME_KEY,
     SETTING_DEFAULTS,
     TOOLS_BASE_KEY,
@@ -466,3 +468,23 @@ def test_the_language_of_the_house_is_english_until_said_otherwise():
 async def test_the_language_of_the_house_is_stored_and_read_back(session, owner):
     await update_policy_setting(session, key=HOUSE_LANGUAGE, value="fr", by=owner.id, now=NOW)
     assert (await load_policy_settings(session)).house_language == "fr"
+
+
+def test_hear_outside_is_no_by_default_and_the_owners_to_change():
+    key = HEAR_OUTSIDE_KEY
+    assert key == "speech.hear_outside"
+    for accepted in ("no", "yes", None):
+        validate_setting(key, accepted)
+    for refused in ("maybe", "Yes", True, 1, ["yes"]):
+        with pytest.raises(InvalidSetting):
+            validate_setting(key, refused)
+    assert PolicySettings({}).hear_outside is False
+    assert PolicySettings({key: "yes"}).hear_outside is True
+    assert PolicySettings({key: "no"}).hear_outside is False
+    # A value the rules do not accept is no choice: the default applies.
+    assert PolicySettings({key: "sure"}).hear_outside is False
+    # Shown once it was set, never before.
+    assert key not in {row["key"] for row in PolicySettings({}).rows()}
+    assert {"key": key, "value": "yes", "source": "owner"} in PolicySettings({key: "yes"}).rows()
+    # Not one of the rules of the keys: the owner's policy_update changes it.
+    assert key not in KEYS_SETTINGS

@@ -16,6 +16,7 @@ from domo_common.gatekeeper_api import (
 )
 from domo_gatekeeper import internal_api
 from domo_gatekeeper.internal_api import create_internal_app
+from domo_gatekeeper.phrases import PhraseStore
 from domo_gatekeeper.providers import ProviderRegistry
 from domo_gatekeeper.relay import RelayResponse
 from domo_gatekeeper.secret_requests import SecretRequestStore
@@ -48,11 +49,17 @@ def client_for(
 
 
 @pytest.fixture
+def phrases(vault_db_path: Path) -> PhraseStore:
+    return PhraseStore(vault_db_path, b"\x01" * 32)
+
+
+@pytest.fixture
 def internal_app(
     vault: Vault,
     store: SecretRequestStore,
     registry: ProviderRegistry,
     http_client: httpx.AsyncClient,
+    phrases: PhraseStore,
 ) -> FastAPI:
     return create_internal_app(
         vault=vault,
@@ -60,6 +67,7 @@ def internal_app(
         providers=registry,
         http_client=http_client,
         core_token=CORE_TOKEN,
+        phrases=phrases,
     )
 
 
@@ -853,3 +861,98 @@ async def test_the_provider_connection_is_released_once_the_answer_is_sent(
     monkeypatch.setattr(internal_api, "relay", fake_relay)
     r = await internal_client.get("/llm/p1/x", headers=BEARER)
     assert r.content == b"data" and stream.closed
+
+
+# --- The spoken phrase --------------------------------------------------------------------------
+
+PHRASE_REF = "phrase.00000000-0000-0000-0000-000000000001"
+PHRASE_PATH = f"/internal/phrases/{PHRASE_REF}"
+PHRASE = "le chat bleu dort sur le toit"
+NEAR = "le chien gris dort sur un toit"
+
+
+async def say(client: httpx.AsyncClient, action: str, heard: str) -> httpx.Response:
+    return await client.post(f"{PHRASE_PATH}/{action}", json={"heard": heard})
+
+
+async def test_a_phrase_is_agreed_in_two_sayings(authed_client, phrases):
+    first = await say(authed_client, "enrol", PHRASE)
+    assert first.status_code == 200 and first.json() == {"step": "first_kept"}
+    second = await say(authed_client, "enrol", PHRASE)
+    assert second.json() == {"step": "agreed"}
+    assert phrases.has(PHRASE_REF)
+    assert PHRASE not in first.text + second.text
+
+
+async def test_a_phrase_too_short_is_said_so(authed_client):
+    assert (await say(authed_client, "enrol", "le chat")).json() == {"step": "too_short"}
+
+
+async def test_a_heard_text_is_compared(authed_client, phrases):
+    phrases.enrol(PHRASE_REF, PHRASE)
+    phrases.enrol(PHRASE_REF, PHRASE)
+    for heard, result in [(PHRASE, "it_is"), (NEAR, "almost"), ("non merci", "nothing_like")]:
+        r = await say(authed_client, "compare", heard)
+        assert r.status_code == 200 and r.json() == {"result": result}
+
+
+async def test_an_unknown_phrase_is_compared_as_nothing_like(authed_client):
+    # Never an error telling whether a phrase exists: the proof reads it as "not an answer".
+    r = await say(authed_client, "compare", PHRASE)
+    assert r.status_code == 200 and r.json() == {"result": "nothing_like"}
+
+
+async def test_too_many_near_misses_are_held_back(authed_client, phrases):
+    phrases.enrol(PHRASE_REF, PHRASE)
+    phrases.enrol(PHRASE_REF, PHRASE)
+    for _ in range(5):
+        await say(authed_client, "compare", NEAR)
+    r = await say(authed_client, "compare", PHRASE)
+    assert r.status_code == 429 and r.json() == {"error": "held_back"}
+    assert 1 <= int(r.headers["retry-after"]) <= 900
+    # Not even an ordinary sentence is answered while held back.
+    r = await say(authed_client, "compare", "non merci, envoie-moi un message")
+    assert r.status_code == 429 and r.json() == {"error": "held_back"}
+
+
+async def test_a_phrase_is_removed_once(authed_client, phrases):
+    phrases.enrol(PHRASE_REF, PHRASE)
+    phrases.enrol(PHRASE_REF, PHRASE)
+    assert (await authed_client.delete(PHRASE_PATH)).status_code == 204
+    assert not phrases.has(PHRASE_REF)
+    r = await authed_client.delete(PHRASE_PATH)
+    assert r.status_code == 404 and r.json() == {"error": "unknown_phrase"}
+
+
+async def test_whether_a_phrase_exists(authed_client, phrases):
+    r = await authed_client.get(PHRASE_PATH)
+    assert r.status_code == 404 and r.json() == {"error": "unknown_phrase"}
+    phrases.enrol(PHRASE_REF, PHRASE)
+    phrases.enrol(PHRASE_REF, PHRASE)
+    r = await authed_client.get(PHRASE_PATH)
+    assert r.status_code == 204 and r.content == b""
+
+
+@pytest.mark.parametrize(
+    "body", [{}, {"heard": ""}, {"heard": "x" * 401}, {"heard": PHRASE, "more": 1}, []]
+)
+async def test_a_bad_phrase_body_is_refused_without_echoing_it(authed_client, body):
+    r = await authed_client.post(f"{PHRASE_PATH}/compare", json=body)
+    assert r.status_code == 422 and r.json() == {"error": "invalid_request"}
+
+
+async def test_a_bad_phrase_ref_is_refused(authed_client):
+    r = await authed_client.post("/internal/phrases/Not%20A%20Ref/enrol", json={"heard": PHRASE})
+    assert r.status_code == 422 and r.json() == {"error": "invalid_request"}
+
+
+@pytest.mark.parametrize(
+    ("method", "action"),
+    [("POST", "/enrol"), ("POST", "/compare"), ("DELETE", ""), ("GET", "")],
+)
+async def test_phrase_routes_need_the_core_token(internal_client, phrases, method, action):
+    r = await internal_client.request(method, PHRASE_PATH + action, json={"heard": PHRASE})
+    assert r.status_code == 401
+    assert not phrases.has(PHRASE_REF)
+    # Nothing was kept: the next saying is still a first one.
+    assert phrases.enrol(PHRASE_REF, PHRASE).step == "first_kept"

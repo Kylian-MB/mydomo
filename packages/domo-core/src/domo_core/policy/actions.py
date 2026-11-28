@@ -58,6 +58,11 @@ _DESTINATIONS: tuple[str, ...] = get_args(Destination)
 _FIELDS = ("connector", "action_type", "target", "effect", "destination")
 # The field a stored action has only when it is Domo's own act too (``also_domo``).
 _ALSO_DOMO = "also_domo"
+# The field a stored action has only when the judge weighs whether it is really theirs
+# (``whose_judged``).
+_WHOSE_JUDGED = "whose_judged"
+# The field a stored action has only when only the judge's verdict lets it go (``verdict_needed``).
+_VERDICT_NEEDED = "verdict_needed"
 
 
 def _checked_facts(facts: object) -> dict[str, FactValue]:
@@ -97,6 +102,16 @@ class DescribedAction:
     any of their actions, and for Domo, and keeps the stricter (``policy.decision.decide_now``).
     Stored with the action (``as_json`` writes it only when set), so that a request that waits is
     judged both ways again when its yes comes.
+
+    ``whose_judged`` says that the tool asks the judge whether the call is really the person's own
+    wish (words of another member of the household were read in the turn): the barrier marks it
+    ``judge_identity``, as for a speaker the code is not sure of (final fix wave, case 1). Stored
+    the same way.
+
+    ``verdict_needed`` says that only the judge's own verdict lets it go: a judge that does not
+    answer leaves it undone and asks nobody anything, no proof of whoever asks standing in for it
+    (someone else's spoken phrase removed, the owner 2026-11-27: "the assistant judges it";
+    ``conversation.execution.not_weighed``). Stored the same way.
     """
 
     connector: str
@@ -107,6 +122,8 @@ class DescribedAction:
     # Left out of the hash (a mapping of facts is not hashable), kept in the comparison.
     facts: Mapping[str, FactValue] = field(default=EMPTY_FACTS, hash=False)
     also_domo: bool = False
+    whose_judged: bool = False
+    verdict_needed: bool = False
 
     def __post_init__(self) -> None:
         if self.facts is not EMPTY_FACTS:
@@ -122,6 +139,8 @@ class DescribedAction:
             "destination": self.destination,
             "facts": dict(self.facts),
             **({_ALSO_DOMO: True} if self.also_domo else {}),
+            **({_WHOSE_JUDGED: True} if self.whose_judged else {}),
+            **({_VERDICT_NEEDED: True} if self.verdict_needed else {}),
         }
 
     @classmethod
@@ -135,13 +154,20 @@ class DescribedAction:
         """
         if not isinstance(data, Mapping):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise ValueError("a described action is a JSON object")
-        if set(data) - {_ALSO_DOMO} not in (set(_FIELDS), {*_FIELDS, "facts"}):
+        optional = {_ALSO_DOMO, _WHOSE_JUDGED, _VERDICT_NEEDED}
+        if set(data) - optional not in (set(_FIELDS), {*_FIELDS, "facts"}):
             raise ValueError(
                 f"a described action has exactly the fields {', '.join(_FIELDS)} and facts"
             )
         also_domo = data.get(_ALSO_DOMO, False)
         if also_domo is not True and also_domo is not False:
             raise ValueError("also_domo is true or false")
+        whose_judged = data.get(_WHOSE_JUDGED, False)
+        if whose_judged is not True and whose_judged is not False:
+            raise ValueError("whose_judged is true or false")
+        verdict_needed = data.get(_VERDICT_NEEDED, False)
+        if verdict_needed is not True and verdict_needed is not False:
+            raise ValueError("verdict_needed is true or false")
         connector = data["connector"]
         action_type = data["action_type"]
         target = data["target"]
@@ -164,4 +190,6 @@ class DescribedAction:
             cast(Destination, destination),
             facts,
             also_domo,
+            whose_judged,
+            verdict_needed,
         )

@@ -19,7 +19,10 @@ A key is used only with the agreement of the one who gave it, the owner included
   way to take it away. An invitee never has more than their host.
 
 The keys of a person come in this order (``usable_keys``): their own, then the ones others let
-them use (of who invited them first), then the general key; the oldest first within each.
+them use (of who invited them first), then the general key; the oldest first within each. The
+keys a person can think with (``text_keys``) are the same without the house's speech service,
+which hears and says but has no model to talk with: a person whose only key is that one has no
+key for a conversation, and is asked for one like anyone without a key.
 
 The key of a request (``choose_key``) is taken from them rank by rank (their own; the others';
 the general key), never out of that order: in the first rank that has one, among its keys that
@@ -53,6 +56,7 @@ from domo_core.llm.choice import candidates, fit_for, pick_model
 from domo_core.llm.choices import Choices, load_choices
 from domo_core.llm.levels import LEVELS, Level, level_rank
 from domo_core.llm.models import ModelLevel, Provider, ProviderModel, ProviderUser
+from domo_core.llm.speech.home_key import HOME_SPEECH_ID
 from domo_core.llm.tasks import TASKS, TaskKind
 
 # The order in which the lines of access of a key apply: the most precise first.
@@ -148,6 +152,13 @@ async def usable_keys(session: AsyncSession, person: Person) -> list[Provider]:
     # The one who invited them before the others (a stable sort keeps the oldest first).
     others.sort(key=lambda key: key.given_by != person.invited_by)
     return own + others + general
+
+
+async def text_keys(session: AsyncSession, person: Person) -> list[Provider]:
+    """The keys ``person`` may use to think and talk with: ``usable_keys`` without the house's
+    speech service (``HOME_SPEECH_ID``), which only hears and says. The question "does this
+    person have a key for a conversation" reads this; a task of sound reads ``usable_keys``."""
+    return [key for key in await usable_keys(session, person) if key.id != HOME_SPEECH_ID]
 
 
 @dataclass(frozen=True)

@@ -54,6 +54,7 @@ from domo_core.madetools.launch import ForWhom, LaunchDeps, Launched, launch, la
 from domo_core.madetools.means import Chain, WakeFor
 from domo_core.madetools.models import HandRun, LaunchStop, MadeTool, MadeToolRun
 from domo_core.madetools.settings import own_values, span, value
+from domo_core.policy.roles import Actor
 from domo_core.prompts import ToolWake
 
 logger = logging.getLogger(__name__)
@@ -170,19 +171,26 @@ async def _owner_now(deps: LaunchDeps) -> uuid.UUID | None:
 
 
 async def _tell(
-    deps: LaunchDeps, person_id: WakeFor, said: Said, *, hand_run: uuid.UUID | None = None
+    deps: LaunchDeps,
+    person_id: WakeFor,
+    said: Said,
+    *,
+    by_hand: bool = False,
+    hand_run: uuid.UUID | None = None,
 ) -> bool:
     """Wake Domo for ``person_id`` (``None``: the owner of now, for the house, in a turn where
-    he acts on his own) with what each tool of ``said`` says (what ``BY_HAND`` says, as the
-    program run by hand ``hand_run``, by its id): whether the turn ran (``launch.Waker``; nobody
-    to wake is nothing to try again). Never raises but for its cancellation."""
+    he acts on his own) with what each tool of ``said`` says (``by_hand``: what ``BY_HAND`` says
+    is a program run by hand's, by its id ``hand_run`` when it is known; never told by the name
+    alone, which a tool may have too): whether the turn ran (``launch.Waker``; nobody to wake is
+    nothing to try again). Never raises but for its cancellation."""
     if deps.waker is None or not said:
         return True
     wakes = [
         ToolWake(
             tool=name,
             content=contents[0] if len(contents) == 1 else contents,
-            run=str(hand_run) if hand_run is not None and name == BY_HAND else None,
+            run=str(hand_run) if by_hand and hand_run is not None and name == BY_HAND else None,
+            given_by="program" if by_hand and name == BY_HAND else "tool",
         )
         for name, contents in said
     ]
@@ -215,7 +223,13 @@ async def _told_or_kept(
     turn could not run, what it would have told is kept (a ``wake`` row of ``made_tool_runs`` of
     ``source``, its first try counted; ``for_house`` when it is the house's) for the upkeep to try
     again (``deliver_runs``). Never raises but for its cancellation."""
-    if await _tell(deps, person_id, said, hand_run=source.id if source.by_hand else None):
+    if await _tell(
+        deps,
+        person_id,
+        said,
+        by_hand=source.by_hand,
+        hand_run=source.id if source.by_hand else None,
+    ):
         return
     also: list[JsonValue] = [
         {"tool": name, "content": content} for name, contents in said for content in contents
@@ -252,6 +266,7 @@ async def launch_in_a_turn(
     for_person: Person | None,
     yes: LaunchStop | None = None,
     judged_as_domo: bool = False,
+    asked_by: Actor | None = None,
 ) -> Launched:
     """Launch ``tool`` for the turn of ``for_person`` (``None``: for the house, in a turn Domo
     acts in on his own, or a yes the owner gave to a stop of the house's; ``judged_as_domo``
@@ -264,12 +279,16 @@ async def launch_in_a_turn(
     Domo is woken for the person with it (``deliver_run``; the owner, for the house). Without
     ``deps.wakes``, the turn waits whatever it takes. A program Domo runs by hand
     (``AskingTool.of_run``) goes the same way, with its own code and arguments
-    (``launch.launch_by_hand``: ``arguments`` is not read), told under ``BY_HAND``."""
+    (``launch.launch_by_hand``: ``arguments`` is not read), told under ``BY_HAND``.
+    ``asked_by``: who asked it in the turn, as the barrier saw them: how sure the code was of
+    them travels with the launch (``ForWhom.standing``), for the launches made from inside it."""
     chain = Chain(turn_waits=True)
     whom: WakeFor = None if for_person is None else for_person.id
     wakes = deps.wakes
     if wakes is None:
-        launched = await _launched(deps, chain, tool, arguments, for_person, yes, judged_as_domo)
+        launched = await _launched(
+            deps, chain, tool, arguments, _for(for_person, asked_by), yes, judged_as_domo
+        )
         await wake_chain(deps, chain)
         return launched
     handed_over = False
@@ -278,7 +297,9 @@ async def launch_in_a_turn(
     rows: list[uuid.UUID | None] = []
 
     async def run() -> None:
-        launched = await _launched(deps, chain, tool, arguments, for_person, yes, judged_as_domo)
+        launched = await _launched(
+            deps, chain, tool, arguments, _for(for_person, asked_by), yes, judged_as_domo
+        )
         # Nothing awaits between this look and its outcome: the turn either reads what came, or
         # was told ``running`` before.
         if not handed_over:
@@ -322,16 +343,24 @@ async def launch_in_a_turn(
     return Launched("running", None)
 
 
+def _for(person: Person | None, asked_by: Actor | None) -> ForWhom:
+    """Whom a launch of a turn is for: ``person`` (``None``: the house), with how sure the code
+    was of who asked it (``asked_by``: that person, someone else, or an owner's yes to a stop of
+    the house's): never sure by default. Nobody asking (``None``) is the house's or his own."""
+    if asked_by is None:
+        return ForWhom(person)
+    return ForWhom.asked_by(person, asked_by)
+
+
 async def _launched(
     deps: LaunchDeps,
     chain: Chain,
     tool: AskingTool,
     arguments: JsonObject,
-    for_person: Person | None,
+    for_whom: ForWhom,
     yes: LaunchStop | None,
     judged_as_domo: bool,
 ) -> Launched:
-    for_whom = ForWhom(for_person)
     try:
         if tool.by_hand:
             # A program run by hand: its own code and arguments, kept with it.
@@ -527,7 +556,7 @@ async def _delivered(deps: LaunchDeps, run_id: uuid.UUID) -> None:
             # A row of the house's is told to the owner of now.
             status, result, also = told
             wakes = _wakes_of(known, status, result, also, run=kind == "run")
-            settled = await _tell(deps, person_id, wakes, hand_run=hand_run)
+            settled = await _tell(deps, person_id, wakes, by_hand=tool is None, hand_run=hand_run)
         async with deps.session_factory() as session:
             run = await session.get(
                 MadeToolRun, run_id, with_for_update=True, populate_existing=True

@@ -1,0 +1,18 @@
+# The speech service on an NVIDIA graphics card:
+#   docker compose -f compose.yaml -f compose.gpu.yaml up -d
+# Needs the NVIDIA Container Toolkit on the machine. The image is rebuilt with the CUDA 12
+# libraries (cuBLAS and cuDNN 9, the extra `gpu` of domo-speech, from the lock file); the service
+# measures its models on the card, and on the processor too when the card does not hold.
+
+services:
+  speech:
+    build:
+      args:
+        SPEECH_EXTRAS: "--extra models --extra gpu"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

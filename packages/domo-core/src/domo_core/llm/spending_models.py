@@ -28,13 +28,17 @@ class ModelCall(Base):
     to build a tool of Domo's (``toolmaking``, ``tool_review``) names its build (``build_id``)
     and the tool, once there is one (``tool_id``): what a tool cost to make
     (``madetools.launches.figures``); both are forgotten with their row (``ON DELETE SET NULL``).
+    A call of sound (``hear``, ``say``, ``voice_print``) counts the seconds it heard
+    (``heard_seconds``) and the characters it said (``said_chars``), at home too, where it costs
+    nothing.
     """
 
     __tablename__ = "model_calls"
     __table_args__ = (
         CheckConstraint(
             "task IN ('conversation', 'judge', 'intent', 'rights_writer', 'key_check', 'upkeep', "
-            "'writing', 'checking', 'arrival', 'memory', 'toolmaking', 'tool_review')",
+            "'writing', 'checking', 'arrival', 'memory', 'toolmaking', 'tool_review', "
+            "'hear', 'say', 'voice_print', 'attention', 'heard_sorting')",
             name="task_values",
         ),
         CheckConstraint("status IN ('reserved', 'settled')", name="status_values"),
@@ -55,6 +59,9 @@ class ModelCall(Base):
     output_tokens: Mapped[int] = mapped_column(server_default=text("0"))
     cache_read_tokens: Mapped[int] = mapped_column(server_default=text("0"))
     cache_write_tokens: Mapped[int] = mapped_column(server_default=text("0"))
+    # A call of sound counts seconds heard and characters said, where a chat call counts tokens.
+    heard_seconds: Mapped[Decimal] = mapped_column(Numeric(10, 2), server_default=text("0"))
+    said_chars: Mapped[int] = mapped_column(server_default=text("0"))
     estimated: Mapped[bool] = mapped_column(server_default=text("false"))
     price_unknown: Mapped[bool] = mapped_column(server_default=text("false"))
     started_at: Mapped[datetime] = mapped_column(server_default=func.clock_timestamp())

@@ -5,7 +5,14 @@ from urllib.parse import quote
 
 import pytest
 from domo_common.gatekeeper_api import BasicLocation, Binding, LoginLocation
-from domo_gatekeeper.scrub import MASK, Scrubber, scrub_text
+from domo_gatekeeper.scrub import (
+    MASK,
+    SHORTEST_DETECTED,
+    Scrubber,
+    SecretDetector,
+    SecretFound,
+    scrub_text,
+)
 from domo_gatekeeper.vault import join_account, secret_parts
 
 SECRET = "sk-test-0123456789"  # gitleaks:allow (a fake value for the tests)
@@ -275,3 +282,53 @@ def test_matches_split_at_every_possible_position_are_masked():
         scrubber = Scrubber([SECRET])
         out = scrubber.feed(data[:cut]) + scrubber.feed(data[cut:]) + scrubber.flush()
         assert out == b"aa [REDACTED] bb", cut
+
+
+# --- The detector of secrets in sound -----------------------------------------------------------
+
+
+def detect_in_chunks(secrets: list[str], data: bytes, size: int) -> bytes:
+    detector = SecretDetector(secrets)
+    out = b"".join(detector.feed(data[i : i + size]) for i in range(0, len(data), size))
+    return out + detector.flush()
+
+
+def test_the_detector_passes_everything_through_unchanged_without_a_secret():
+    data = bytes(range(256)) * 40 + MASK.encode()
+    assert detect_in_chunks([SECRET], data, 7) == data
+    assert detect_in_chunks([], data, 7) == data
+
+
+def test_the_detector_gives_the_same_bytes_whatever_the_chunking():
+    data = bytes(range(256)) * 8
+    results = {detect_in_chunks([SECRET], data, size) for size in (1, 2, 5, 17, 300, len(data))}
+    assert results == {data}
+
+
+def test_the_detector_finds_a_secret_cut_anywhere_and_releases_none_of_it():
+    data = f"aa {SECRET} bb".encode()
+    for cut in range(len(data) + 1):
+        detector = SecretDetector([SECRET])
+        released = b""
+        with pytest.raises(SecretFound):
+            released += detector.feed(data[:cut])
+            released += detector.feed(data[cut:])
+        assert SECRET[:2].encode() not in released, cut
+
+
+def test_the_detector_holds_back_the_end_until_flushed():
+    detector = SecretDetector([SECRET])
+    data = b"x" * 100
+    released = detector.feed(data)
+    assert len(released) < len(data)
+    assert released + detector.flush() == data
+    assert detector.flush() == b""
+
+
+def test_short_secrets_are_not_looked_for_in_sound():
+    # A code of a few characters cannot be told from noise: it would cut every sound.
+    assert SHORTEST_DETECTED == 8
+    data = bytes(range(256)) * 4 + b"1234" + b"ab"
+    assert detect_in_chunks(["ab", "1234", "1234567"], data, 64) == data
+    with pytest.raises(SecretFound):
+        detect_in_chunks(["ab", "12345678"], data + b"12345678", 64)

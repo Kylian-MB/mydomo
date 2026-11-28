@@ -55,6 +55,7 @@ from domo_core.llm.factory import ModelFactory
 from domo_core.llm.levels import LEVELS, Level, level_rank
 from domo_core.llm.models import Provider
 from domo_core.llm.picker import ModelPicker
+from domo_core.llm.speech.home_key import HOME_SPEECH_ID
 from domo_core.llm.tasks import TASKS
 from domo_core.policy.settings import load_policy_settings
 from domo_core.texts.store import Reader, missing_keys, save_written
@@ -260,14 +261,15 @@ async def rewrite_changed_meanings(
 
 async def house_key(session: AsyncSession) -> Provider | None:
     """The key the house's texts are written on: the household's general key, else the oldest
-    key the owner gave; ``None`` when there is neither."""
+    key the owner gave that is not the house's speech service (``HOME_SPEECH_ID``: it never
+    thinks); ``None`` when there is neither."""
     general = (await session.execute(select(Provider).where(Provider.is_general))).scalars().first()
     if general is not None:
         return general
     owner = select(Person.id).where(Person.role == "owner").scalar_subquery()
     found = await session.execute(
         select(Provider)
-        .where(Provider.given_by == owner)
+        .where(Provider.given_by == owner, Provider.id != HOME_SPEECH_ID)
         .order_by(Provider.created_at, Provider.id)
         .limit(1)
     )

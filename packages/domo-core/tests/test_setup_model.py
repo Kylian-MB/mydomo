@@ -18,6 +18,7 @@ from domo_core.accounts.models import Person
 from domo_core.audit.log import ChainCheck, verify_audit_chain
 from domo_core.llm.models import Provider, ProviderModel
 from domo_core.llm.provider_kinds import PROVIDER_KINDS
+from domo_core.llm.speech.home_key import HOME_SPEECH_ID
 from domo_core.llm.types import (
     ChatChunk,
     ChatUsage,
@@ -560,6 +561,31 @@ async def test_the_other_attempts_of_the_setup_are_dropped_when_a_model_is_chose
     use_model(FakeChatModel(["pong"]))
     await owner_client.get(fulfilled_request.status_url)
     assert [row.id for row in await provider_rows(session)] == [fulfilled_request.provider_id]
+
+
+async def test_the_house_speech_key_is_no_attempt_and_outlives_the_setup(
+    app, owner_client, gk_mock, fulfilled_request, use_model, session
+):
+    # The upkeep records the house's speech service as soon as the owner exists, so during this
+    # step; it then reads its list again only when asked: dropped here, it would never come back.
+    session.add(
+        Provider(
+            id=HOME_SPEECH_ID,
+            kind="openai_compatible",
+            base_url="http://speech:8083/v1",
+            secret_ref=None,
+            given_by=await owner_id(session),
+            is_general=False,
+        )
+    )
+    await session.flush()
+    session.add(ProviderModel(provider_id=HOME_SPEECH_ID, model_id="whisper-1"))
+    await session.flush()
+    use_model(FakeChatModel(["pong"]))
+    await owner_client.get(fulfilled_request.status_url)
+    rows = {row.id: row.is_general for row in await provider_rows(session)}
+    assert rows == {fulfilled_request.provider_id: True, HOME_SPEECH_ID: False}
+    assert await listed_models(session, HOME_SPEECH_ID) == ["whisper-1"]
 
 
 class _ConcurrentFinish(FakeChatModel):

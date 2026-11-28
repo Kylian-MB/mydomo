@@ -4,7 +4,7 @@ the words of a refusal (Domo's, once installed)."""
 import httpx
 import pytest
 from domo_common.i18n import t
-from domo_core.web.security import CONTENT_SECURITY_POLICY, SecurityMiddleware
+from domo_core.web.security import CONTENT_SECURITY_POLICY, SECURITY_HEADERS, SecurityMiddleware
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response, StreamingResponse
 from starlette.types import Receive, Scope, Send
@@ -13,8 +13,10 @@ from web_support import build_test_app
 EVIL = "https://evil.example.net"
 EXPECTED_HEADERS = {
     "content-security-policy": (
-        "default-src 'self'; frame-src 'self'; frame-ancestors 'none'; form-action 'self'"
+        "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; frame-src 'self'; "
+        "frame-ancestors 'none'; form-action 'self'"
     ),
+    "permissions-policy": "microphone=(self)",
     "referrer-policy": "same-origin",
     "x-content-type-options": "nosniff",
 }
@@ -40,6 +42,20 @@ def assert_hardened(response: httpx.Response) -> None:
 
 def test_the_policy_is_exactly_the_documented_one():
     assert EXPECTED_HEADERS["content-security-policy"] == CONTENT_SECURITY_POLICY
+
+
+def test_the_policy_lets_webassembly_run_and_nothing_more():
+    assert CONTENT_SECURITY_POLICY == (
+        "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; frame-src 'self'; "
+        "frame-ancestors 'none'; form-action 'self'"
+    )
+    assert "unsafe-eval'" not in CONTENT_SECURITY_POLICY.replace("'wasm-unsafe-eval'", "")
+    assert "unsafe-inline" not in CONTENT_SECURITY_POLICY
+    assert "blob:" not in CONTENT_SECURITY_POLICY and "worker-src" not in CONTENT_SECURITY_POLICY
+
+
+def test_the_microphone_is_allowed_to_our_own_origin_only():
+    assert SECURITY_HEADERS["Permissions-Policy"] == "microphone=(self)"
 
 
 async def test_security_headers_present(offline_client):

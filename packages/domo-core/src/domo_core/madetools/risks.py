@@ -14,7 +14,13 @@ declared, the accounts its requests use (``accounts``: names of ``ACCOUNT_NAME_P
 addresses they go to (``addresses``: ``{"host", "port"}``, the host as an open address keeps it),
 ``MAX_NAMED`` of each at most, each once: what Domo reads with the tool (``tool_look``) and the
 reviewer checks; nothing here opens an address or binds an account (the request is judged as it
-runs). They are kept only when there are some. ``read_operations`` reads them
+runs). They are kept only when there are some. An operation whose risks are ``physical`` alone may
+say ``"harmless": true`` (``Risks.harmless``): done by mistake it hurts nobody, locks nobody out,
+exposes nothing and costs nothing (a light, a speaker's volume; never a lock, an alarm, a garage
+door, heating, an oven, a valve); declared by Domo when he builds it, checked by the reviewer like
+every risk; kept only when true. Not declared (every tool made before it existed), acting in the
+house is risky: under a voice the code is not sure of, its launch is judged (the owner,
+2026-11-27). ``read_operations`` reads them
 (``OperationsNotRight`` otherwise: its message says what, never a value). ``says`` is what Domo
 is told when an operation stops for a yes: his own words of when he built it, data he reads, never
 an instruction."""
@@ -43,7 +49,7 @@ MAX_NAMED: Final = 10
 RISK_WORDS: Final = ("costs", "irreversible", "physical", "outward")
 # What an operation holds: what it must, and what it may.
 _NEEDED: Final = frozenset({"says", "risks"})
-_MAY: Final = _NEEDED | {"accounts", "addresses"}
+_MAY: Final = _NEEDED | {"accounts", "addresses", "harmless"}
 
 _OPERATION: Final = re.compile(OPERATION_PATTERN)
 _ACCOUNT: Final = re.compile(ACCOUNT_NAME_PATTERN)
@@ -66,7 +72,7 @@ class Operation:
     addresses: tuple[tuple[str, int], ...] = ()
 
 
-def _risks(raw: object) -> Risks:
+def _risks(raw: object, harmless: object = False) -> Risks:
     if not isinstance(raw, list):
         raise OperationsNotRight(
             f"the risks of an operation are a list among {', '.join(RISK_WORDS)}"
@@ -76,7 +82,13 @@ def _risks(raw: object) -> Risks:
         raise OperationsNotRight(
             f"the risks of an operation are a list among {', '.join(RISK_WORDS)}, each once"
         )
-    return Risks(**{word: word in words for word in RISK_WORDS})
+    if harmless is not True and harmless is not False:
+        raise OperationsNotRight("harmless is true or false")
+    if harmless and words != ["physical"]:
+        raise OperationsNotRight(
+            "harmless is only for an operation that acts in the house and does nothing else"
+        )
+    return Risks(**{word: word in words for word in RISK_WORDS}, harmless=harmless)
 
 
 def _says(raw: object) -> str:
@@ -153,12 +165,13 @@ def read_operations(raw: object) -> dict[str, Operation]:
             _NEEDED <= set(cast(Mapping[str, object], value)) <= _MAY
         ):
             raise OperationsNotRight(
-                "an operation is {says, risks}, and when it goes out, accounts and addresses"
+                "an operation is {says, risks}, harmless when it acts in the house harmlessly, "
+                "and when it goes out, accounts and addresses"
             )
         fields = cast(Mapping[str, object], value)
         operations[name] = Operation(
             name,
-            _risks(fields["risks"]),
+            _risks(fields["risks"], fields.get("harmless", False)),
             _says(fields["says"]),
             _accounts(fields.get("accounts")),
             _addresses(fields.get("addresses")),
@@ -175,6 +188,8 @@ def kept_operations(operations: Mapping[str, Operation]) -> dict[str, object]:
             "says": operation.says,
             "risks": [word for word in RISK_WORDS if getattr(operation.risks, word)],
         }
+        if operation.risks.harmless:
+            one["harmless"] = True
         if operation.accounts:
             one["accounts"] = list(operation.accounts)
         if operation.addresses:

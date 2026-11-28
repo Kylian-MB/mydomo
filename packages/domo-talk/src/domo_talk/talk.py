@@ -1,10 +1,13 @@
 """The conversation in the terminal. It shows the sentences the server gives and sends what the
-person types; it decides nothing. The only thing it offers on its own is ``/prove``, and only when
-the server said that a proof can be given here.
+person types; it decides nothing, and says nothing of its own: the sentences it needs besides
+(``Client.text``) are the assistant's, in the person's language. When the server says that a
+proof can be given here (a password), the program opens the hidden line for it by itself, once for
+each request; ``/prove`` does the same on demand, and nothing mentions it.
 """
 
 import contextlib
 import getpass
+import importlib
 import platform
 import re
 import sys
@@ -54,6 +57,8 @@ class Screen:
         self._mid_line = False
         self._speaking: str | None = None
         self._proof: tuple[str, str] | None = None
+        # The requests whose hidden line was opened since the reply that last showed them.
+        self._opened: set[str] = set()
         # The prompt is waiting for the person's line, and whether it was broken off by a line
         # written meanwhile (it is then shown again once that line is done).
         self._at_prompt = False
@@ -81,6 +86,15 @@ class Screen:
 
     def forget_proof(self) -> None:
         self._proof = None
+
+    def proof_to_open(self) -> tuple[str, str] | None:
+        """The request that waits for a proof which can be given here, once each time a reply
+        showed it: ``None`` when none waits, or its line was opened since."""
+        waiting = self._proof
+        if waiting is None or waiting[0] in self._opened:
+            return None
+        self._opened.add(waiting[0])
+        return waiting
 
     def waiting_at_prompt(self, waiting: bool) -> None:
         """Tell that the prompt waits (or no longer waits) for the person's line."""
@@ -217,7 +231,7 @@ class Screen:
             kinds = proofs if isinstance(proofs, list) else []  # pyright: ignore[reportUnknownVariableType]
             if asked.get("answer_with") == "proof" and "password" in kinds and asked.get("id"):
                 self._proof = (str(asked["id"]), "password")
-                self._line("(type /prove to give your password here)")
+                self._opened.discard(str(asked["id"]))  # shown again: it asks again
             elif self._proof is not None and asked.get("id") == self._proof[0]:
                 self._proof = None  # the server says this request has no proof to give any more
 
@@ -284,7 +298,7 @@ class Listening:
                             follow_the_name(self._client, self._screen, reply)
             except Unpaired as unpaired:
                 self._unpaired.set()
-                self._screen.problem(f"{unpaired} Press Enter to leave.")
+                self._screen.problem(str(unpaired))
                 return
             except TalkError:
                 pass  # the server could not be reached, or refused: try again
@@ -306,15 +320,27 @@ def forget(screen: Screen) -> int:
     return 0
 
 
+def say(client: Client, screen: Screen, key: str, **holes: str) -> None:
+    """Say the sentence the server wrote for ``key``; nothing when there is none."""
+    sentence = client.text(key, **holes)
+    if sentence:
+        screen.line(sentence)
+
+
 def prove(client: Client, screen: Screen) -> None:
     """Give the proof the server asked for: the password is read without echo, sent in the body of
-    the proof, and written nowhere."""
+    the proof, and written nowhere. An empty entry gives up: nothing is sent, and the request goes
+    on waiting."""
     waiting = screen.proof
     if waiting is None:
-        screen.line("Nothing waits for a proof here.")
+        say(client, screen, "talk.proof.nothing_waits")
         return
     confirmation_id, means = waiting
-    answer = getpass.getpass("Password: ")
+    # The prompt is the server's sentence, made plain; without one the line is simply hidden.
+    prompt = plain(client.text("talk.proof.prompt") or "").rstrip()
+    answer = getpass.getpass(f"{prompt} " if prompt else "")
+    if not answer:
+        return
     proved = client.prove(confirmation_id, means, answer)
     # The server says how the request is answered now; the offer stays only while it says that
     # this very request still waits for a proof that can be given here.
@@ -330,12 +356,16 @@ def follow_the_name(client: Client, screen: Screen, after: str | None = None) ->
     called him Domo again): the next replies follow it. A failure keeps the name as it was; the
     next reply tries again."""
     with contextlib.suppress(TalkError):
-        screen.domo_name = client.past(after or client.last_reply).domo_name
+        past = client.past(after or client.last_reply)
+        screen.domo_name = past.domo_name
+        if past.language is None or past.language != client.language:
+            client.texts()  # the language changed, or the server does not say: read them again
 
 
 def converse(saved: Saved, screen: Screen) -> int:
     """The conversation: the recent discussion, then a prompt, until the person leaves."""
-    with Client(saved) as client, Client(saved) as hearing:
+    with Client(saved) as client, Client(saved, client.held) as hearing:
+        client.texts()
         past = client.past(None)
         screen.domo_name = past.domo_name
         show_past(screen, past.messages)
@@ -347,6 +377,42 @@ def converse(saved: Saved, screen: Screen) -> int:
             listening.stop()
 
 
+def drain_console(
+    *, windows: bool | None = None, msvcrt: Any = None, termios: Any = None, stdin: Any = None
+) -> None:
+    """Throw away what the person typed ahead and no one read (a half-typed next message), so that
+    the hidden line, which opens by itself, never takes it for the password. Never fails."""
+    on_windows = sys.platform == "win32" if windows is None else windows
+    with contextlib.suppress(Exception):
+        if on_windows:
+            keys = msvcrt if msvcrt is not None else importlib.import_module("msvcrt")
+            while keys.kbhit():
+                keys.getwch()
+        else:
+            tty = termios if termios is not None else importlib.import_module("termios")
+            tty.tcflush((stdin or sys.stdin).fileno(), tty.TCIFLUSH)
+
+
+def _is_terminal() -> bool:
+    """Whether what the person types comes from a terminal (``getpass`` echoes anywhere else)."""
+    with contextlib.suppress(Exception):
+        return sys.stdin.isatty()
+    return False
+
+
+def _open_the_proof(client: Client, screen: Screen) -> None:
+    """When a request waits for a proof that can be given here, and its line was not opened since
+    a reply showed it, open the hidden line for it, after the console is emptied. Only when the
+    server's prompt says why the typing goes hidden, and the input is a terminal: otherwise
+    ``/prove`` is the only way in."""
+    if not client.text("talk.proof.prompt") or not _is_terminal():
+        return
+    if screen.proof_to_open() is not None:
+        drain_console()
+        prove(client, screen)
+        follow_the_name(client, screen)
+
+
 def _talk(client: Client, screen: Screen, listening: Listening) -> int:
     while True:
         try:
@@ -356,8 +422,6 @@ def _talk(client: Client, screen: Screen, listening: Listening) -> int:
             return 0
         if listening.unpaired:
             return Unpaired.exit_status  # nothing is sent: Domo would refuse it
-        if not line:
-            continue
         try:
             if line == "/quit":
                 return 0
@@ -365,11 +429,13 @@ def _talk(client: Client, screen: Screen, listening: Listening) -> int:
                 prove(client, screen)
                 follow_the_name(client, screen)
             elif line.startswith("/"):
-                screen.line("Unknown command. There are /prove and /quit.")
-            else:
+                say(client, screen, "talk.unknown_command")
+            elif line:
                 for event in client.say(line):
                     screen.show(event)
                 screen.end()
                 follow_the_name(client, screen)
+            # What Domo asked for, on a reply or on his own while the prompt waited.
+            _open_the_proof(client, screen)
         except (Refused, Unreachable) as problem:
             screen.problem(str(problem))

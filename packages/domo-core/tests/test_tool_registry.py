@@ -121,6 +121,17 @@ SUCCESSOR_TOOLS = [
 # The tools with which Domo does several of its tools in order, with one yes, and continues the
 # rest of such a chain that stopped.
 CHAIN_TOOLS = ["do_in_order", "chain_continue"]
+# The tools of the voice (spec 6.2, 6.5, 6.9): agreeing, changing and removing the spoken phrase,
+# stopping the listening and "that was not me": everyone's, a guest's too, for themselves. And
+# the assistant's own reading of how someone speaks (Task 23).
+VOICE_TOOLS = [
+    "spoken_phrase_agree",
+    "spoken_phrase_change",
+    "spoken_phrase_remove",
+    "voice_stop_listening",
+    "voice_unlearn",
+    "speaker_manner_note",
+]
 # The tools with which a person entrusts a device to Domo, sees theirs and takes one back
 # (spec 6.5).
 DEVICE_TOOLS = ["device_entrust", "device_list", "device_remove"]
@@ -200,6 +211,7 @@ def test_the_registry_knows_its_tools_by_the_name_the_model_uses():
         *MADE_TOOLS,
         *OUTWARD_TOOLS,
         *CHAIN_TOOLS,
+        *VOICE_TOOLS,
     ]
     for name, tool in TOOLS.items():
         assert tool.definition.name == name
@@ -301,6 +313,12 @@ def test_every_tool_is_an_action_of_the_catalog():
         "account.look",
         "chain.run",
         "chain.continue",
+        "proof.phrase_agree",
+        "proof.phrase_change",
+        "proof.phrase_remove",
+        "voice.stop_listening",
+        "voice.unlearn",
+        "voice.manner_note",
     }
     for tool in TOOLS.values():
         assert tool.action_type in KNOWN_ACTIONS
@@ -497,6 +515,7 @@ def test_the_registry_cannot_be_changed():
                 *MADE_TOOLS,
                 *OUTWARD_TOOLS,
                 *CHAIN_TOOLS,
+                *VOICE_TOOLS,
             ],
         ),
         (
@@ -529,6 +548,7 @@ def test_the_registry_cannot_be_changed():
                 "account_remove",
                 "accounts_look",
                 *CHAIN_TOOLS,
+                *VOICE_TOOLS,
             ],
         ),
         (
@@ -556,6 +576,7 @@ def test_the_registry_cannot_be_changed():
                 "account_remove",
                 "accounts_look",
                 *CHAIN_TOOLS,
+                *VOICE_TOOLS,
             ],
         ),
         (
@@ -578,6 +599,7 @@ def test_the_registry_cannot_be_changed():
                 *MADE_TOOLS,
                 *ADDRESS_TOOLS,
                 "accounts_look",
+                *VOICE_TOOLS,
             ],
         ),
     ],
@@ -651,6 +673,7 @@ def test_a_person_is_shown_the_tools_of_their_own_rights():  # spec 5.9
         "account_remove",
         "accounts_look",
         *CHAIN_TOOLS,
+        *VOICE_TOOLS,
     ]
     assert "household_invite" not in names(
         tools_for("child", TOOLS, DEFAULT_POLICY, person_id=jo, rights=rights)
@@ -686,6 +709,7 @@ def test_a_right_of_a_role_shows_or_hides_a_tool_to_the_whole_role():
         *MADE_TOOLS,
         *ADDRESS_TOOLS,
         "accounts_look",
+        *VOICE_TOOLS,
     ]
     assert "household_remove" in names(
         tools_for("child", TOOLS, DEFAULT_POLICY, person_id=uuid.uuid4(), rights=rights)

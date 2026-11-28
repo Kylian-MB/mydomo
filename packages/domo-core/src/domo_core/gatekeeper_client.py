@@ -17,6 +17,13 @@ can forget to: the setup's model step, the steps that put a model key to use
 with an id in it), the status and the code, and nothing else: never the token, a request's body, a
 form's path or what the gatekeeper's answer said beyond its code.
 
+The spoken phrase (``phrase_enrol``, ``phrase_compare``, ``phrase_remove``, ``phrase_exists``) is
+kept and compared by the gatekeeper: what was heard only crosses this client in memory, in a
+request's body, and a body is never logged nor put in an error, whatever the answer.
+
+The zone a declared provider's address leads to (``provider_zone``) is the gatekeeper's answer,
+by the same rule as for a program's request: the core resolves no name itself.
+
 A program's request goes through the gatekeeper's relay for programs (``out``): what comes back
 is its answer, scrubbed by the gatekeeper, or ``OutRefused`` with the relay's code alone.
 """
@@ -34,12 +41,18 @@ from domo_common.gatekeeper_api import (
     OutRefusalCode,
     OutRequest,
     OutResponse,
+    PhraseCompared,
+    PhraseEnrolled,
+    PhraseResult,
+    PhraseSaid,
     ProviderRoute,
+    ProviderZone,
     SecretMetadata,
     SecretRequestCreate,
     SecretRequestView,
+    Zone,
 )
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from domo_core.config import ConfigurationError
 
@@ -80,6 +93,24 @@ class GatekeeperError(Exception):
 class BindingConflictError(GatekeeperError):
     """The gatekeeper refused because a secret is already bound to other destinations: the
     bindings of a secret never change. To use other destinations, use another reference."""
+
+
+# The routes of the spoken phrase, named without the ref they carry.
+PHRASE_ENROL_OPERATION: Final = "POST /internal/phrases/{ref}/enrol"
+PHRASE_COMPARE_OPERATION: Final = "POST /internal/phrases/{ref}/compare"
+PHRASE_REMOVE_OPERATION: Final = "DELETE /internal/phrases/{ref}"
+PHRASE_EXISTS_OPERATION: Final = "GET /internal/phrases/{ref}"
+# What a held-back phrase waits when the gatekeeper does not say (its window is 15 minutes).
+_HELD_BACK_DEFAULT_S: Final = 900.0
+
+
+class PhraseHeldBack(GatekeeperError):
+    """Too many near misses of a person's phrase lately: the gatekeeper compares none for
+    ``wait`` seconds."""
+
+    def __init__(self, wait: float) -> None:
+        super().__init__(PHRASE_COMPARE_OPERATION, status=429, code="held_back")
+        self.wait = wait
 
 
 # The route of a program's request, and the codes its refusals carry (``{"code": ...}``).
@@ -166,6 +197,12 @@ def _out_code(response: httpx.Response) -> str:
     return "failed"
 
 
+def _retry_after(response: httpx.Response) -> float:
+    """The seconds of a ``Retry-After`` header; the gatekeeper's window when it says none."""
+    value = response.headers.get("retry-after", "")
+    return float(value) if value.isdecimal() else _HELD_BACK_DEFAULT_S
+
+
 class GatekeeperClient:
     """The gatekeeper's internal API, and the address of its relay.
 
@@ -231,6 +268,17 @@ class GatekeeperClient:
         response = await self._send(operation, "PUT", path, body=route)
         self._check(response, operation, expected=204)
 
+    async def provider_zone(self, provider_id: str) -> Zone:
+        """Where the declared provider ``provider_id`` leads to (``GET /internal/providers/{id}/
+        zone``): the zone of its address as the gatekeeper resolves it, by the rule it judges a
+        program's request by. Read-only. Raises ``GatekeeperError`` (``unknown_provider``, 404,
+        for a route it does not know)."""
+        operation = "GET /internal/providers/{id}/zone"
+        path = f"/internal/providers/{quote(provider_id, safe='')}/zone"
+        response = await self._send(operation, "GET", path)
+        self._check(response, operation, expected=200)
+        return self._parse(response, operation, ProviderZone).zone
+
     async def out(self, request: OutRequest) -> OutResponse:
         """Have the gatekeeper send a program's request (``POST /internal/out``) and give its
         answer. Raises ``OutRefused`` with the relay's code when it refuses or fails,
@@ -257,6 +305,67 @@ class GatekeeperClient:
             refused = OutRefused(_out_code(response), status=response.status_code)
             _logged(refused)
         raise refused
+
+    @staticmethod
+    def _said(operation: str, heard: str) -> PhraseSaid:
+        """``heard`` as a request's body, or ``invalid_request`` when the API would refuse it.
+
+        Raised outside the handler: pydantic's error quotes the input, which is what was heard.
+        """
+        try:
+            return PhraseSaid(heard=heard)
+        except ValidationError:
+            pass
+        raise _logged(GatekeeperError(operation, code="invalid_request"))
+
+    @staticmethod
+    def _phrase_path(ref: str) -> str:
+        return f"/internal/phrases/{quote(ref, safe='')}"
+
+    async def phrase_enrol(self, ref: str, heard: str) -> PhraseEnrolled:
+        """One saying of the phrase ``ref`` is agreeing on: where the agreement stands."""
+        operation = PHRASE_ENROL_OPERATION
+        body = self._said(operation, heard)
+        path = f"{self._phrase_path(ref)}/enrol"
+        response = await self._send(operation, "POST", path, body=body)
+        self._check(response, operation, expected=200)
+        return self._parse(response, operation, PhraseEnrolled)
+
+    async def phrase_compare(self, ref: str, heard: str) -> PhraseResult:
+        """How close ``heard`` is to the phrase of ``ref``.
+
+        A ref with no phrase answers ``nothing_like``, as the gatekeeper does: should it say
+        ``unknown_phrase`` all the same, that means the same, and no error tells whether a phrase
+        exists. Raises ``PhraseHeldBack`` while the ref is held back (for any text).
+        """
+        operation = PHRASE_COMPARE_OPERATION
+        body = self._said(operation, heard)
+        path = f"{self._phrase_path(ref)}/compare"
+        response = await self._send(operation, "POST", path, body=body)
+        if response.status_code == 429 and _error_code(response) == "held_back":
+            raise _logged(PhraseHeldBack(_retry_after(response)))
+        if response.status_code == 404 and _error_code(response) == "unknown_phrase":
+            return "nothing_like"
+        self._check(response, operation, expected=200)
+        return self._parse(response, operation, PhraseCompared).result
+
+    async def phrase_remove(self, ref: str) -> bool:
+        """Forget the phrase of ``ref``; whether there was one."""
+        operation = PHRASE_REMOVE_OPERATION
+        response = await self._send(operation, "DELETE", self._phrase_path(ref))
+        return self._phrase_known(response, operation)
+
+    async def phrase_exists(self, ref: str) -> bool:
+        """Whether ``ref`` has a phrase, without anything of it."""
+        operation = PHRASE_EXISTS_OPERATION
+        response = await self._send(operation, "GET", self._phrase_path(ref))
+        return self._phrase_known(response, operation)
+
+    def _phrase_known(self, response: httpx.Response, operation: str) -> bool:
+        if response.status_code == 404 and _error_code(response) == "unknown_phrase":
+            return False
+        self._check(response, operation, expected=204)
+        return True
 
     async def _send(
         self,

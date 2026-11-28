@@ -35,6 +35,7 @@ from typing import Any
 
 import pytest
 from domo_common.i18n import t
+from domo_core.llm.speech.home_key import HOME_SPEECH_ID
 from playwright.sync_api import Browser, Page, expect
 
 from tests.stack.stack_support import StackInfo, running_stack_with_fake_llm
@@ -68,8 +69,14 @@ T = EXPECT_TIMEOUT_MS
 # The message that makes the fake model say which model the call asked for.
 MODEL_COMMAND = "/model"
 # The household's general key (the first launch's), and the models the keys listed.
+# The house's speech service is a key of its own (``HOME_SPEECH_ID``), recorded once there is an
+# owner: the keys and the models a person gave are the others.
 GENERAL_KEY = "SELECT id FROM providers WHERE is_general"
-LISTED_MODELS = "SELECT string_agg(model_id, ',' ORDER BY model_id) FROM provider_models"
+LISTED_MODELS = (
+    "SELECT string_agg(model_id, ',' ORDER BY model_id) FROM provider_models "
+    f"WHERE provider_id <> '{HOME_SPEECH_ID}'"
+)
+GIVEN_KEYS = f"SELECT count(*) FROM providers WHERE id <> '{HOME_SPEECH_ID}'"
 # The calls of this calendar month (the household has no time zone: UTC, as the stack's clock).
 CALLS_THIS_MONTH = (
     "SELECT count(*) FROM model_calls WHERE started_at >= date_trunc('month', now() AT TIME ZONE "
@@ -183,8 +190,8 @@ def test_alex_adds_a_key_of_his_own_in_words(people: Household):
     expect(result).to_have_text(t("chat.key.checked", "en"))
     assert stack.test_key not in stack.logs("core")
 
-    # Two keys now: the general one, and his. His next request is made on his own key.
-    assert database_text(stack, "SELECT count(*) FROM providers") == "2"
+    # Two keys given now: the general one, and his. His next request is made on his own key.
+    assert database_text(stack, GIVEN_KEYS) == "2"
     his = database_text(stack, key_of(ALEX))
     assert his and his != database_text(stack, GENERAL_KEY)
     hello = send_and_wait(alex, "hello")

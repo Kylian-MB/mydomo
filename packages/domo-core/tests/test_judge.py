@@ -1383,6 +1383,8 @@ def _keys_of(value: object, *, inside: str = "") -> set[str]:
 def test_the_prompt_names_every_key_of_the_case():
     now = datetime(2030, 1, 5, 10, tzinfo=UTC)
     clue = Clue("session", "for", "strong", "code", now)
+    # A measured clue says its degree; a speaker heard by a microphone says so (Task 23).
+    heard = Clue("voice", "unknown", "weak", "code", now, degree=0.4)
     # (``may_agree`` and ``concerned``, the code's marks, only when set: tasks 25 and 26.)
     line = KnownLine(
         "c", "2030-01-01", "other", "Dana", True, "yes", True, may_agree=True, concerned=True
@@ -1417,7 +1419,9 @@ def test_the_prompt_names_every_key_of_the_case():
             "yes",
         ),
         owner_rule=owner_rule_of(NeverAsk("at night", at_all=True)),
-        speaker=Speaker(None, "page", clues=(clue,), last_heard_at=now).as_json(now),
+        speaker=Speaker(
+            None, "page", clues=(clue, heard), last_heard_at=now, microphone="desk-1"
+        ).as_json(now),
         asked_them="Shall I?",
         relayed=True,
         remembered=(line,),
@@ -1477,6 +1481,28 @@ def test_the_prompt_stays_under_8000():
     # Raised from 7 500 for the agreement left to the judge and the general key without an heir
     # (task 25, ruling R64): 8 000 at most.
     assert len(judge_prompt()) < 8000
+
+
+def test_the_prompt_tells_how_to_read_a_degree_and_a_domo_clue():
+    # Task 23 (CNV-4, WEB-1): how sure the code is of who speaks, read from the clues.
+    prompt = judge_prompt()
+    speaker = prompt[prompt.index('"speaker":') :]
+    speaker = speaker[: speaker.index("\n")]
+    for needed in (
+        '"degree": 0 to 1',
+        '"microphone"',
+        # "unknown" is no doubt: a voice not learnt yet, or too short.
+        "unknown: not learnt or too short, no doubt",
+        # A clue of the assistant's own (his reading of how they speak).
+        "domo: the assistant's reading",
+        # A voice is always weak: it never shows alone who speaks.
+        "A voice alone proves nobody",
+        # Asking little: a doubt on who speaks is no reason to ask for an ordinary action
+        # (review of Task 23, finding 2).
+        "Disturb them little: proof for a real doubt",
+        "for an ordinary action a less sure speaker is no reason to ask",
+    ):
+        assert needed in speaker, needed
 
 
 def test_the_prompt_says_how_to_weigh_the_case():
