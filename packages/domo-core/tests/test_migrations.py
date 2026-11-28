@@ -5,6 +5,7 @@ from pathlib import Path
 import domo_core
 import pytest
 from alembic import command
+from alembic.script import ScriptDirectory
 from domo_core.accounts.models import Person
 from domo_core.db import Base, load_models
 from domo_core.migrate import MIGRATIONS_DIR, alembic_config, upgrade_to_head
@@ -2302,3 +2303,19 @@ async def test_0069_lets_a_memory_come_from_an_unsure_voice_and_takes_it_back(
     finally:
         await engine.dispose()
     assert await schema_of(scratch_database_url) == before
+
+
+def test_the_line_logged_for_each_migration_quotes_no_word_the_voice_trial_says():
+    """Alembic logs every step at start ("Running upgrade 0073 -> 0074, <first paragraph of the
+    docstring>"). The voice trial checks that none of the words it says out loud reaches the
+    core's log: a migration's example sentence quoting one of them would make that check fail for
+    a reason that is not something heard."""
+    heard = ("lumière", "lumiere", "salon", "fromage", "garage")
+    scripts = ScriptDirectory.from_config(alembic_config("postgresql+asyncpg://unused/unused"))
+    logged = {script.revision: (script.doc or "").lower() for script in scripts.walk_revisions()}
+    assert logged
+    assert {
+        revision: [word for word in heard if word in line]
+        for revision, line in logged.items()
+        if any(word in line for word in heard)
+    } == {}

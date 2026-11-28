@@ -1,8 +1,10 @@
-"""The owner's lines on a role the assistant made (``role_accesses``): a line the owner said for
-the role itself ("the nannies may not open the garage", "…but not after 22:00", "…ask me first")
-is his rule (``by_owner``), which only his own request changes, and may carry a limit (with its
-question to the judge), an approver, what to ask before, and its words (``summary``). It holds for
-whoever has the role, now and later.
+"""The owner's lines on a role the assistant made (``role_accesses``).
+
+A line the owner said for the role itself ("the nannies may not open the garage", "…but not after
+22:00", "…ask me first") is his rule (``by_owner``), which only his own request changes, and may
+carry a limit (with its question to the judge), an approver, what to ask before, and its words
+(``summary``). It holds for whoever has the role, now and later. Alembic logs only the first
+paragraph of this docstring when it runs the step: examples of what people say stay out of it.
 
 Going back down drops the owner's limits, approvers and asks of the roles; their allow or deny
 stays as an ordinary line of the role.
