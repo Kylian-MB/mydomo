@@ -626,7 +626,7 @@ async def test_a_reminder_lets_the_next_yes_answer_the_request(
     adult_chat, display_name_of
 ):  # R74: the reply that reminds presents the request again
     reply = await adult_chat.say_with_tool("profile_rename", {"name": "Alex B"})
-    adult_chat.use_model(FakeChatModel(tool_script=["unclear", "Je sais lister le foyer."]))
+    adult_chat.use_model(FakeChatModel(tool_script=["unclear", "Je sais lister la maison."]))
     await adult_chat.say("qu'est-ce que tu sais faire ?")
     again = await adult_chat.say_with_tool(
         "confirmation_remind", {"request_id": str(reply.pending_confirmation_id)}

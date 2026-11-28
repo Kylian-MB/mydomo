@@ -767,7 +767,7 @@ async def test_a_yes_after_another_exchange_does_not_answer_an_older_request(
 ):  # R74 (b)
     reply = await adult_chat.say_with_tool("profile_rename", {"name": "Alex B"})
     adult_chat.use_model(
-        FakeChatModel(tool_script=["unclear", "Je sais lister le foyer. Tu veux ?"])
+        FakeChatModel(tool_script=["unclear", "Je sais lister la maison. Tu veux ?"])
     )
     await adult_chat.say("qu'est-ce que tu sais faire ?")
     model = adult_chat.use_model(FakeChatModel(["Voilà qui est là."]))

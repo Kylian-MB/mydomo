@@ -149,10 +149,10 @@ async def test_finish_message_keeps_a_reply_without_markdown_marks(store, person
     conversation = await store.active_conversation(person.id)
     _, assistant = await add_pair(store, conversation)
     written = (
-        "## Ce que je sais faire\n\n**Le foyer**\n- inviter **quelqu'un**\n"
+        "## Ce que je sais faire\n\n**La maison**\n- inviter **quelqu'un**\n"
         "2 ** 3, __init__ et a * b"
     )
-    kept = "Ce que je sais faire\n\nLe foyer\n- inviter quelqu'un\n2 ** 3, __init__ et a * b"
+    kept = "Ce que je sais faire\n\nLa maison\n- inviter quelqu'un\n2 ** 3, __init__ et a * b"
     assert await store.finish_message(assistant.id, content=written, status="complete") is True
     assert await stored(session, assistant.id) == (kept, "complete")
 
@@ -160,7 +160,7 @@ async def test_finish_message_keeps_a_reply_without_markdown_marks(store, person
 @pytest.mark.parametrize("size", [1, 2, 3, 7, 1000])
 def test_a_reply_that_comes_in_pieces_loses_its_marks_however_it_is_cut(size):
     written = (
-        "## Ce que je sais faire\n\n**Le foyer**\n- inviter **quelqu'un**\n"
+        "## Ce que je sais faire\n\n**La maison**\n- inviter **quelqu'un**\n"
         "  # pas un titre ?\n2 ** 3, __init__ et a * b\n#\n**"
     )
     stream = PlainStream()
@@ -168,7 +168,7 @@ def test_a_reply_that_comes_in_pieces_loses_its_marks_however_it_is_cut(size):
     shown = "".join(pieces) + stream.flush()
     assert shown == without_marks(written)
     assert shown == (
-        "Ce que je sais faire\n\nLe foyer\n- inviter quelqu'un\n"
+        "Ce que je sais faire\n\nLa maison\n- inviter quelqu'un\n"
         "pas un titre ?\n2 ** 3, __init__ et a * b\n#\n**"
     )
 

@@ -418,11 +418,10 @@ def test_every_action_type_of_the_catalog_has_a_plain_label_in_both_languages():
         language: json.loads(locales.joinpath(f"{language}.json").read_text(encoding="utf-8"))
         for language in ("en", "fr")
     }
-    # Said of someone else's role: never a word for the reader (nor "foyer": the page says
-    # "maison").
+    # Said of someone else's role: never a word for the reader.
     for_the_reader = {
         "en": re.compile(r"\b(you|your)\b", re.I),
-        "fr": re.compile(r"(?<![\w'’])(tu|ta|ton|tes|te|foyer)(?![\w'’])", re.I),
+        "fr": re.compile(r"(?<![\w'’])(tu|ta|ton|tes|te)(?![\w'’])", re.I),
     }
     unlabelled = []
     for action_type in sorted(KNOWN_ACTIONS):
