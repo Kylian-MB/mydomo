@@ -393,6 +393,7 @@ async def _whose_phrase(
     wish of whoever asks (``whose_judged``). The person's own: as before (their own words, the
     speaker them). Someone else's: only the owner's, or an adult's for a child, request, and always
     weighed (the owner, 2026-11-27); anyone else is refused."""
+    from domo_core.accounts.actors import is_child
     from domo_core.confirmations.who_agrees import may_agree_for_a_child
 
     name = _phrase_named(arguments)
@@ -407,8 +408,10 @@ async def _whose_phrase(
             rights = await load_rights(session)
     is_self = whose.id == asker.id
     if not is_self:
+        # A child is whoever their record marks as one (``accounts.actors.is_child``), whatever
+        # their role.
         has_a_say = asker.role == "owner" or (
-            whose.role == "child"
+            is_child(whose)
             and may_agree_for_a_child(ctx.actor, whose.id, rights=rights, policy=ctx.policy)
         )
         if not has_a_say:

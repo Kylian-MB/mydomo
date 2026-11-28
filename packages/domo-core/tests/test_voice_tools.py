@@ -538,6 +538,22 @@ async def test_an_adult_may_ask_their_childs_phrase_removed(session_factory):
     assert len(await words_left(session_factory, paul)) == 1
 
 
+async def test_an_adult_may_ask_the_phrase_of_a_record_marked_as_a_child_removed(session_factory):
+    # Paul's record is marked as a child, his role an adult's (the merge of "Domo makes the
+    # people"): an adult has the same say as for a child of the child role.
+    _, dana, paul, _ = await the_house(session_factory)
+    async with session_factory() as writer:
+        row = await writer.get(Person, paul.id)
+        assert row is not None
+        row.role, row.is_child = "adult", True
+        await writer.commit()
+    vault = FakeVault()
+    ctx = context(dana, session_factory, vault=vault)
+    outcome = await call("spoken_phrase_remove", ctx, {"person": "Paul"})
+    assert outcome.status == "done"
+    assert vault.removed == [phrase_ref(paul.id)]
+
+
 async def test_nobody_else_may_ask_another_persons_phrase_removed(session_factory):
     alex, dana, paul, tom = await the_house(session_factory)
     async with session_factory() as writer:
