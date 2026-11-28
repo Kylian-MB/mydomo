@@ -28,6 +28,7 @@ from sqlalchemy import select
 from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import is_active
 from domo_core.audit.log import append_audit
+from domo_core.confirmations.describe import describe_rule_change
 from domo_core.llm.types import JsonObject, ToolDefinition
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.rights import Right, load_rights, paused_rights
@@ -47,7 +48,7 @@ from domo_core.policy.settings import (
     update_policy_setting,
     validate_setting,
 )
-from domo_core.texts.view import Texts
+from domo_core.texts.view import REFERENCE, Texts
 from domo_core.tools.context import InvalidArguments, ToolContext, ToolOutcome
 
 _UPDATE_ARGUMENTS: Final = frozenset({"key", "value"})
@@ -180,7 +181,8 @@ class PolicyUpdate:
         description=(
             "Record their choice: how long a request may wait, the rights writer's time, "
             "the household's time zone, how big your tools' own base may grow, how the voice "
-            "listens. A null value "
+            "listens. Their choice is theirs: never refuse it yourself; as you do it, say once "
+            "what it brings (means) unless they know it. A null value "
             "clears it. Whether an action is confirmed, "
             'and how, is not a setting: your judge decides it, and their rules "always ask me '
             'before…" are rights (rights_propose). Keys: '
@@ -249,8 +251,22 @@ class PolicyUpdate:
                 details={"key": key, "old": old, "new": new},
             )
             await session.commit()
+        result: JsonObject = {"key": key, "value": new}
+        means = change_means(arguments)
+        if means is not None:
+            result["means"] = means
         return ToolOutcome(
             status="done",
-            model_result={"key": key, "value": new},
+            model_result=result,
             card={"key": "action.card.done.policy.update", "params": {}},
         )
+
+
+def change_means(arguments: JsonObject) -> str | None:
+    """What a ``policy_update`` call brings, in one plain English sentence (the one its card and
+    the judge read, ``describe_rule_change``), for Domo to say once as he does it; ``None`` for a
+    setting that has no sentence of its own."""
+    try:
+        return describe_rule_change(arguments, REFERENCE)
+    except (KeyError, ValueError, InvalidSetting):
+        return None

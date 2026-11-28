@@ -900,8 +900,7 @@ def _refused_as(ctx: ToolContext, decision: Refuse, actor: Actor) -> Actor:
 # What the model is told when the judge refused an action (spec 4.6): the person may explain.
 JUDGE_REFUSED_DETAIL: Final = (
     "The assistant judged not to do it: tell the person why, in your own words; if they explain "
-    "and you "
-    "are convinced, ask again"
+    "or insist, call it again with their new words: your judge weighs them, never you alone"
 )
 
 

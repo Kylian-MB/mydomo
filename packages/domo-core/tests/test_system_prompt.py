@@ -619,7 +619,9 @@ def test_every_identifier_in_the_text_is_a_tool_or_a_field_of_a_pending_request(
         "stop it, cancel what was set for them and remember it",
         # What a turn lost in Task 12's first rewording, restored (fix round 1, M1, M2).
         "ask you to keep to yourself",
-        "the person may explain; if they convince you, ask again",
+        # ... and when they explain or insist, the judge weighs it again, never he alone (the
+        # owner's first real try of the voice, 2026-11-27: his own setting refused twice).
+        "the person may explain or insist: then call it again, your judge weighs it",
         # The summary lines of earlier actions (decision D7) are the system's, never Domo's.
         "never write such lines yourself",
     ],

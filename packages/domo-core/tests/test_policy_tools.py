@@ -26,6 +26,7 @@ from domo_core.policy.rights import pause_personal_rights
 from domo_core.policy.roles import Actor
 from domo_core.policy.settings import LIFETIME_KEY
 from domo_core.texts.view import CatalogTexts
+from domo_core.tools import policy_tools
 from domo_core.tools.registry import TOOLS, InvalidArguments
 from fakes import FakeChatModel
 from web_support import audit_entries, in_language, reads_in
@@ -373,6 +374,22 @@ def test_the_voice_settings_are_told_with_their_values():
     # everything kept at home, or letting what is heard leave the house.
     for words in ("how the voice listens", "while holding it", "stays at home", "leave the house"):
         assert words in description, words
+
+
+def test_the_owners_choice_is_his_and_what_it_brings_is_said_once():
+    # The owner's first real try (2026-11-27): his own choice of a voice setting was refused
+    # twice. The tool says it is theirs, and its result says what it brings, to be said once.
+    description = TOOLS["policy_update"].definition.description
+    for words in ("Their choice is theirs: never refuse it yourself", "say once", "(means)"):
+        assert words in description, words
+    outside = {"key": "speech.hear_outside", "value": "yes"}
+    assert policy_tools.change_means(outside) == describe_for_people(
+        _rule_change("speech.hear_outside"), outside, CatalogTexts("en")
+    )
+    assert "leave the house" in policy_tools.change_means(outside)
+    assert policy_tools.change_means({"key": LIFETIME_KEY, "value": 24}) == (
+        "A request may wait 1 day at most, then it expires."
+    )
 
 
 async def test_only_the_owner_chooses_how_the_voice_listens(adult_chat, current_settings):
