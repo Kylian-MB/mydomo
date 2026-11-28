@@ -2,13 +2,13 @@
 the role itself ("the nannies may not open the garage", "…but not after 22:00", "…ask me first")
 is his rule (``by_owner``), which only his own request changes, and may carry a limit (with its
 question to the judge), an approver, what to ask before, and its words (``summary``). It holds for
-whoever has the role, now and later. (Numbered 0062 for now: to be renumbered at the merge.)
+whoever has the role, now and later.
 
 Going back down drops the owner's limits, approvers and asks of the roles; their allow or deny
 stays as an ordinary line of the role.
 
-Revision ID: 0062
-Revises: 0061
+Revision ID: 0074
+Revises: 0073
 Create Date: 2026-11-27
 """
 
@@ -17,8 +17,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0062"
-down_revision: str | None = "0061"
+revision: str = "0074"
+down_revision: str | None = "0073"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

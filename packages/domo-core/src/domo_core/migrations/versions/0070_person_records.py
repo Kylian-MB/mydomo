@@ -9,8 +9,8 @@ a child carries the mark, a removed person is ``gone``, the owner is of origin `
 person with access had it since their record was made. Going back down drops them all (the
 assistant is not installed anywhere yet: this is for a development database).
 
-Revision ID: 0058
-Revises: 0057
+Revision ID: 0070
+Revises: 0069
 Create Date: 2026-11-26
 """
 
@@ -19,8 +19,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0058"
-down_revision: str | None = "0057"
+revision: str = "0070"
+down_revision: str | None = "0069"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

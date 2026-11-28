@@ -553,9 +553,9 @@ async def test_the_record_of_a_guest_is_kept_without_limit(session_factory):
 
 async def test_the_ceiling_goes_and_comes_back_with_the_migration(scratch_database_url):
     config = alembic_config(scratch_database_url)
-    await asyncio.to_thread(command.upgrade, config, "0060")
+    await asyncio.to_thread(command.upgrade, config, "0072")
     before = await schema_of(scratch_database_url)
-    await asyncio.to_thread(command.upgrade, config, "0061")
+    await asyncio.to_thread(command.upgrade, config, "0073")
     after = await schema_of(scratch_database_url)
     [stay] = [row[2] for row in after["constraints"] if row[1] == "ck_invitations_guest_days_range"]
     assert "365" not in stay and ">= 1" in stay
@@ -578,7 +578,7 @@ async def test_the_ceiling_goes_and_comes_back_with_the_migration(scratch_databa
                         f"'guest', {days}, '{owner}', now() + interval '1 day', {accepted})"
                     )
                 )
-        await asyncio.to_thread(command.downgrade, config, "0060")
+        await asyncio.to_thread(command.downgrade, config, "0072")
         async with engine.connect() as connection:
             rows = await connection.execute(
                 text(

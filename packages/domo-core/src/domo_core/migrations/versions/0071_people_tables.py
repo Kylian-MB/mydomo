@@ -8,8 +8,8 @@ owns). Every column that names a person points at ``persons.id``; ``persons.made
 its foreign key to ``roles`` here. See ``people.models``. Going back down drops all of it (the
 assistant is not installed anywhere yet: this is for a development database).
 
-Revision ID: 0059
-Revises: 0058
+Revision ID: 0071
+Revises: 0070
 Create Date: 2026-11-26
 """
 
@@ -19,8 +19,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0059"
-down_revision: str | None = "0058"
+revision: str = "0071"
+down_revision: str | None = "0070"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

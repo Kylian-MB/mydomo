@@ -367,13 +367,13 @@ async def test_the_limits_keep_what_domo_could_not_tell_and_stays_up_to_a_year(
     scratch_database_url,
 ):
     """A request keeps the question Domo could not answer, and a guest's stay goes up to a year
-    (until ``0061`` takes the ceiling away: ``test_people_stays.py``). Going back down brings a
+    (until ``0073`` takes the ceiling away: ``test_people_stays.py``). Going back down brings a
     longer stay back to 30 days: shorter than allowed, never longer."""
     config = alembic_config(scratch_database_url)
     await asyncio.to_thread(command.upgrade, config, "0013")
     before = await schema_of(scratch_database_url)
     assert "ask_reason" not in {row[1] for row in before["columns"] if row[0] == "confirmations"}
-    await asyncio.to_thread(command.upgrade, config, "0060")
+    await asyncio.to_thread(command.upgrade, config, "0072")
     after = await schema_of(scratch_database_url)
     added = [row for row in after["columns"] if row[:2] == ("confirmations", "ask_reason")]
     assert added == [("confirmations", "ask_reason", "text", "YES", None)]

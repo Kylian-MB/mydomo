@@ -436,7 +436,7 @@ async def test_the_migration_gives_the_assistant_the_invitations_he_made_in_betw
     scratch_database_url,
 ):
     config = alembic_config(scratch_database_url)
-    await asyncio.to_thread(command.upgrade, config, "0059")
+    await asyncio.to_thread(command.upgrade, config, "0071")
     alex, sam, dana, tom = (str(uuid.uuid4()) for _ in range(4))
     engine = create_async_engine(scratch_database_url)
     try:
@@ -488,7 +488,7 @@ async def test_the_migration_gives_the_assistant_the_invitations_he_made_in_betw
                     f"('Paul', 'child', NULL, '{dana}', now() + interval '7 days', NULL, NULL)"
                 )
             )
-        await asyncio.to_thread(command.upgrade, config, "0060")
+        await asyncio.to_thread(command.upgrade, config, "0072")
         async with engine.connect() as connection:
             rows = {
                 row[0]: row[1:]
@@ -509,7 +509,7 @@ async def test_the_migration_gives_the_assistant_the_invitations_he_made_in_betw
                     )
                 ).scalar_one()
             ]
-        await asyncio.to_thread(command.downgrade, config, "0059")
+        await asyncio.to_thread(command.downgrade, config, "0071")
         async with engine.connect() as connection:
             hosts.append(
                 (
@@ -1150,7 +1150,7 @@ async def test_without_an_inviter_the_house_key_pays(session_factory, monkeypatc
 
 async def test_upgrade_then_downgrade(scratch_database_url):
     config = alembic_config(scratch_database_url)
-    await asyncio.to_thread(command.upgrade, config, "0060")
+    await asyncio.to_thread(command.upgrade, config, "0072")
     alex, sam = str(uuid.uuid4()), str(uuid.uuid4())
     engine = create_async_engine(scratch_database_url)
     try:
@@ -1174,7 +1174,7 @@ async def test_upgrade_then_downgrade(scratch_database_url):
                     "now() + interval '7 days')"
                 )
             )
-        await asyncio.to_thread(command.downgrade, config, "0059")
+        await asyncio.to_thread(command.downgrade, config, "0071")
         async with engine.connect() as connection:
             rows = {
                 row[0]: row[1:]
@@ -1185,10 +1185,10 @@ async def test_upgrade_then_downgrade(scratch_database_url):
                     )
                 )
             }
-        await asyncio.to_thread(command.upgrade, config, "0060")
+        await asyncio.to_thread(command.upgrade, config, "0072")
     finally:
         await engine.dispose()
-    # The link of a record has no person any more: before 0060 that would be a return link.
+    # The link of a record has no person any more: before 0072 that would be a return link.
     assert rows == {
         "Sam": (alex, True, True),
         "Tom": (alex, True, True),
@@ -1198,7 +1198,7 @@ async def test_upgrade_then_downgrade(scratch_database_url):
 
 async def test_going_down_with_no_owner_gives_the_one_its_link_was_for(scratch_database_url):
     config = alembic_config(scratch_database_url)
-    await asyncio.to_thread(command.upgrade, config, "0060")
+    await asyncio.to_thread(command.upgrade, config, "0072")
     dana = str(uuid.uuid4())
     engine = create_async_engine(scratch_database_url)
     try:
@@ -1217,12 +1217,12 @@ async def test_going_down_with_no_owner_gives_the_one_its_link_was_for(scratch_d
                     "now() + interval '7 days')"
                 )
             )
-        await asyncio.to_thread(command.downgrade, config, "0059")
+        await asyncio.to_thread(command.downgrade, config, "0071")
         async with engine.connect() as connection:
             maker = (
                 await connection.execute(text("SELECT created_by::text FROM invitations"))
             ).scalar_one()
-        await asyncio.to_thread(command.upgrade, config, "0060")
+        await asyncio.to_thread(command.upgrade, config, "0072")
     finally:
         await engine.dispose()
     assert maker == dana

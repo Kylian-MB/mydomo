@@ -21,8 +21,8 @@ wait (nothing would tell them apart afterwards), gives the owner as the maker of
 and as the inviter of whoever joined with one, and empties the ``person_id`` of the ``record`` rows
 (before this migration a ``person_id`` meant a return link).
 
-Revision ID: 0060
-Revises: 0059
+Revision ID: 0072
+Revises: 0071
 Create Date: 2026-11-27
 """
 
@@ -31,8 +31,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0060"
-down_revision: str | None = "0059"
+revision: str = "0072"
+down_revision: str | None = "0071"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
