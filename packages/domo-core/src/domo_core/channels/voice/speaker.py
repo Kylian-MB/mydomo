@@ -11,10 +11,12 @@ no print; not learnt yet; a short sound; fits       the page's   ``unknown`` or 
 the page's person (``for``)                                     ``for``, degree
 another known person, clearly (``other_degree``     that person  ``for`` them        unsure
 from ``FOR_AT`` and above the page person's)                    (session ``against``)
-learnt for the page's person, long enough, far      nobody       ``against``         unknown
-from it (under ``AGAINST_AT``), nobody else clearly
+learnt for the page's person on this microphone,    nobody       ``against``         unknown
+long enough, far from it (under ``AGAINST_AT``),
+nobody else clearly
 anything else (a cold, a voice between the          the page's   ``against``         unsure
-thresholds, a tie)
+thresholds, a tie; far from the page's person on
+a microphone they have no base print on)
 =================================================  ===========  ==================  =========
 
 (*) for what is ordinary only, when the sound gave no print or a short one (see below). A voice
@@ -122,8 +124,9 @@ def _row_of(reading: Reading, print_: Print | None) -> _Row:
         return "other"
     if not reading.learnt or reading.weighs == "for":
         return "page"
-    if not reading.via_passing and reading.degree < AGAINST_AT:
+    if not reading.via_passing and reading.degree < AGAINST_AT and not reading.new_microphone:
         return "nobody"
+    # A microphone the page's person has no base print on: far is unsure, never nobody known.
     return "unsure"
 
 

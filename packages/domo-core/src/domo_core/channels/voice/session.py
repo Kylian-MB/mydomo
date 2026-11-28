@@ -76,6 +76,9 @@ A voice read like nobody known at this signed-in page is not made a stranger by 
 it, the quick model is asked whether it is still the page's person carrying on
 (``channels.voice.whose``); "theirs" takes it as theirs, unsure, the voice's clue against them
 kept (the judge sees it), and nothing of its voice is learnt; anything else, the stranger's path.
+On a microphone where the page's person has no base print yet, a voice far from them is never
+read like nobody known (``prints.Reading.new_microphone``): it is theirs, unsure, with no question,
+and a real stranger there is too (the owner, 2026-11-28).
 
 A stop of the listening reaches the session at once (``turn_off``, through ``live.LiveVoices``).
 
