@@ -2,10 +2,13 @@
 sayings go to the vault and nowhere else, and given as a proof only in a proof window of a
 microphone (the assistant spoke to the person there within ``PROOF_WINDOW_S``)."""
 
+import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable, Iterator
+import uuid
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from datetime import timedelta
+from typing import Any
 
 import pytest
 from chat_support import dump
@@ -14,6 +17,7 @@ from domo_core.audit.models import AuditEntry
 from domo_core.channels.page.abilities import PAGE
 from domo_core.channels.page.speaker import page_speaker
 from domo_core.channels.voice import session as session_module
+from domo_core.channels.voice.deps import RETRY_TELL_AFTER_S
 from domo_core.channels.voice.live import LATE_COPY_MARGIN_SECONDS
 from domo_core.channels.voice.models import VoiceMoment
 from domo_core.channels.voice.moments import open_moment
@@ -408,33 +412,60 @@ async def test_while_the_phrase_is_held_back_the_window_takes_nothing_by_voice(
     assert await name_of(session_factory, owner) == "Alex B"
 
 
-async def test_a_hold_whose_wake_could_not_run_is_told_at_the_next_sentence(
-    voice, session_factory, owner
+@pytest.mark.parametrize(
+    ("trouble", "fact"),
+    [("held_back", {"proof": "did_not_work"}), ("down", {"proof": "not_checked"})],
+    ids=["hold", "outage"],
+)
+async def test_a_hold_or_outage_whose_wake_wrote_nothing_is_told_a_minute_later(
+    voice, session_factory, owner, live_clock, trouble, fact
 ):
     v = voice(asks_a_proof())
     await a_proof_is_asked(v, session_factory, owner)
-    v.vault.held_back = 60.0
+    if trouble == "held_back":
+        v.vault.held_back = 60.0
+    else:
+        v.vault.down = True
     v.woken.runs = False  # his conversation stays busy
     await v.say(PHRASE)
-    # Not told: the next sentence of the hold tries again, and once told, never again.
+    # Not told: not tried again at every sentence, only a minute later at the soonest.
     v.woken.runs = True
     await v.say(ORDINARY)
+    assert v.woken.contents() == [fact]
+    live_clock.advance(timedelta(seconds=RETRY_TELL_AFTER_S + 1))
     await v.say(ORDINARY)
-    assert v.woken.contents() == [{"proof": "did_not_work"}] * 2
+    assert v.woken.contents() == [fact] * 2
+    # Once told, never again in this hold or outage.
+    live_clock.advance(timedelta(seconds=5))
+    await v.say(ORDINARY)
+    assert v.woken.contents() == [fact] * 2
 
 
-async def test_an_outage_whose_wake_could_not_run_is_told_at_the_next_sentence(
-    voice, session_factory, owner
+async def test_the_phrase_outcome_is_told_though_the_page_closes(
+    voice, session_factory, owner, live_clock, monkeypatch
 ):
-    v = voice(asks_a_proof())
-    await a_proof_is_asked(v, session_factory, owner)
-    v.vault.down = True
-    v.woken.runs = False
-    await v.say(PHRASE)
-    v.woken.runs = True
-    await v.say(ORDINARY)
-    await v.say(ORDINARY)
-    assert v.woken.contents() == [{"proof": "not_checked"}] * 2
+    v = voice()
+    await a_moment(session_factory, owner, live_clock())
+    entered, let_go = asyncio.Event(), asyncio.Event()
+    finished: list[object] = []
+
+    async def slow(person_id: uuid.UUID, wakes: Sequence[Any]) -> str:
+        entered.set()
+        await let_go.wait()  # his conversation is busy while the page goes
+        finished.extend(wake.content for wake in wakes)
+        return "spoke"
+
+    monkeypatch.setattr(type(v.woken), "__call__", lambda self, p, w: slow(p, w))
+    v.service.text = PHRASE
+    await v.session.speech_began()
+    await v.session.heard(sound())
+    async with asyncio.timeout(10):
+        await entered.wait()
+    # The page goes while he is being woken: the wake goes on without it.
+    await v.session.close()
+    let_go.set()
+    await v.house.turns_over()
+    assert finished == [{"phrase": "first_kept"}]
 
 
 async def test_with_the_gatekeeper_out_of_reach_he_is_woken_once(voice, session_factory, owner):

@@ -5,6 +5,7 @@ T25 of the Task 19 review)."""
 
 import ast
 import asyncio
+import logging
 import re
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
@@ -26,6 +27,7 @@ from domo_core.channels.voice.attention import (
     fallback,
     read_judgement,
 )
+from domo_core.channels.voice.deps import RETRY_TELL_AFTER_S
 from domo_core.channels.voice.live import LATE_COPY_MARGIN_SECONDS
 from domo_core.channels.voice.proof import proofs_awaited
 from domo_core.confirmations.models import Confirmation
@@ -57,6 +59,7 @@ from voice_session_support import (
     House,
     a_household_that_hears_at_home,
     add_key,
+    closing_page,
     sound,
     until,
 )
@@ -495,28 +498,84 @@ async def no_small_model_at_home(session_factory, owner) -> None:
     )
 
 
-async def test_a_fact_whose_turn_could_not_run_is_told_at_the_next_switch_on(
-    house, session_factory, owner, caplog
+@pytest.mark.parametrize("silent", [False, True], ids=["could_not_run", "ran_silently"])
+async def test_a_fact_whose_turn_wrote_nothing_is_told_at_a_later_switch_on(
+    house, session_factory, owner, caplog, live_clock, silent
 ):
     await no_small_model_at_home(session_factory, owner)
     h = await house(keys=False)
-    h.woken.runs = False  # his conversation stays busy (the welcome being written, say)
+    if silent:
+        h.woken.says = False  # his turn ran, and chose to say nothing
+    else:
+        h.woken.runs = False  # his conversation stays busy (the welcome being written, say)
     first = h.page("desk-a")
     await until(lambda: bool(first.of("listening")) and len(h.woken.wakes) == 1)
     await h.turns_over()
-    # Not told: a line says so (the fact's name alone), and it is kept to tell.
-    assert "could not be told" in caplog.text and "no_attention" in caplog.text
-    # He turns the voice on again: told this time.
-    h.woken.runs = True
-    second = h.page("desk-b")
+    assert h.deps.told.told == set()
+    if not silent:
+        # Not told: a line says so (the fact's name alone), and it is kept to tell.
+        assert "could not be told" in caplog.text and "no_attention" in caplog.text
+    # He presses the switch again at once: no new try within the minute.
+    again = h.page("desk-b")
+    await until(lambda: bool(again.of("listening")))
+    await h.turns_over()
+    assert len(h.woken.wakes) == 1
+    # A minute later he turns the voice on again: told this time.
+    h.woken.runs, h.woken.says = True, True
+    live_clock.advance(timedelta(seconds=RETRY_TELL_AFTER_S + 1))
+    second = h.page("desk-c")
     await until(lambda: bool(second.of("listening")) and len(h.woken.wakes) == 2)
     await h.turns_over()
     assert h.woken.contents() == [NO_ATTENTION_FACT, NO_ATTENTION_FACT]
-    # Told once is once: a third switch-on wakes him no more.
-    third = h.page("desk-c")
+    assert h.deps.told.told == {"no_attention"}
+    # Told once is once: a later switch-on wakes him no more.
+    live_clock.advance(timedelta(seconds=RETRY_TELL_AFTER_S + 1))
+    third = h.page("desk-d")
     await until(lambda: bool(third.of("listening")))
     await h.turns_over()
     assert len(h.woken.wakes) == 2
+
+
+async def test_a_page_that_closes_on_listening_off_never_loses_the_tell(
+    house, session_factory, owner
+):
+    await no_small_model_at_home(session_factory, owner)
+    h = await house(keys=False)
+    socket = closing_page(h, owner, "desk-a")
+    await until(lambda: socket.closing is not None and socket.closing.done())
+    await h.turns_over()
+    # The page was told its state and to turn off, in that order; the tell went on without it.
+    assert socket.messages() == [
+        {"type": "state", "hearing": "no_attention", "chooses": True},
+        {"type": "listening", "on": False},
+    ]
+    assert h.woken.contents() == [NO_ATTENTION_FACT]
+    assert h.deps.told.told == {"no_attention"} and h.deps.told.telling == set()
+
+
+async def test_on_first_use_his_message_is_written_though_the_page_closed(
+    house, session_factory, owner
+):
+    # The real wake of the assistant, on a fresh house: the page closes on "listening off".
+    await no_small_model_at_home(session_factory, owner)
+    h = await house(FakeChatModel(["Two ways to let me listen."]), keys=False, real_wakes=True)
+    socket = closing_page(h, owner, "desk-a")
+    await until(lambda: socket.closing is not None and socket.closing.done())
+    await h.turns_over()
+    assert await h.messages() == [("assistant", "Two ways to let me listen.", "complete")]
+    assert h.deps.told.told == {"no_attention"}
+
+
+async def test_a_silent_turn_of_the_assistant_is_not_told(house, session_factory, owner, caplog):
+    caplog.set_level(logging.INFO)
+    await no_small_model_at_home(session_factory, owner)
+    h = await house(FakeChatModel([""]), keys=False, real_wakes=True)
+    page = h.page("desk-a")
+    await until(lambda: bool(page.of("listening")))
+    await h.turns_over()
+    assert await h.messages() == []
+    assert h.deps.told.told == set() and "no_attention" in h.deps.told.tried_at
+    assert "ran silently (hearing=no_attention)" in caplog.text
 
 
 async def test_a_fact_being_told_is_not_told_again_meanwhile(
@@ -527,10 +586,10 @@ async def test_a_fact_being_told_is_not_told_again_meanwhile(
     let_go = asyncio.Event()
     asked: list[uuid.UUID] = []
 
-    async def slow(person_id: uuid.UUID, wakes: Sequence[Any]) -> bool:
+    async def slow(person_id: uuid.UUID, wakes: Sequence[Any]) -> str:
         asked.append(person_id)
         await let_go.wait()  # his conversation is busy: the wake waits for it to be free
-        return True
+        return "spoke"
 
     monkeypatch.setattr(type(h.woken), "__call__", lambda self, p, w: slow(p, w))
     first = h.page("desk-a")

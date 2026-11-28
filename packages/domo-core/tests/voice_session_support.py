@@ -31,6 +31,7 @@ from domo_core.channels.voice.stranger import STRANGERS
 from domo_core.chat.models import Message
 from domo_core.config import CoreSettings
 from domo_core.conversation.listeners import Listeners
+from domo_core.conversation.tool_wakes import WakeEnd
 from domo_core.db import SessionFactory
 from domo_core.gatekeeper_client import GatekeeperError, PhraseHeldBack
 from domo_core.llm.models import Provider, ProviderModel, new_provider_id
@@ -312,13 +313,47 @@ class Woken:
 
     wakes: list[tuple[uuid.UUID, list[ToolWake]]] = field(default_factory=lambda: [])
     runs: bool = True  # whether the turn could run (``False``: busy, no key)
+    says: bool = True  # whether a turn that runs writes words (``False``: it ran silently)
 
-    async def __call__(self, person_id: uuid.UUID, wakes: Sequence[ToolWake]) -> bool:
+    async def __call__(self, person_id: uuid.UUID, wakes: Sequence[ToolWake]) -> WakeEnd:
         self.wakes.append((person_id, list(wakes)))
-        return self.runs
+        if not self.runs:
+            return "not_run"
+        return "spoke" if self.says else "ran"
 
     def contents(self) -> list[object]:
         return [wake.content for _, wakes in self.wakes for wake in wakes]
+
+
+class ClosesOnListeningOff(FakePage):
+    """The page's socket as the page uses it: on "listening off" the page closes it at once. The
+    worst case of that race: the session's worker never gets past that send (the close cancels
+    it there)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.session: VoiceSession | None = None
+        self.closing: asyncio.Task[None] | None = None
+
+    async def send_json(self, data: JsonObject) -> None:
+        await super().send_json(data)
+        if data == {"type": "listening", "on": False} and self.session is not None:
+            self.open = False
+            self.closing = asyncio.create_task(self.session.close())
+            await asyncio.Event().wait()  # until the close cancels the worker
+
+
+def closing_page(h: "House", person: Person, microphone: str) -> ClosesOnListeningOff:
+    """A page of ``person`` at ``microphone`` whose socket closes on "listening off"."""
+    socket = ClosesOnListeningOff()
+    socket.session = VoiceSession(
+        h.deps,
+        person_id=person.id,
+        microphone=microphone,
+        origin="https://domo.example.com/",
+        sink=socket,
+    )
+    return socket
 
 
 async def add_key(

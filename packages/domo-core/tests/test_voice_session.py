@@ -37,6 +37,7 @@ from voice_session_support import (
     House,
     a_household_that_hears_at_home,
     add_key,
+    closing_page,
     messages_of,
     sound,
     until,
@@ -174,6 +175,29 @@ async def test_no_model_at_home_turns_the_voice_off_and_tells_the_owner_once(
         assert await v.messages() == []
     finally:
         await v.house.close()
+
+
+async def test_no_model_is_told_though_the_page_closes_on_listening_off(
+    session_factory, settings, live_clock, owner
+):
+    await add_key(session_factory, owner, (*CHAT_MODELS, "whisper-1"), home=False, general=True)
+    h = House(session_factory, settings, live_clock, owner, FakeChatModel(["ok"]))
+    socket = closing_page(h, owner, MIC)
+    session = socket.session
+    assert session is not None
+    try:
+        await session.speech_began()
+        await session.heard(sound())
+        await until(lambda: socket.closing is not None and socket.closing.done())
+        await h.turns_over()
+        assert socket.messages() == [
+            {"type": "state", "hearing": "unavailable"},
+            {"type": "listening", "on": False},
+        ]
+        assert h.woken.contents() == [{"hearing": "no_model", "outside_allowed": False}]
+        assert h.deps.told.told == {"no_model"}
+    finally:
+        await h.close()
 
 
 async def test_utterances_during_a_reply_are_all_kept_and_answered_after(voice):

@@ -130,7 +130,7 @@ import logging
 import time
 import uuid
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
@@ -145,7 +145,7 @@ from domo_core.channels.api.render import decision_sentence, sentence_of_card
 from domo_core.channels.voice import protocol, unaddressed
 from domo_core.channels.voice.abilities import VOICE, VOICE_CHANNEL
 from domo_core.channels.voice.attention import Exchanged, Moment, open_attention
-from domo_core.channels.voice.deps import VoiceDeps
+from domo_core.channels.voice.deps import Told, VoiceDeps
 from domo_core.channels.voice.hearing import CannotHear, HeardUtterance, hear
 from domo_core.channels.voice.listener import VoiceListener, VoiceSink
 from domo_core.channels.voice.live import LIVE_SENTENCES, LIVE_VOICES
@@ -185,7 +185,7 @@ from domo_core.conversation.service import (
     reply_is_alive,
 )
 from domo_core.conversation.speaker import Clue, Speaker, standing, voice_against
-from domo_core.conversation.tool_wakes import tool_wake_turn
+from domo_core.conversation.tool_wakes import WakeEnd, tool_wake_end
 from domo_core.identity.clues import kept_clues
 from domo_core.llm.speech.client import Print
 from domo_core.llm.types import JsonObject
@@ -221,6 +221,10 @@ OUTSIDE_MEANS: Final = (
 )
 # The tool that records the owner's choice.
 POLICY_TOOL: Final = "policy_update"
+# The fact of an outage of the gatekeeper, told once per outage at a page.
+OUTAGE: Final = "proof=not_checked"
+# Whom a fact is told to and what (``None``: nobody yet), found when it is told.
+_Whom = Callable[[str], Awaitable[tuple[uuid.UUID, JsonObject] | None]]
 _PHRASE_PURPOSES: Final = frozenset({"phrase_agree", "phrase_change"})
 # How long a sentence sent to the page counts as heard there with no word that it was played.
 SOUNDING_AT_MOST_S: Final = 120.0
@@ -378,8 +382,9 @@ class VoiceSession:
         # Those told of a hold of their phrase in their window (when the last reply said here to
         # each person ended is the microphone's: ``LiveVoices.said_to``), and whether an outage of
         # the gatekeeper was told.
-        self._hold_told: set[uuid.UUID] = set()
-        self._outage_told = False
+        # Keyed by the person's id, and ``OUTAGE``.
+        self._holds = Told()
+        self._outage = Told()
         # Words heard at someone else's page that wait for a reply of theirs to be over, one at a
         # time.
         self._later: set[asyncio.Task[None]] = set()
@@ -626,12 +631,20 @@ class VoiceSession:
     async def _work(self) -> None:
         try:
             await self._opening()
+        except asyncio.CancelledError:
+            # The page went (or the core stops) while the voice was readied: what it was telling
+            # runs apart (``turn.wakes``), never in this task; said so, and stopped.
+            logger.info("The voice was stopped while it was readied")
+            raise
         except Exception as error:
             logger.error("The voice could not be readied (%s)", type(error).__name__)
         while True:
             self._sound_began, self._sound = await self._queue.get()
             try:
                 await self._handle()
+            except asyncio.CancelledError:
+                logger.info("The voice was stopped while a moment of speech was handled")
+                raise
             except Exception as error:
                 # The kind only: a message may hold what was heard. The page is told the words
                 # were not taken (a database that cannot be read, say).
@@ -928,7 +941,7 @@ class VoiceSession:
         when nobody was spoken to here lately."""
         spoken_to = self._spoken_to(now)
         # A hold is told once per window: one that closed forgets it.
-        self._hold_told &= set(spoken_to)
+        self._holds.keep_only(str(person_id) for person_id in spoken_to)
         found: list[_Window] = []
         for person_id in spoken_to:
             person = await self._person_of(person_id)
@@ -1155,9 +1168,11 @@ class VoiceSession:
         state, never the "cannot hear" of a hearing that fails), and whether its person is the
         one who chooses."""
         self._hearing = "no_attention"
-        await self._send(protocol.no_attention(chooses=page.id == await self._owner_id()))
+        await self._send(protocol.no_attention(chooses=page.role == "owner"))
+        # Begun before the page is told to turn off: the page closes its socket on that, and the
+        # tell runs apart from the socket.
+        self._tell_the_owner_once("no_attention")
         await self._send(protocol.listening(on=False))
-        await self._tell_the_owner_once("no_attention")
 
     def _elsewhere(
         self,
@@ -1255,8 +1270,8 @@ class VoiceSession:
         await self._hearing_is(cannot.hearing)
         if not cannot.no_model:
             return
+        self._tell_the_owner_once("no_model")
         await self._send(protocol.listening(on=False))
-        await self._tell_the_owner_once("no_model")
 
     async def _hearing_is(self, hearing: protocol.Hearing) -> None:
         """Tell the page whether (and how) the assistant can hear, when it changed (or when he
@@ -1275,51 +1290,95 @@ class VoiceSession:
                 select(Person.id).where(Person.role == "owner").order_by(Person.created_at).limit(1)
             )
 
-    async def _tell_the_owner_once(self, fact: str) -> None:
+    def _tell_the_owner_once(self, fact: str) -> None:
         """No model may hear (``no_model``), or weigh what is heard (``no_attention``): the owner is
         told, once in this process, by the assistant in his conversation (a wake with the fact as
         data; for the weighing, with why, what each choice means and the setting that makes it).
 
-        Once is once TOLD: the fact is told when his turn ran (``deps.Told``). While it is being
-        told nobody tells it again; a turn that could not run (his conversation stayed busy past
-        the wake's wait for it to be free, no key, a failure) leaves it to tell, logged, and the
-        next try tells it: the next time the voice is turned on, or the next sentence heard."""
-        told = self._deps.told
-        if not told.begin(fact):
-            return
-        try:
-            owner_id = await self._owner_id()
-            async with self._deps.turn.session_factory() as session:
-                outside = (await load_policy_settings(session)).hear_outside
-        except BaseException:
-            told.end(fact, told=False)
-            raise
-        if owner_id is None:
-            told.end(fact, told=False)
-            return
-        content: JsonObject = {"hearing": fact, "outside_allowed": outside}
-        if fact == "no_attention":
-            content = {
-                "hearing": fact,
-                "why": NO_ATTENTION_WHY,
-                "outside_allowed": outside,
-                "choices": [
-                    {"setting": VOICE_GESTURE_KEY, "value": "yes", "means": GESTURE_MEANS},
-                    {"setting": HEAR_OUTSIDE_KEY, "value": "yes", "means": OUTSIDE_MEANS},
-                ],
-                "chosen_with": POLICY_TOOL,
-            }
-        self._deps.turn.wakes.spawn(self._tell(fact, owner_id, content))
+        Begun at once, in a task of ``turn.wakes`` that outlives the page's socket: nothing is
+        awaited here, and the owner is looked for in that task. Once is once TOLD: words of the
+        assistant saying it were written (``deps.Told``). While it is being told nobody tells it
+        again; a turn that could not run, ran silently or failed leaves it to tell, logged, and the
+        next try tells it (the next time the voice is turned on, or the next sentence heard), a
+        minute after the last at the soonest (``deps.RETRY_TELL_AFTER_S``)."""
+        self._tell_once(self._deps.told, fact, self._fact_for_the_owner, tell_the_page=False)
 
-    async def _tell(self, fact: str, owner_id: uuid.UUID, content: JsonObject) -> None:
-        """Tell the owner ``fact`` (``_tell_the_owner_once``): told only when his turn ran."""
-        ran = False
+    async def _fact_for_the_owner(self, fact: str) -> tuple[uuid.UUID, JsonObject] | None:
+        """Whom ``fact`` is told to (the owner; ``None``: nobody yet) and what he is told."""
+        owner_id = await self._owner_id()
+        if owner_id is None:
+            return None
+        async with self._deps.turn.session_factory() as session:
+            outside = (await load_policy_settings(session)).hear_outside
+        if fact != "no_attention":
+            return owner_id, {"hearing": fact, "outside_allowed": outside}
+        return owner_id, {
+            "hearing": fact,
+            "why": NO_ATTENTION_WHY,
+            "outside_allowed": outside,
+            "choices": [
+                {"setting": VOICE_GESTURE_KEY, "value": "yes", "means": GESTURE_MEANS},
+                {"setting": HEAR_OUTSIDE_KEY, "value": "yes", "means": OUTSIDE_MEANS},
+            ],
+            "chosen_with": POLICY_TOOL,
+        }
+
+    def _tell_once(
+        self,
+        told: Told,
+        fact: str,
+        whom: _Whom,
+        *,
+        tell_the_page: bool = True,
+    ) -> None:
+        """Tell ``fact`` once (``told``), to whom ``whom`` says, in a task of ``turn.wakes``
+        begun now (``_tell_the_owner_once``)."""
+        if told.begin(fact, self._deps.turn.clock()):
+            self._deps.turn.wakes.spawn(self._tell(told, fact, whom, tell_the_page=tell_the_page))
+
+    async def _tell(
+        self,
+        told: Told,
+        fact: str,
+        whom: _Whom,
+        *,
+        tell_the_page: bool,
+    ) -> None:
+        """Tell ``fact`` (``_tell_once``): told only when words saying it were written."""
+        said = False
         try:
-            ran = await self._wake(owner_id, content, tell_the_page=False)
+            found = await whom(fact)
+            if found is not None:
+                said = await self._wake(*found, tell_the_page=tell_the_page) == "spoke"
+        except asyncio.CancelledError:
+            logger.warning("A fact of the voice was stopped while it was told (%s)", fact)
+            raise
         except Exception as error:
-            logger.error("A fact of the voice could not be told (%s)", type(error).__name__)
+            logger.error(
+                "A fact of the voice could not be told (%s: error %s)", fact, type(error).__name__
+            )
         finally:
-            self._deps.told.end(fact, told=ran)
+            told.end(fact, told=said, now=self._deps.turn.clock())
+
+    def _tell_apart(self, person_id: uuid.UUID, content: JsonObject) -> None:
+        """Wake the assistant for ``person_id`` with ``content`` (``_wake``), in a task of
+        ``turn.wakes`` begun now: the page's socket closing never stops it."""
+        self._deps.turn.wakes.spawn(self._wake_apart(person_id, content))
+
+    async def _wake_apart(self, person_id: uuid.UUID, content: JsonObject) -> None:
+        try:
+            await self._wake(person_id, content)
+        except asyncio.CancelledError:
+            logger.warning(
+                "A fact of the voice was stopped while it was told (%s)", _fact_name(content)
+            )
+            raise
+        except Exception as error:
+            logger.error(
+                "A fact of the voice could not be told (%s: error %s)",
+                _fact_name(content),
+                type(error).__name__,
+            )
 
     # --- reserved moments ----------------------------------------------------------------------
 
@@ -1340,7 +1399,7 @@ class VoiceSession:
         if outcome == "elsewhere":
             await self._send(protocol.not_taken("elsewhere"))
             return
-        await self._wake(person.id, {"phrase": outcome})
+        self._tell_apart(person.id, {"phrase": outcome})
 
     async def _as_a_proof(
         self,
@@ -1358,9 +1417,9 @@ class VoiceSession:
         first, *rest = awaited
         weighed = await self._given(person, first, heard, speaker, now, doubted=doubted)
         if weighed.given != "not_checked":
-            self._outage_told = False  # the gatekeeper answered
+            self._outage.forget(OUTAGE)  # the gatekeeper answered
         if weighed.given != "held_back":
-            self._hold_told.discard(person.id)  # a hold, if any, is over
+            self._holds.forget(str(person.id))  # a hold, if any, is over
         match weighed.given:
             case "not_an_answer":
                 pass
@@ -1374,22 +1433,19 @@ class VoiceSession:
                 # Not compared, dropped all the same; told once per hold and window, as a failed
                 # try (a bystander cannot tell a held phrase from a wrong one); then silently.
                 # Only their own voice tells them: another's sentence never wakes them about it.
-                if (
-                    not doubted
-                    and person.id not in self._hold_told
-                    and await self._wake(person.id, {"proof": "did_not_work"})
-                ):
-                    # Told once it was told: a turn that could not run tells it at the next one.
-                    self._hold_told.add(person.id)
+                # Told once it was told: a turn that wrote nothing tells it at a later one.
+                if not doubted:
+                    self._tell_once(
+                        self._holds, str(person.id), _to(person.id, {"proof": "did_not_work"})
+                    )
             case "not_checked":
                 # The gatekeeper out of reach: dropped, the request still waits; told once for
                 # the outage, not once per sentence.
-                if not self._outage_told and await self._wake(person.id, {"proof": "not_checked"}):
-                    self._outage_told = True
+                self._tell_once(self._outage, OUTAGE, _to(person.id, {"proof": "not_checked"}))
             case "another_proof" | "did_not_work":
                 # The request still waits: he is woken to say it (another proof, a failed try),
                 # and the next sentences are weighed again.
-                await self._wake(person.id, {"proof": weighed.given})
+                self._tell_apart(person.id, {"proof": weighed.given})
         return weighed.given
 
     async def _given(
@@ -1439,26 +1495,29 @@ class VoiceSession:
 
     async def _wake(
         self, person_id: uuid.UUID, content: JsonObject, *, tell_the_page: bool = True
-    ) -> bool:
+    ) -> WakeEnd:
         """Wake the assistant in ``person_id``'s conversation with a fact of the channel, as data:
-        he says it in his own words, through whoever listens to them. Whether his turn ran. When
-        he cannot be woken (his conversation stays busy past the wake's wait, no key), a line is
-        logged (the fact's name alone) and the page is told (``failed``, ``not_told``)."""
+        he says it in his own words, through whoever listens to them. How his turn ended
+        (``spoke``: his words were written). When he cannot be woken (his conversation stays busy
+        past the wake's wait, no key), a line is logged (the fact's name alone) and the page, while
+        it is there, is told (``failed``, ``not_told``)."""
         # The channel's own fact: given by the house's code, never told as a tool of a name.
         wakes = (ToolWake(tool=WAKE_TOOL, content=content, given_by="channel"),)
         wake = self._deps.wake
         if wake is not None:
-            ran = await wake(person_id, wakes)
+            ended = await wake(person_id, wakes)
         else:
-            ran = await tool_wake_turn(self._deps.turn, person_id, wakes)
-        if not ran:
+            ended = await tool_wake_end(
+                self._deps.turn, person_id, wakes, label=_fact_name(content)
+            )
+        if ended == "not_run":
             logger.warning(
                 "A fact of the voice could not be told: his turn could not run (%s)",
                 _fact_name(content),
             )
-            if tell_the_page:
+            if tell_the_page and not self._closed:
                 await self._send(protocol.failed("not_told"))
-        return ran
+        return ended
 
     # --- a voice nobody knows ------------------------------------------------------------------
 
@@ -1770,6 +1829,16 @@ class VoiceSession:
             await self._sink.send_json(data)
         except Exception as error:
             logger.info("The page could not be told (%s)", type(error).__name__)
+
+
+def _to(person_id: uuid.UUID, content: JsonObject) -> _Whom:
+    """Whom a fact is told to and what, when both are known already (``VoiceSession._tell``)."""
+
+    async def whom(fact: str) -> tuple[uuid.UUID, JsonObject] | None:
+        del fact
+        return person_id, content
+
+    return whom
 
 
 def _fact_name(content: JsonObject) -> str:

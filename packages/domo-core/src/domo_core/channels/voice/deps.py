@@ -14,7 +14,7 @@ and the voice is then "not learnt yet".
 
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Final, Literal
@@ -22,6 +22,7 @@ from typing import Final, Literal
 from domo_core.accounts.models import Person
 from domo_core.accounts.throttle import LoginThrottle
 from domo_core.conversation.prepare import TurnDeps
+from domo_core.conversation.tool_wakes import WakeEnd
 from domo_core.db import SessionFactory
 from domo_core.llm.catalog_store import current_catalog
 from domo_core.llm.speech.at_home import HomeCheck
@@ -38,8 +39,11 @@ SpeechTask = Literal["hear", "say", "voice_print"]
 THRESHOLDS_KEPT_S: Final = 300.0
 
 # Wakes the assistant in the conversation of a person with what tools say (as data):
-# ``conversation.tool_wakes.tool_wake_turn``; whether the turn ran.
-Wake = Callable[[uuid.UUID, Sequence[ToolWake]], Awaitable[bool]]
+# ``conversation.tool_wakes.tool_wake_end``; how the turn ended (``spoke``: words were written).
+Wake = Callable[[uuid.UUID, Sequence[ToolWake]], Awaitable[WakeEnd]]
+# After a tell that did not write words, how long the same fact waits before it is tried again,
+# in seconds, however often the voice is turned on meanwhile.
+RETRY_TELL_AFTER_S: Final = 60.0
 
 
 class MeteredSpeechOpener:
@@ -120,26 +124,47 @@ class MeteredSpeechOpener:
 
 @dataclass
 class Told:
-    """The facts the owner was told once in this process (``told``), and those being told now
-    (``telling``), shared by the voice sessions. A fact is told once the assistant's turn that
-    tells it ran; one whose turn could not run stays to tell, and the next try tells it."""
+    """The facts told once (``told``), those being told now (``telling``), and when a fact whose
+    tell wrote nothing was last tried (``tried_at``). A fact is told once the assistant's turn that
+    tells it kept words in the conversation; one whose turn could not run, ran silently or failed
+    stays to tell, and is tried again ``RETRY_TELL_AFTER_S`` after its last try at the soonest.
+    Never two tells of one fact at once."""
 
     told: set[str] = field(default_factory=lambda: set[str]())
     telling: set[str] = field(default_factory=lambda: set[str]())
+    tried_at: dict[str, datetime] = field(default_factory=lambda: dict[str, datetime]())
 
-    def begin(self, fact: str) -> bool:
-        """Whether ``fact`` is to be told now (neither told nor being told): it is then being
-        told until ``end``."""
+    def begin(self, fact: str, now: datetime) -> bool:
+        """Whether ``fact`` is to be told now (neither told, nor being told, nor tried in vain
+        too recently): it is then being told until ``end``."""
         if fact in self.told or fact in self.telling:
+            return False
+        tried = self.tried_at.get(fact)
+        if tried is not None and (now - tried).total_seconds() < RETRY_TELL_AFTER_S:
             return False
         self.telling.add(fact)
         return True
 
-    def end(self, fact: str, *, told: bool) -> None:
-        """``fact`` is no longer being told; ``told``: his turn ran, and it is never told again."""
+    def end(self, fact: str, *, told: bool, now: datetime) -> None:
+        """``fact`` is no longer being told; ``told``: words saying it were written, and it is
+        never told again (until ``forget``)."""
         self.telling.discard(fact)
         if told:
             self.told.add(fact)
+            self.tried_at.pop(fact, None)
+        else:
+            self.tried_at[fact] = now
+
+    def forget(self, fact: str) -> None:
+        """What made ``fact`` true is over: told again, and at once, should it become true again."""
+        self.told.discard(fact)
+        self.tried_at.pop(fact, None)
+
+    def keep_only(self, facts: Iterable[str]) -> None:
+        """Every fact but ``facts`` is forgotten (``forget``)."""
+        kept = set(facts)
+        for fact in [f for f in self.told | set(self.tried_at) if f not in kept]:
+            self.forget(fact)
 
 
 @dataclass(frozen=True)
@@ -147,7 +172,7 @@ class VoiceDeps:
     """What a voice session needs: what every turn needs (``turn``), the metered speech clients
     (``speech``), the count of the password checks (``throttle``: the account page's, which a
     proof shares; a spoken phrase is counted by the gatekeeper), how the assistant is woken with a
-    fact of the channel (``wake``; ``None``: ``conversation.tool_wakes.tool_wake_turn`` on
+    fact of the channel (``wake``; ``None``: ``conversation.tool_wakes.tool_wake_end`` on
     ``turn``), and the facts the owner was already told in this process, or is being told
     (``told``). The voice sessions live in the process and the moments they share are
     ``live.LIVE_VOICES``, the one object the sessions and the tool that stops the listening both
