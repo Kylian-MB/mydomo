@@ -503,7 +503,10 @@ async def test_the_exact_words_never_reach_a_model(
             now=datetime.now(UTC),
         )
         await writer.commit()
-    said = "Dit à Alex : le code du portail est 4711"
+    # A canary that no hash, id or time can hold by chance (the audit is full of them): letters
+    # that are not hexadecimal, and a dash.
+    canary = "ZK-4711"
+    said = f"Dit à Alex : le code du portail est {canary}"
     noted = "Owner left you the gate code."
     await owner_chat.say_with_tool(
         "note_leave", {"recipient": "Alex", "text": noted, "exact": said}, text=said, judge="do"
@@ -530,16 +533,16 @@ async def test_the_exact_words_never_reach_a_model(
         # In the recipient's turns, only inside the block of the notes, as data, and in the
         # result of note_show, as data too (F2: he quotes them himself).
         fixed, context = call.system.split(CONTEXT_MARK)
-        assert "4711" not in fixed and context.count("4711") == 1
+        assert canary not in fixed and context.count(canary) == 1
         assert notes_block(call.system)[0]["exact"] == said
         results = tool_result_contents([call])
         messages = json.dumps([dump(m) for m in call.messages], ensure_ascii=False)
-        assert messages.count("4711") == sum(result.count("4711") for result in results)
-        assert all(json.loads(r).get("words") == said for r in results if "4711" in r)
+        assert messages.count(canary) == sum(result.count(canary) for result in results)
+        assert all(json.loads(r).get("words") == said for r in results if canary in r)
     # Never the writer's, the checker's or the yes-judge's, nor the audit's or a result's.
     for call in [*heads, *judged, *texts.judge_calls()]:
-        assert "4711" not in everything_of(call)
-    assert "4711" not in await audit_dump()
+        assert canary not in everything_of(call)
+    assert canary not in await audit_dump()
     assert json.loads(shown.model_result_text)["words"] == said
 
 

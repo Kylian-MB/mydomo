@@ -22,6 +22,7 @@ import base64
 import hashlib
 import json
 import re
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from string import Formatter
@@ -168,9 +169,23 @@ def send_message(page: Page, text: str) -> None:
     page.click('#chat-form [data-action="send"]')
 
 
+# What leaves out a bubble that only shows Domo writing (``fragments/message.html``).
+_NOT_BEING_WRITTEN = ":not([data-writing])"
+
+
 def assistant_replies(page: Page) -> Locator:
-    """The assistant's bubbles of the conversation."""
-    return page.locator(".message.assistant")
+    """The assistant's replies in the conversation of ``page``: his bubbles, but one that only
+    shows him writing (``data-writing``: a reply that a turn writes on the server and that this
+    page does not follow, as when he starts a turn himself: a wake, an arrival, news, a plan).
+    Such a bubble is no reply yet and may never be one: when that turn says nothing, its reply is
+    taken away and the page removes the bubble at its next asking (``chat.js``). A count that
+    held it would go down again, and a wait for one bubble more would be answered by a bubble
+    that goes. Counted without it, each reply is counted once it is there to stay: the reply the
+    page streams itself from the moment it opens, any other once it is over. A passing bubble
+    never makes the count go up and down again. One case does: a reply the page streams itself
+    whose stream stops short gets the mark and leaves the count, then comes back when the stored
+    reply takes its place."""
+    return page.locator(f".message.assistant{_NOT_BEING_WRITTEN}")
 
 
 # --- the household journey (test_household.py) ------------------------------------------------
@@ -257,33 +272,58 @@ def _bubble_number(page: Page, index: int) -> Locator:
 
 
 def wait_for_a_new_reply(page: Page, before: int, timeout_ms: int = EXPECT_TIMEOUT_MS) -> Locator:
-    """Wait, without reloading the page, until it shows one assistant bubble more than ``before``
+    """Wait, without reloading the page, until it shows one reply of Domo more than ``before``
     (what ``assistant_replies(page).count()`` said earlier): the reply Domo gives when a button
     wakes him, or when a chain that waited for someone's arrival goes on or stops by itself. The
     server writes it with no page asking for it; an open page finds it by asking every few seconds
     (``chat.js``), so this takes up to a few seconds after a button, and up to the upkeep's pass
     more after an arrival (``DOMO_UPKEEP_SECONDS`` of ``shared.env``): ``timeout_ms`` says how
-    long to wait in all. Returns that bubble, which may still show Domo writing: its words come
-    at a later asking, so read them with a timeout longer than one (``EXPECT_TIMEOUT_MS``)."""
-    expect(assistant_replies(page)).to_have_count(before + 1, timeout=timeout_ms)
+    long its bubble may take to appear. A bubble that only shows Domo writing is not waited for
+    (``assistant_replies``): it may be a turn that says nothing, whose bubble goes. Returns the
+    reply's bubble, once it is over."""
+    # The reply is counted when it is over, so this one wait holds the time its bubble had to
+    # appear (``timeout_ms``) plus the time its words had to come (``EXPECT_TIMEOUT_MS``): what
+    # the two waits had together when a bubble still being written was counted.
+    expect(assistant_replies(page)).to_have_count(
+        before + 1, timeout=timeout_ms + EXPECT_TIMEOUT_MS
+    )
     return _bubble_number(page, before)
 
 
 def no_new_reply(page: Page, before: int, seconds: float = 8.0) -> None:
     """Check that Domo, woken by a button, said nothing: that for ``seconds`` (longer than the
-    few seconds the page takes to ask for what is new) the page does not show more assistant
-    bubbles than ``before``, and that the server has none to give after the page's last bubble.
-    Absence cannot be waited for: this is the one place where a test waits for a fixed time."""
+    few seconds the page takes to ask for what is new) the page does not show more replies of
+    his than ``before`` (``assistant_replies``), and that the server has none to give after the
+    page's last message. Absence cannot be waited for: this is the one place where a test waits
+    for a fixed time.
+
+    The server is asked from the last message that is there to stay (a bubble that only shows
+    Domo writing may be gone from the server: asking from it would be answered 404). While it
+    answers that a turn still writes a reply (a bubble that shows Domo writing), nothing is known
+    yet: it is asked again until that turn is over, and what it left, if anything, is what is
+    checked."""
     replies = assistant_replies(page)
-    last = page.locator(".message[data-message-id]").last.get_attribute("data-message-id")
+    last = page.locator(f".message[data-message-id]{_NOT_BEING_WRITTEN}").last.get_attribute(
+        "data-message-id"
+    )
     assert last, "the page shows no message"
     page.wait_for_timeout(int(seconds * 1000))
     expect(replies).to_have_count(before)
     # The page's own asking could be late: ask the server as the page does.
-    since = page.request.get(
-        urljoin(page.url, f"/chat/since/{last}"), headers={"HX-Request": "true"}
+    url = urljoin(page.url, f"/chat/since/{last}")
+    deadline = time.monotonic() + EXPECT_TIMEOUT_MS / 1000
+    while True:
+        since = page.request.get(url, headers={"HX-Request": "true"})
+        assert since.ok, f"/chat/since answered {since.status}"
+        given = since.text().strip()
+        if "data-writing" not in given or time.monotonic() > deadline:
+            break
+        page.wait_for_timeout(500)
+    # The loop ended on its bound: nothing is known of what that turn will leave.
+    assert "data-writing" not in given, (
+        f"a turn was still writing after {EXPECT_TIMEOUT_MS // 1000} s"
     )
-    assert since.ok and since.text().strip() == "", "The assistant said something after all"
+    assert given == "", "The assistant said something after all"
 
 
 def reply_text(reply: Locator) -> Locator:
@@ -350,7 +390,6 @@ def confirm_and_hear_back(
     before = assistant_replies(page).count()
     confirm_with_the_button(card, status)
     heard = wait_for_a_new_reply(page, before)
-    # The bubble may first show Domo writing: his words come at the page's next asking.
     expect(reply_text(heard)).to_have_text(said, timeout=EXPECT_TIMEOUT_MS)
     return heard
 
@@ -435,8 +474,9 @@ def database_text(stack: StackInfo, query: str) -> str:
 
 
 def message_ids(page: Page) -> set[str]:
-    """The ids of the messages the page shows."""
-    ids: list[str] = page.locator(".message[data-message-id]").evaluate_all(
+    """The ids of the messages the page shows (not of a bubble that only shows Domo writing:
+    it is no message of the conversation yet, and may never be one, ``assistant_replies``)."""
+    ids: list[str] = page.locator(f".message[data-message-id]{_NOT_BEING_WRITTEN}").evaluate_all(
         "elements => elements.map(element => element.dataset.messageId)"
     )
     return set(ids)
