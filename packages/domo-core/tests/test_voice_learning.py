@@ -88,13 +88,14 @@ async def test_three_like_utterances_on_two_visits_learn_the_voice(session):
     assert reading.learnt and reading.weighs == "for"
 
 
-async def test_unlike_utterances_restart_the_candidate(session):
-    """Alex and Sam in turn at Alex's page, hours apart: the code is "sure" of the page each time,
-    and the voice is never learnt."""
+async def test_unlike_utterances_in_a_row_restart_the_candidate(session):
+    """Alex twice, then Sam twice, hours apart, again and again at Alex's page: the code is "sure"
+    of the page each time, and the voice is never learnt (two in turn: see
+    ``test_voice_learning_in_a_row``)."""
     alex = await person(session)
     results = []
     for n in range(12):
-        vector = ALEX if n % 2 == 0 else SAM
+        vector = ALEX if n % 4 < 2 else SAM
         results.append(await _learn(session, alex, vector, at=NOW + n * 2 * HOUR))
     assert "learnt" not in results
     assert _kinds(await _rows(session, alex)) == ["candidate"]
