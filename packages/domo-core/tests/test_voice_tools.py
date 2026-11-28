@@ -13,7 +13,7 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
-from domo_core.accounts.models import Person
+from domo_core.accounts.models import Account, Person
 from domo_core.audit.models import AuditEntry
 from domo_core.channels.page.abilities import PAGE
 from domo_core.channels.voice.live import LIVE_VOICES
@@ -123,10 +123,18 @@ async def refusal(name: str, ctx: ToolContext, arguments: dict[str, Any] | None 
 
 
 async def alex_and_dana(session_factory: SessionFactory) -> tuple[Person, Person]:
+    """Alex and Dana, each with an account: a turn can reach them (``people.reach``)."""
     async with session_factory() as writer:
         alex = Person(display_name="Alex", role="owner")
         dana = Person(display_name="Dana", role="adult")
         writer.add_all([alex, dana])
+        await writer.flush()
+        writer.add_all(
+            [
+                Account(person_id=alex.id, username="alex", password_hash="x"),
+                Account(person_id=dana.id, username="dana", password_hash="x"),
+            ]
+        )
         await writer.commit()
     return alex, dana
 
