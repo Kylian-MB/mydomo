@@ -169,6 +169,10 @@ WHAT_FORGETTING_DOES: Final[Mapping[str, Fate]] = {
     "card_texts.reader_id": "deleted",
     "went_wrong.by_person_id": "emptied",
     "went_wrong.about_person_id": "deleted",
+    # What the voice learnt of them goes, always: their voice's references (their prints go with
+    # them) and a moment reserved for them. A forgotten person leaves no voice print behind.
+    "voice_refs.person_id": "deleted",
+    "voice_moments.person_id": "deleted",
 }
 
 _PERSON: Final = "person:"
