@@ -50,7 +50,10 @@ jobs:
           version: "0.12.9"
           enable-cache: true
       - run: uv sync
-      - run: uv run pytest -m "not stack"
+      # On Linux, four processes at once, as on the home server: each has its own database
+      # container (the fixtures' session is a process's). Windows keeps one: it leaves the
+      # database tests out.
+      - run: uv run pytest -m "not stack" ${{ matrix.os == 'ubuntu-latest' && '-n 4' || '' }}
         env:
           # The Windows machine has no Linux container engine: its database tests are left out
           # by name, not by whether its Docker service happens to answer.
