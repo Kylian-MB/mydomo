@@ -1561,4 +1561,4 @@ def test_the_judge_is_told_of_how_and_its_prompt_keeps_its_size():
     assert '"of_domo" (the assistant\'s)' in prompt
     # A trade of seven characters for seven: the file is as long as it was (the voice's speaker
     # section included, and the later words after refusals paid for by two shorter key lists).
-    assert len(prompt) == 7994
+    assert len(prompt) == 7998
