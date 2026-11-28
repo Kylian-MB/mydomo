@@ -2593,7 +2593,7 @@
         "type": "policy.update",
         "target": "voice.after_a_gesture",
         "facts": {},
-        "says": "The voice will hear only what is said while a gesture is made, such as a held key; what is heard stays at home."
+        "says": "The voice will hear only what is said while a gesture is made, such as a held key; what is heard stays at home unless it may go outside the house."
       },
       "rights": {
         "allowed": true,

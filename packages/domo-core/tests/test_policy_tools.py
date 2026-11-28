@@ -215,7 +215,7 @@ def _rule_change(key: str) -> DescribedAction:
             "yes",
             "en",
             "The voice will hear only what is said while a gesture is made, such as a held key; "
-            "what is heard stays at home.",
+            "what is heard stays at home unless it may go outside the house.",
         ),
         ("voice.after_a_gesture", "no", "en", "The voice will not wait for a gesture to hear."),
         ("voice.after_a_gesture", None, "en", "The voice will not wait for a gesture to hear."),

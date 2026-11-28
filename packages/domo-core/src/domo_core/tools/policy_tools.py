@@ -199,7 +199,7 @@ class PolicyUpdate:
             f"{VOICE_GESTURE_KEY} (yes or no, no unless they choose: when no model at home can "
             "tell whether a sentence is said to you, the voice hears only what is said while the "
             "gesture is made, such as a held key: they talk while holding it, and what is heard "
-            "stays at home)."
+            "stays at home unless it may go outside the house)."
         ),
         parameters={
             "type": "object",

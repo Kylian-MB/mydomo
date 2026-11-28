@@ -213,7 +213,7 @@ NO_ATTENTION_WHY: Final = (
 )
 GESTURE_MEANS: Final = (
     "the person holds a button on the page while talking to you, and only then are they heard; "
-    "everything heard stays at home"
+    "what is heard stays at home unless it may go outside the house"
 )
 OUTSIDE_MEANS: Final = (
     "the voice listens freely, without a button: what the microphones hear goes to a model "

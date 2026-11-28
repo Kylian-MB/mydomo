@@ -611,7 +611,7 @@
   "policy.change.time_zone.default": "The household will no longer have a time zone.",
   "policy.change.hear_outside.yes": "What the microphones hear will go to a model outside the house: the voice listens freely, and the sound and the words said near it leave the house.",
   "policy.change.hear_outside.no": "What the microphones hear will stay at home.",
-  "policy.change.voice_gesture.yes": "The voice will hear only what is said while a gesture is made, such as a held key; what is heard stays at home.",
+  "policy.change.voice_gesture.yes": "The voice will hear only what is said while a gesture is made, such as a held key; what is heard stays at home unless it may go outside the house.",
   "policy.change.voice_gesture.no": "The voice will not wait for a gesture to hear.",
   "policy.change.voice_unsure.do": "An ordinary thing asked by a voice the assistant is not sure of will be done with the rights of whoever probably speaks.",
   "policy.change.voice_unsure.judge": "An ordinary thing asked by a voice the assistant is not sure of will be weighed first, like a sensitive one.",
