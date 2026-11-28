@@ -128,10 +128,12 @@ class Told:
     tell wrote nothing was last tried (``tried_at``). A fact is told once the assistant's turn that
     tells it kept words in the conversation; one whose turn could not run, ran silently or failed
     stays to tell, and is tried again ``RETRY_TELL_AFTER_S`` after its last try at the soonest.
-    Never two tells of one fact at once."""
+    Never two tells of one fact at once. A fact forgotten while it is told (``forgotten``) is
+    neither told nor tried when that tell ends."""
 
     told: set[str] = field(default_factory=lambda: set[str]())
     telling: set[str] = field(default_factory=lambda: set[str]())
+    forgotten: set[str] = field(default_factory=lambda: set[str]())
     tried_at: dict[str, datetime] = field(default_factory=lambda: dict[str, datetime]())
 
     def begin(self, fact: str, now: datetime) -> bool:
@@ -147,8 +149,11 @@ class Told:
 
     def end(self, fact: str, *, told: bool, now: datetime) -> None:
         """``fact`` is no longer being told; ``told``: words saying it were written, and it is
-        never told again (until ``forget``)."""
+        never told again (until ``forget``). Nothing is kept of a fact forgotten meanwhile."""
         self.telling.discard(fact)
+        if fact in self.forgotten:
+            self.forgotten.discard(fact)
+            return
         if told:
             self.told.add(fact)
             self.tried_at.pop(fact, None)
@@ -156,14 +161,17 @@ class Told:
             self.tried_at[fact] = now
 
     def forget(self, fact: str) -> None:
-        """What made ``fact`` true is over: told again, and at once, should it become true again."""
+        """What made ``fact`` true is over: told again, and at once, should it become true again
+        (a tell of it under way still ends first, and keeps nothing)."""
         self.told.discard(fact)
         self.tried_at.pop(fact, None)
+        if fact in self.telling:
+            self.forgotten.add(fact)
 
     def keep_only(self, facts: Iterable[str]) -> None:
         """Every fact but ``facts`` is forgotten (``forget``)."""
         kept = set(facts)
-        for fact in [f for f in self.told | set(self.tried_at) if f not in kept]:
+        for fact in [f for f in self.told | self.telling | set(self.tried_at) if f not in kept]:
             self.forget(fact)
 
 

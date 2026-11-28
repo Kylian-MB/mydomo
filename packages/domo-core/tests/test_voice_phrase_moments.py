@@ -17,7 +17,7 @@ from domo_core.audit.models import AuditEntry
 from domo_core.channels.page.abilities import PAGE
 from domo_core.channels.page.speaker import page_speaker
 from domo_core.channels.voice import session as session_module
-from domo_core.channels.voice.deps import RETRY_TELL_AFTER_S
+from domo_core.channels.voice.deps import RETRY_TELL_AFTER_S, Told
 from domo_core.channels.voice.live import LATE_COPY_MARGIN_SECONDS
 from domo_core.channels.voice.models import VoiceMoment
 from domo_core.channels.voice.moments import open_moment
@@ -439,6 +439,24 @@ async def test_a_hold_or_outage_whose_wake_wrote_nothing_is_told_a_minute_later(
     live_clock.advance(timedelta(seconds=5))
     await v.say(ORDINARY)
     assert v.woken.contents() == [fact] * 2
+
+
+@pytest.mark.parametrize("over", ["window_closed", "hold_over"])
+def test_a_hold_told_after_its_window_closed_leaves_nothing_told(live_clock, over):
+    holds = Told()
+    assert holds.begin("someone", live_clock())
+    # While he is being told, the window closes (or the hold is over): the fact is forgotten.
+    if over == "window_closed":
+        holds.keep_only([])
+    else:
+        holds.forget("someone")
+    holds.end("someone", told=True, now=live_clock())
+    assert holds.told == set() and holds.telling == set() and holds.tried_at == {}
+    # A new hold in a new window is told at once, and only once.
+    assert holds.begin("someone", live_clock())
+    assert not holds.begin("someone", live_clock())
+    holds.end("someone", told=True, now=live_clock())
+    assert holds.told == {"someone"}
 
 
 async def test_the_phrase_outcome_is_told_though_the_page_closes(
