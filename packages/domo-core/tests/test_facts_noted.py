@@ -500,12 +500,19 @@ async def test_whose_yes_unread_asks_nobody_and_says_try_again(
 ):
     # Waiting for the person's own yes when the owner's was due would drop who must be asked.
     people = await _people(session_factory, ("Alex", "owner"), ("Dana", "adult"))
-    _judge(monkeypatch, DOUBT)
+    judged = _judge(monkeypatch, DOUBT)
     if stalls:
         # Only the read that stalls is about the deadline. The read that fails is not: under a
         # deadline of one second, a machine that stalls may cut a read of the call, which then
         # ends as ``took_too_long`` and not as ``not_read`` (``bounds_for_a_stalling_machine``).
-        monkeypatch.setattr(execution_module, "_CHECK_SECONDS", 1.0)
+        # Nor are the reads before the judge answers (the case he reads among them): the deadline
+        # is made short only once he has, and from there to the read of whose yes it is, nothing
+        # else waits under it.
+        async def then_a_short_deadline(*args: Any, **kwargs: Any) -> Any:
+            monkeypatch.setattr(execution_module, "_CHECK_SECONDS", 1.0)
+            return await judged(*args, **kwargs)
+
+        monkeypatch.setattr(execution_module, "judge", then_a_short_deadline)
     ctx, reply_id, _ = await _turn(session_factory, people["Alex"])
     ctx = replace(ctx, registry={**ctx.registry, "take_back": _WhoseYesUnread(stalls=stalls)})
     record = await handle_tool_call(take_back(people["Dana"]), ctx=ctx, reply_id=reply_id)
