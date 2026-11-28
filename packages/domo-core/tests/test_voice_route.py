@@ -369,7 +369,9 @@ async def test_a_removed_person_is_refused(
 ) -> None:
     person = await session.get(Person, owner_account.person_id)
     assert person is not None
+    # Removed: no access any more, as the record says it (``persons.state``).
     person.disabled_at = datetime.now(UTC)
+    person.state = "gone"
     await session.commit()
     socket = Socket(app, headers(cookie=cookie))
     assert not await socket.accepted()

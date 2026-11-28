@@ -660,7 +660,8 @@ async def test_his_note_after_a_programs_text_is_from_an_unknown_source(
     add_member, session_factory, live_clock, stored_notes
 ):
     owner = await add_member("Alex", "owner")
-    await add_member("Dana", "adult")
+    # A note is for someone who can answer: an account (``people.reach``).
+    await add_member("Dana", "adult", username="dana")
     plain = alone(call_context(owner, session_factory, live_clock))
     await leave(plain, "Dana", "First")
     await leave(replace(plain, tool_woke=True), "Dana", "Second")
@@ -673,7 +674,7 @@ async def test_a_persons_note_never_is_from_an_unknown_source(
     add_member, session_factory, live_clock, stored_notes
 ):
     dana = await add_member("Dana", "adult")
-    await add_member("Sam", "child")
+    await add_member("Sam", "child", username="sam")
     await leave(replace(call_context(dana, session_factory, live_clock), tool_woke=True), "Sam")
     [note] = await stored_notes()
     assert (note.by_domo, note.from_unknown) == (False, False)
