@@ -26,6 +26,7 @@ from domo_core.policy.rights import pause_personal_rights
 from domo_core.policy.roles import Actor
 from domo_core.policy.settings import LIFETIME_KEY
 from domo_core.texts.view import CatalogTexts
+from domo_core.tools import policy_tools
 from domo_core.tools.registry import TOOLS, InvalidArguments
 from fakes import FakeChatModel
 from web_support import audit_entries, in_language, reads_in
@@ -197,6 +198,60 @@ def _rule_change(key: str) -> DescribedAction:
             "en",
             "Back to the default: the rights writer will have 60 seconds per call.",
         ),
+        # The voice's settings, and the tools' base, are told by what they do (the owner's first
+        # real try, 2026-11-27: the judge read "an action the assistant was asked to do" with no
+        # value, and refused his own choice).
+        (
+            "speech.hear_outside",
+            "yes",
+            "en",
+            "What the microphones hear will go to a model outside the house: the voice listens "
+            "freely, and the sound, who speaks and the words said near it leave the house.",
+        ),
+        ("speech.hear_outside", "no", "en", "What the microphones hear will stay at home."),
+        ("speech.hear_outside", None, "en", "What the microphones hear will stay at home."),
+        (
+            "voice.after_a_gesture",
+            "yes",
+            "en",
+            "The voice will hear only what is said while a gesture is made, such as a held key; "
+            "what is heard stays at home unless it may go outside the house.",
+        ),
+        ("voice.after_a_gesture", "no", "en", "The voice will not wait for a gesture to hear."),
+        ("voice.after_a_gesture", None, "en", "The voice will not wait for a gesture to hear."),
+        (
+            "voice.ordinary_when_unsure",
+            "judge",
+            "en",
+            "An ordinary thing asked by a voice the assistant is not sure of will be weighed "
+            "first, like a sensitive one.",
+        ),
+        (
+            "voice.ordinary_when_unsure",
+            None,
+            "en",
+            "An ordinary thing asked by a voice the assistant is not sure of will be done with "
+            "the rights of whoever probably speaks.",
+        ),
+        (
+            "tools.base_mb",
+            2048,
+            "en",
+            "The base the assistant's tools keep their data in may grow to 2048 MB.",
+        ),
+        (
+            "tools.base_mb",
+            None,
+            "en",
+            "The base the assistant's tools keep their data in may grow to 1024 MB.",
+        ),
+        (
+            "speech.hear_outside",
+            "yes",
+            "fr",
+            "Ce que les micros entendent ira vers un modèle hors de la maison : la voix écoute "
+            "librement, et le son, qui parle et les mots dits près d'elle sortent de la maison.",
+        ),
     ],
 )
 def test_each_rule_change_reads_as_a_plain_sentence(key, value, lang, sentence):
@@ -309,6 +364,42 @@ def test_the_tools_say_which_rules_exist_and_that_the_yes_is_judged():
         assert word in description, word
     for gone in ("confirmation_style", "natural", "explicit"):
         assert gone not in description, gone
+
+
+def test_the_voice_settings_are_told_with_their_values():
+    description = TOOLS["policy_update"].definition.description
+    for word in ("speech.hear_outside", "voice.after_a_gesture", "held key"):
+        assert word in description, word
+    # Found from the owner's plain words: how the voice listens, holding something to talk with
+    # everything kept at home, or letting what is heard leave the house.
+    for words in ("how the voice listens", "while holding it", "stays at home", "leave the house"):
+        assert words in description, words
+
+
+def test_the_owners_choice_is_his_and_what_it_brings_is_said_once():
+    # The owner's first real try (2026-11-27): his own choice of a voice setting was refused
+    # twice. The tool says it is theirs, and its result says what it brings, to be said once.
+    description = TOOLS["policy_update"].definition.description
+    for words in ("Their choice is theirs: never refuse it yourself", "say once", "(means)"):
+        assert words in description, words
+    outside = {"key": "speech.hear_outside", "value": "yes"}
+    assert policy_tools.change_means(outside) == describe_for_people(
+        _rule_change("speech.hear_outside"), outside, CatalogTexts("en")
+    )
+    assert "leave the house" in policy_tools.change_means(outside)
+    assert policy_tools.change_means({"key": LIFETIME_KEY, "value": 24}) == (
+        "A request may wait 1 day at most, then it expires."
+    )
+
+
+async def test_only_the_owner_chooses_how_the_voice_listens(adult_chat, current_settings):
+    reply = await adult_chat.say_with_tool(
+        "policy_update", {"key": "voice.after_a_gesture", "value": "yes"}
+    )
+    assert reply.actions == [
+        {"tool": "policy_update", "status": "refused", "reason": "not_allowed"}
+    ]
+    assert (await current_settings()).owner_values == {}
 
 
 # --- through the chat ----------------------------------------------------------------------------

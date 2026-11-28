@@ -14,6 +14,7 @@ import json
 import re
 import uuid
 from dataclasses import replace
+from datetime import UTC, datetime
 from html import unescape
 
 import pytest
@@ -920,3 +921,43 @@ async def test_a_key_becomes_general_only_for_the_owner_and_only_when_there_is_n
     await session.flush()
     await general_when_none(session, later)
     assert not later.is_general
+
+
+async def test_a_key_listing_only_speech_models_is_not_general_but_a_thinking_one_later_is(
+    session, add_person
+):
+    owner = await add_person("Alex", "owner")
+    now = datetime.now(UTC)
+    speech = Provider(
+        id=new_provider_id(),
+        kind="openai_compatible",
+        base_url="http://speech:8083/v1",
+        secret_ref=None,
+        given_by=owner.id,
+    )
+    thinking = Provider(
+        id=new_provider_id(),
+        kind="openai",
+        base_url="https://api.openai.com/v1",
+        secret_ref=None,
+        given_by=owner.id,
+    )
+    session.add_all([speech, thinking])
+    await session.flush()
+    session.add_all(
+        [
+            ProviderModel(provider_id=speech.id, model_id=m, listed_at=now)
+            for m in ("whisper-1", "tts-1")
+        ]
+    )
+    session.add_all(
+        [
+            ProviderModel(provider_id=thinking.id, model_id=m, listed_at=now)
+            for m in ("whisper-1", "gpt-4o-mini")
+        ]
+    )
+    await session.flush()
+    await general_when_none(session, speech)
+    assert not speech.is_general
+    await general_when_none(session, thinking)
+    assert thinking.is_general

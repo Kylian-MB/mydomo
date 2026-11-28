@@ -32,12 +32,16 @@ _RULE_ASKS: Final[tuple[RuleAsk, ...]] = ("judge", "never", "yes", "explicit_yes
 class Asked:
     """What a request asks for, who asked it, and why (one line, 200 characters at most).
     ``warned``: the yes-judge asked it only because of something the person must know first
-    (its ``warn``), which ``why`` tells."""
+    (its ``warn``), which ``why`` tells. ``before_doubt``: the judge asked it only because the
+    code was not sure of who asks, and this is what the rules ask without that doubt; a later yes
+    the code is sure of is held to it (``Confirmation.ask_before_doubt``, final fix wave, case 10).
+    """
 
     ask: Ask
     by: AskedBy
     why: str | None = None
     warned: bool = False
+    before_doubt: Ask | None = None
 
 
 def most_demanding(*asks: Ask | None) -> Ask | None:

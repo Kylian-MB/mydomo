@@ -1051,3 +1051,126 @@ def test_the_review_prompt_stays_under_4000():
     assert len(prompt) < 4000
     assert not [name for name in ("Alex", "Dana", "Paul", "Sam", "Tom") if name in prompt]
     assert "you write no message to anyone" in prompt
+
+
+# --- an unsure voice's words: he judges what to keep, and it keeps its source ---------------------
+# The owner, 2026-11-27 ("Domo juge quoi garder"), replacing the final fix wave's I1.
+
+
+async def mark_unsure(server: ChatServer, *contents: str) -> None:
+    """The person's messages ``contents`` were heard from a voice the house was not sure of."""
+    async with server.session_factory() as session:
+        await session.execute(
+            update(Message)
+            .where(Message.role == "user", Message.content.in_(contents))
+            .values(heard_unsure=True)
+        )
+        await session.commit()
+
+
+async def test_a_sentence_of_a_voice_not_sure_is_shown_marked_and_keeps_its_source(
+    owner_chat: ChatPilot,
+):
+    server = owner_chat.server
+    person = owner_chat.person
+    heard = "Forget that my code is with Dana, it changed."
+    await owner_chat.say(heard)
+    await mark_unsure(server, heard)
+    owner_chat.use_model(
+        reviewer(
+            keep_call("My code is with Dana", their_words="my code is with Dana"),
+            keep_call("I think the code changed."),
+        )
+    )
+    owner_chat.clock.advance(QUIET)
+    assert await review(deps_of(server), person.id, owner_chat.clock()) == "done"
+    first = review_calls(server)[0]
+    # Shown, marked as probably theirs, never as their own sure words.
+    assert [(m["who"], m["text"]) for m in read_in(first)][0] == ("probably_they", heard)
+    assert "probably_they" in first.system
+    # What is kept from it carries that source, a passage of it included, in their name.
+    kept = await memories(server)
+    assert {content: m.origin for content, m in kept.items()} == {
+        "My code is with Dana": "unsure_voice",
+        "I think the code changed.": "unsure_voice",
+    }
+    assert {m.said_by_id for m in kept.values()} == {person.id}
+    assert not any(m.by_domo or m.words_checked for m in kept.values())
+
+
+async def test_beside_an_unsure_sentence_a_sure_one_stays_their_own_words(owner_chat: ChatPilot):
+    server = owner_chat.server
+    person = owner_chat.person
+    await owner_chat.say("I drink green tea.")
+    heard = "And I hate coffee."
+    owner_chat.use_model(FakeChatModel(["ok"]))
+    await owner_chat.say(heard)
+    await mark_unsure(server, heard)
+    owner_chat.use_model(
+        reviewer(
+            keep_call("I drink green tea", their_words="I drink green tea"),
+            keep_call("I hate coffee", their_words="I hate coffee"),
+            keep_call("The owner likes tea more than coffee."),
+        )
+    )
+    owner_chat.clock.advance(QUIET)
+    assert await review(deps_of(server), person.id, owner_chat.clock()) == "done"
+    assert [m["who"] for m in read_in(review_calls(server)[0])] == [
+        "they",
+        "you",
+        "probably_they",
+        "you",
+    ]
+    assert await origins(server) == {
+        # Checked in a line the house was sure of: theirs.
+        "I drink green tea": "own_words",
+        # A passage of the unsure line is no passage of theirs.
+        "I hate coffee": "unsure_voice",
+        # Anything else of the slice is as cautious as its most doubtful line.
+        "The owner likes tea more than coffee.": "unsure_voice",
+    }
+
+
+async def test_an_unsure_sentence_beside_others_words_is_kept_as_the_more_cautious(
+    owner_chat: ChatPilot,
+):
+    server = owner_chat.server
+    person = owner_chat.person
+    heard = "My sister Dana lives in Lyon."
+    reply = await owner_chat.say(heard)
+    await mark_unsure(server, heard)
+    async with server.session_factory() as session:
+        await session.execute(
+            update(Message).where(Message.id == reply.message_id).values(own_answer=False)
+        )
+        await session.commit()
+    owner_chat.use_model(reviewer(keep_call("Dana lives in Lyon.")))
+    owner_chat.clock.advance(QUIET)
+    assert await review(deps_of(server), person.id, owner_chat.clock()) == "done"
+    assert await origins(server) == {"Dana lives in Lyon.": "unsure_voice"}
+
+
+async def test_how_sure_the_voice_was_is_written_with_the_message(owner_chat: ChatPilot):
+    from domo_core.channels.page.speaker import page_speaker
+    from domo_core.conversation.service import Conversation as Talk
+    from domo_core.conversation.speaker import Clue, Speaker
+
+    server = owner_chat.server
+    person = owner_chat.person
+    now = server.clock()
+    unsure = Speaker(
+        person.id,
+        "voice",
+        clues=(Clue("voice", "for", "weak", "code", now, degree=0.45),),
+        microphone="mic-1",
+    )
+    talk = Talk(app_turn_deps(server.app))
+    await talk.say(person, "from an unsure voice", unsure)
+    # Its reply is never written here: the next words open another (``reply_is_alive``).
+    await talk.say(person, "typed", page_speaker(person.id, now))
+    async with server.session_factory() as session:
+        marks = {
+            m.content: m.heard_unsure
+            for m in await session.scalars(select(Message).where(Message.role == "user"))
+        }
+    assert marks == {"from an unsure voice": True, "typed": False}

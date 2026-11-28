@@ -407,13 +407,13 @@ async def test_the_reason_is_data_and_never_moves_who_answers(session_factory, m
 
 
 def _still_untrusted(module: Any) -> Any:
-    """``read_the_person_again``, keeping the speaker untrusted (the turn says it, not the
+    """``read_the_person_again``, keeping the speaker nobody known (the turn says it, not the
     database)."""
     read = module.read_the_person_again
 
     async def reading(ctx: ToolContext) -> Any:
         said = await read(ctx)
-        ctx.actor = replace(ctx.actor, trusted=False)
+        ctx.actor = replace(ctx.actor, standing="unknown")
         return said
 
     return reading

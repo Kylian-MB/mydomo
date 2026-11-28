@@ -69,7 +69,7 @@ from domo_core.prompts import (
     build_system_prompt,
     tool_wake_heading,
 )
-from domo_core.tools.context import InvalidArguments, OutsideText, ToolContext
+from domo_core.tools.context import InvalidArguments, OutsideSource, OutsideText, ToolContext
 from domo_core.tools.memory_tools import origin_for
 from domo_core.tools.registry import TOOLS
 from domo_core.trust import service as trust
@@ -1329,6 +1329,10 @@ def test_a_programs_own_words_come_with_what_speaks():
     done = Launched("done", {"door": "open"})
     told = said_by(outcome_of(done), done, "doors", reaches).model_result
     assert told["launch"] == "done" and told["result"] == {"door": "open"}
+    # The same, for the judge: which program spoke, and what it is built to reach.
+    assert said_by(outcome_of(done), done, "doors", reaches).source == OutsideSource(
+        "tool", name="doors", reaches=tuple(reaches)
+    )
     assert told["from"] == {
         "program": "doors",
         "built_to_reach": reaches,
@@ -1348,6 +1352,7 @@ def test_a_programs_own_words_come_with_what_speaks():
         Launched("refused", {"reason": "not_allowed"}),
     ):
         assert "from" not in said_by(outcome_of(launched), launched, "doors", reaches).model_result
+        assert said_by(outcome_of(launched), launched, "doors", reaches).source is None
 
 
 def test_a_tools_wake_is_headed_by_what_it_is_built_to_reach():
@@ -1554,5 +1559,6 @@ def test_the_judge_is_told_of_how_and_its_prompt_keeps_its_size():
     prompt = judge_prompt()
     assert '"lately" ones ("outcome", "how", "about", "when")' in prompt
     assert '"of_domo" (the assistant\'s)' in prompt
-    # A trade of seven characters for seven: the file is as long as it was.
-    assert len(prompt) == 7994
+    # A trade of seven characters for seven: the file is as long as it was (the voice's speaker
+    # section included, and the later words after refusals paid for by two shorter key lists).
+    assert len(prompt) == 7998

@@ -1,11 +1,13 @@
 """The internal API of the gatekeeper: what the core talks to, and nobody else.
 
-It serves the secret requests, the secret metadata, the registration of provider routes and the
-relay (``/llm/{provider_id}/...``) that the core's model SDKs call as if it were the provider.
-The core authenticates with a shared token. The SDKs send it as their "API key", so the relay
-routes also take it from ``x-api-key`` and ``x-goog-api-key``; every other route takes a bearer
-token only. Everything but ``/internal/health`` is closed to a caller without the token: the
-check is a middleware, so it covers unknown paths too and runs before any body is read.
+It serves the secret requests, the secret metadata, the registration of provider routes, the
+spoken phrases (``/internal/phrases/{ref}``, see ``phrases``), the zone a declared provider's
+address leads to (``/internal/providers/{id}/zone``, read-only) and the relay
+(``/llm/{provider_id}/...``) that the core's model SDKs call as if it were the provider. The core
+authenticates with a shared token. The SDKs send it as their "API key", so the relay routes also
+take it from ``x-api-key`` and ``x-goog-api-key``; every other route takes a bearer token only.
+Everything but ``/internal/health`` is closed to a caller without the token: the check is a
+middleware, so it covers unknown paths too and runs before any body is read.
 
 Errors are small JSON bodies, ``{"error": "<code>"}``: they carry no secret, no header value and
 no echo of the request, so the core can map them and nothing leaks through them. The requests of
@@ -14,21 +16,27 @@ programs (``/internal/out``, see ``out``) are refused the same way, as ``{"code"
 
 import hmac
 import logging
+import math
 import re
 from collections.abc import Awaitable, Callable, MutableMapping
-from typing import Any, cast
-from urllib.parse import unquote
+from typing import Annotated, Any, cast
+from urllib.parse import unquote, urlsplit
 
 import httpx
 from domo_common.gatekeeper_api import (
+    REF_PATTERN,
     OutRefusalCode,
     OutRequest,
+    PhraseCompared,
+    PhraseEnrolled,
+    PhraseSaid,
     ProviderRoute,
+    ProviderZone,
     SecretMetadata,
     SecretRequestCreate,
     SecretRequestView,
 )
-from fastapi import BackgroundTasks, FastAPI, Request, Response
+from fastapi import BackgroundTasks, FastAPI, Path, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -40,13 +48,18 @@ from domo_gatekeeper.errors import (
     InvalidRelayPath,
     InvalidSecretValueError,
     OutRefused,
+    PhraseHeldBack,
     UnknownProviderError,
     UpstreamError,
     UpstreamTimeoutError,
     VaultDecryptError,
 )
 from domo_gatekeeper.out import ProgramRelay
-from domo_gatekeeper.providers import ProviderRegistry
+from domo_gatekeeper.phrases import PhraseStore
+from domo_gatekeeper.providers import ProviderRegistry, default_port
+from domo_gatekeeper.reach import Lookup, Reach, Unresolvable, lookup_addresses
+from domo_gatekeeper.reach import resolve as resolve_name
+from domo_gatekeeper.reach import zone as zone_of
 from domo_gatekeeper.relay import relay
 from domo_gatekeeper.secret_requests import SecretRequestStore
 from domo_gatekeeper.vault import Vault
@@ -88,6 +101,12 @@ _OUT_STATUSES: dict[OutRefusalCode, int] = {
     "bad_request": 400,
     "zone_changed": 403,
 }
+
+PROVIDER_ZONE_PATH = "/internal/providers/{provider_id}/zone"
+
+PHRASES_PATH = "/internal/phrases/{ref}"
+# A phrase's ref, checked by FastAPI: a bad one is an ``invalid_request`` like a bad body.
+_PhraseRef = Annotated[str, Path(pattern=REF_PATTERN)]
 
 # RFC 9110 "token": what a header name is made of.
 _HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
@@ -228,10 +247,15 @@ def create_internal_app(
     providers: ProviderRegistry,
     http_client: httpx.AsyncClient,
     core_token: str,
+    phrases: PhraseStore | None = None,
     out_relay: ProgramRelay | None = None,
+    reach: Reach | None = None,
+    lookup: Lookup = lookup_addresses,
 ) -> FastAPI:
-    """The internal app; ``out_relay`` serves the requests of programs (``OUT_PATH``), which
-    the app does not have without it."""
+    """The internal app; ``phrases`` keeps and compares the spoken phrases (``PHRASES_PATH``),
+    ``out_relay`` serves the requests of programs (``OUT_PATH``) and ``reach`` (with the resolver
+    ``lookup``) tells where a declared provider's address leads (``PROVIDER_ZONE_PATH``): the app
+    has none of these routes without them."""
     if not core_token:
         raise ValueError("The core token must not be empty.")
     # No API docs or schema: nothing here is for browsing.
@@ -337,6 +361,58 @@ def create_internal_app(
         released.add_task(result.aclose)
         response.background = released
         return response
+
+    if phrases is not None:
+        phrase_store = phrases
+
+        # The spoken phrase: what was heard comes in the body and is never logged or echoed back.
+
+        @app.post(PHRASES_PATH + "/enrol")
+        async def enrol_phrase(ref: _PhraseRef, body: PhraseSaid) -> PhraseEnrolled:
+            return await run_in_threadpool(phrase_store.enrol, ref, body.heard)
+
+        @app.post(PHRASES_PATH + "/compare")
+        async def compare_phrase(ref: _PhraseRef, body: PhraseSaid) -> Response:
+            try:
+                result = await run_in_threadpool(phrase_store.compare, ref, body.heard)
+            except KeyError:
+                # No phrase: the heard text is not an answer, and whether one exists is not said.
+                result = "nothing_like"
+            except PhraseHeldBack as held:
+                wait = str(math.ceil(held.wait))
+                return _error_response(429, "held_back", {"Retry-After": wait})
+            return JSONResponse(PhraseCompared(result=result).model_dump())
+
+        @app.delete(PHRASES_PATH, status_code=204)
+        async def remove_phrase(ref: _PhraseRef) -> Response:
+            if not await run_in_threadpool(phrase_store.remove, ref):
+                raise _ApiError(404, "unknown_phrase")
+            return Response(status_code=204)
+
+        @app.get(PHRASES_PATH, status_code=204)
+        async def phrase_exists(ref: _PhraseRef) -> Response:
+            if not await run_in_threadpool(phrase_store.has, ref):
+                raise _ApiError(404, "unknown_phrase")
+            return Response(status_code=204)
+
+    if reach is not None:
+        where = reach
+
+        @app.get(PROVIDER_ZONE_PATH)
+        async def provider_zone(provider_id: str) -> ProviderZone:
+            # Read-only: nothing is connected to, the name is only looked up and judged by the
+            # same rule as a program's request (``reach.zone``). A name that gives no address
+            # leads nowhere.
+            route = await run_in_threadpool(providers.get, provider_id)
+            if route is None:
+                raise _ApiError(404, "unknown_provider")
+            parts = urlsplit(route.base_url)
+            try:
+                address = await resolve_name(parts.hostname or "", lookup=lookup)
+            except Unresolvable:
+                return ProviderZone(zone="never")
+            port = parts.port or default_port(parts.scheme)
+            return ProviderZone(zone=zone_of(address, where, port))
 
     if out_relay is not None:
         program_relay = out_relay

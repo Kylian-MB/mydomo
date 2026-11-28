@@ -332,6 +332,15 @@ _KNOWN: Final[tuple[str, ...]] = (
     # owner); and withdrawing one. Everyone's, a guest's too, for themselves; judged and shown.
     "agreement.keep",
     "agreement.drop",
+    # The voice (spec 6.2, 6.5, 6.9): agreeing, changing and removing the spoken phrase, stopping
+    # the listening, and "that was not me". Everyone's, for themselves; only stopping is silent.
+    "proof.phrase_agree",
+    "proof.phrase_change",
+    "proof.phrase_remove",
+    "voice.stop_listening",
+    "voice.unlearn",
+    # Domo's own reading of how someone speaks (Task 23): a weak clue of his, never shown.
+    "voice.manner_note",
     # Setting something for the whole house: a timed launch, a standing agreement (Task 27,
     # ruling R17). It changes nothing by itself: the tools read it (``HOUSE_SET``).
     "house.set",
@@ -453,6 +462,21 @@ PROGRAM_ACTIONS: Final[frozenset[str]] = frozenset({"tool.launch_when"})
 # The agreements that last: everyone keeps and withdraws their own (the tools' own guard says
 # whose; one for the house is set by whom the rights allow ``HOUSE_SET``).
 AGREEMENT_ACTIONS: Final = frozenset({"agreement.keep", "agreement.drop"})
+# The voice (spec 6.2, 6.5, 6.9), in anyone's turn, a guest's too, for themselves: agreeing,
+# changing and removing the spoken phrase (``proof.phrase_*``, the tools' own guard says who and
+# when), stopping the listening (never shown) and "that was not me" (``voice.unlearn``).
+VOICE_ACTIONS: Final = frozenset(
+    {
+        "proof.phrase_agree",
+        "proof.phrase_change",
+        "proof.phrase_remove",
+        "voice.stop_listening",
+        "voice.unlearn",
+    }
+)
+# Domo's own reading of how someone speaks (Task 23), in anyone's turn: a weak clue of his that
+# changes nothing anyone has nor how sure the code is; never judged nor shown.
+MANNER_NOTE: Final = "voice.manner_note"
 # Setting something for the whole house, a timed launch or a standing agreement (Task 27, ruling
 # R17): the owner's by default, and a right may give it to anyone like any type. The tools read it
 # (``tools.context.ToolContext.may_set_for_the_house``): asked by someone who may not, the call
@@ -555,6 +579,8 @@ _EVERYONES_ACTIONS: Final = (
     | PROGRAM_TYPES
     | {PROGRAM_OUT}
     | AGREEMENT_ACTIONS
+    | VOICE_ACTIONS
+    | {MANNER_NOTE}
     | {"confirmation.own_idea", ASKING_AGREED}
     # What the assistant knows of a person, and forgetting it, asked by that person (the tools
     # limit a person to themselves).
@@ -756,6 +782,14 @@ _FACTS: dict[str, dict[str, FactType]] = {
     "texts.language": {"house_follows": "boolean"},
     # Whose device is taken back, and whether it is the one's who asks: never its name.
     "device.remove": {"person": "person", "is_self": "boolean"},
+    # Whose spoken phrase is removed, their role, whether it is the one's who asks, and whether
+    # the one who asks invited them (the owner, or an adult for a child: 2026-11-27).
+    "proof.phrase_remove": {
+        "person": "person",
+        "person_role": "role",
+        "is_self": "boolean",
+        "invited_them": "boolean",
+    },
     # The operation a program begins: the tool's name and the operation's, the amount it says it
     # spends, in cents (``None`` when it spends nothing), and its four risks.
     "program.begin": {
@@ -908,6 +942,7 @@ CHANGES_NOTHING: frozenset[str] = frozenset(
         *LEARNING_ACTIONS,
         *TOOL_READ_ACTIONS,
         *OUTWARD_READ_ACTIONS,
+        MANNER_NOTE,
     }
 )
 
@@ -951,6 +986,7 @@ SILENT_ACTIONS: Final[frozenset[str]] = (
     | PROGRAM_TYPES
     | SILENT_OUTWARD_ACTIONS
     | {PROGRAM_OUT, ASKING_AGREED, "house.name_domo"}
+    | {"voice.stop_listening", MANNER_NOTE}
 )
 
 
@@ -1174,20 +1210,41 @@ class Risks:
     (``irreversible``), it acts on the physical world (``physical``), or it reaches outside the
     household (``outward``). They are data for whoever weighs the action (the reviewer of a tool,
     the judge, the owner's limits): the code refuses nothing to Domo because of one. Two sets of
-    risks together are each risk of either (``|``)."""
+    risks together are each risk of either (``|``).
+
+    ``harmless``: its acting in the house was declared harmless (an operation of a tool Domo made,
+    ``madetools.risks``, checked by the reviewer): done by mistake, it can hurt nobody, lock nobody
+    out, expose nothing and cost nothing (a light, a speaker's volume); only with ``physical``
+    (``ValueError`` otherwise). Not declared, acting in the house is taken as risky (the owner,
+    2026-11-27: "the physical that carries risks is judged"). Together, it stays harmless only when
+    every side that acts in the house was declared so."""
 
     costs: bool = False
     irreversible: bool = False
     physical: bool = False
     outward: bool = False
+    harmless: bool = False
+
+    def __post_init__(self) -> None:
+        if self.harmless and not self.physical:
+            raise ValueError("harmless is only said of acting in the house")
 
     def __or__(self, other: "Risks") -> "Risks":
+        physical = self.physical or other.physical
         return Risks(
             costs=self.costs or other.costs,
             irreversible=self.irreversible or other.irreversible,
-            physical=self.physical or other.physical,
+            physical=physical,
             outward=self.outward or other.outward,
+            harmless=physical
+            and (self.harmless or not self.physical)
+            and (other.harmless or not other.physical),
         )
+
+    @property
+    def risky_physical(self) -> bool:
+        """Whether it acts in the house without being declared harmless."""
+        return self.physical and not self.harmless
 
 
 # No risk at all.
@@ -1206,6 +1263,10 @@ _IRREVERSIBLE: Final = frozenset(
         "memory.forget",
         "note.withdraw",
         "successors.note_death",
+        # The spoken phrase is gone for good (two new sayings agree another), and so is what
+        # was learnt of a voice.
+        "proof.phrase_remove",
+        "voice.unlearn",
     }
 )
 # What costs among the code's types: a step up to a stronger model for the rest of a request.
@@ -1373,10 +1434,10 @@ ROLE_MAY_DENY: Final[frozenset[str]] = frozenset({"household.leave", "people.for
 DOMO_ACTIONS: Final[frozenset[str]] = KNOWN_ACTIONS - OWNER_ONLY_ACTIONS - DOMO_NOT_BY_DEFAULT
 
 # What is sensitive (spec 6.12, the seam of the voice): what a speaker the code is not sure of
-# never gets on a weak clue alone (``barrier.may_act_weakly``, not called yet). The owner's rule it
-# serves: ordinary things from an unsure speaker are done; for these the assistant judges first,
-# and asks a proof only on a real doubt. Derived from the catalog's own sets, so that a type added
-# to one of them is sensitive at once:
+# never gets on a weak clue alone (``barrier.may_act_weakly``, which ``barrier.decide`` reads).
+# The owner's rule it serves: ordinary things from an unsure speaker are done; for these the
+# assistant judges first, and asks a proof only on a real doubt. Derived from the catalog's own
+# sets, so that a type added to one of them is sensitive at once:
 NOT_WEAKLY: Final[frozenset[str]] = (
     # the owner's own (rules, rights, succession, the level of models, a house account shared,
     # his directives) and who may do what (the household, devices entrusted, keys, limits);
@@ -1420,13 +1481,18 @@ NOT_WEAKLY: Final[frozenset[str]] = (
     )
     | AGREEMENT_ACTIONS
     | {"chain.run", "chain.continue"}
-    # changing or dropping a plan (making one is the person's own: ``plan.set``);
-    | {"plan.change", "plan.cancel"}
+    # a plan: making one too, since it runs later as the person, sure (the voice's choice, kept
+    # at the merge: the stricter of the two); changing or dropping one;
+    | {"plan.set", "plan.change", "plan.cancel"}
     # writing, changing, removing or timing a tool of the assistant's, and a program run by hand
     # (launching one follows the risks of its operation: ``barrier.may_act_weakly``).
     | TOOL_ACTIONS
     | PROGRAM_ACTIONS
     | {PROGRAM_RUN}
+    # the spoken phrase (a proof) and what was learnt of a voice; the version of a text in
+    # another language (the voice's choices, kept at the merge).
+    | {"proof.phrase_agree", "proof.phrase_change", "proof.phrase_remove", "voice.unlearn"}
+    | {"texts.language_version"}
 )
 # The ordinary things an unsure speaker may have done, written out so that a test compares them
 # with what the catalog leaves (``KNOWN_ACTIONS - NOT_WEAKLY - PROGRAM_REQUESTS``: what a running
@@ -1443,17 +1509,18 @@ WEAKLY_FINE: Final[frozenset[str]] = frozenset(
         "texts.restore",
         "texts.language",
         "texts.note",
-        "texts.language_version",
         "writing.choose",
         "models.choose",
         "models.refresh",
         "memory.keep",
-        "plan.set",
         "people.nickname_keep",
         "people.nickname_forget",
         "learning.note",
         "learning.asked",
         "confirmation.own_idea",
+        # Of the voice: stopping to listen, and Domo's own note on how someone speaks.
+        "voice.stop_listening",
+        MANNER_NOTE,
     }
 )
 
@@ -1468,7 +1535,9 @@ WEAKLY_FINE: Final[frozenset[str]] = frozenset(
 # owner, 2026-11-21), and so are the notes he finds, takes back and keeps there: his own, never
 # theirs (``tools.notes``). So are the requests he drops or changes there (spec 12.5): his own
 # that wait in that conversation; theirs only by a right the owner gives him
-# (``ON_THEIR_REQUESTS``, ruling R30).
+# (``ON_THEIR_REQUESTS``, ruling R30). Of the voice, the spoken phrase and the listening are
+# theirs; what was learnt of a voice is his own recording (the owner, Task 27: ``voice.unlearn``
+# is his, of anyone's voice, as his idea too; the tool's own guard says whose).
 NOT_ON_HIS_OWN: Final[frozenset[str]] = frozenset(
     {
         "profile.rename",
@@ -1484,6 +1553,7 @@ NOT_ON_HIS_OWN: Final[frozenset[str]] = frozenset(
         "people.nickname_keep",
         "people.nickname_forget",
         "spending.show",
+        *(VOICE_ACTIONS - {"voice.unlearn"}),
     }
 )
 

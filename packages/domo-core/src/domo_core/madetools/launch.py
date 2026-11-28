@@ -84,7 +84,7 @@ import logging
 import math
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
 from zoneinfo import ZoneInfo
@@ -116,13 +116,21 @@ from domo_core.madetools.risks import Operation, operations_of
 from domo_core.madetools.schema import schema_problem, unsupported
 from domo_core.madetools.service import count_launch, set_aside
 from domo_core.madetools.settings import all_values, hit, told
+from domo_core.outward.literal import is_an_address, literal_zone
+from domo_core.outward.service import open_for
 from domo_core.people.sealed import SealedLinks
 from domo_core.policy.actions import DescribedAction, FactValue
 from domo_core.policy.barrier import Allow, Refuse, record_decision
-from domo_core.policy.catalog import MADE_FACTS_WITHOUT_A_YES, MADE_PREFIX, PolicyTables
+from domo_core.policy.catalog import (
+    MADE_FACTS_WITHOUT_A_YES,
+    MADE_PREFIX,
+    NO_RISK,
+    PolicyTables,
+    Risks,
+)
 from domo_core.policy.decision import decide_now
 from domo_core.policy.open_catalog import load_policy
-from domo_core.policy.roles import Actor, actor_label, domo_actor
+from domo_core.policy.roles import Actor, Standing, actor_label, domo_actor
 from domo_core.policy.settings import load_policy_settings
 from domo_core.policy.subjects import keys_of
 from domo_core.prompts import ToolWake
@@ -185,9 +193,37 @@ class NotAResult(ValueError):
 @dataclass(frozen=True)
 class ForWhom:
     """Whom a launch is made for: a person (their rights of now, their name in the entry), or,
-    with no person, the house (Domo's own rights, no name)."""
+    with no person, the house (Domo's own rights, no name). ``standing`` and ``voice_too_short``:
+    how sure the code was of the person who asked it in a turn (``policy.roles.Actor``); a launch
+    made from inside it keeps them (ruling T22, round 2): it is never decided as sure."""
 
     person: Person | None
+    standing: Standing = "sure"
+    voice_too_short: bool = False
+    page_person_id: uuid.UUID | None = None
+
+    @classmethod
+    def asked_by(cls, person: Person | None, actor: Actor) -> "ForWhom":
+        """A launch for ``person``, asked by ``actor``: how sure the code was of them goes with it
+        (the one place an actor's standing becomes a launch's), and the page they were heard at
+        when it is someone else's (``Actor.page_person_id``)."""
+        return cls(person, actor.standing, actor.voice_too_short, actor.page_person_id)
+
+    @property
+    def trusted(self) -> bool:
+        """Whether the code was sure of who asked it, for anything (``Actor.trusted``)."""
+        return self.standing == "sure" and not self.voice_too_short
+
+    def actor(self, person: Person) -> Actor:
+        """``person`` as the barrier sees them for this launch: their role of now, and how sure
+        the code was of who asked it (the one place a launch's standing becomes an actor's), with
+        the marks of their record (``accounts.actors.actor_of``)."""
+        return replace(
+            actor_of(person),
+            standing=self.standing,
+            voice_too_short=self.voice_too_short,
+            page_person_id=self.page_person_id,
+        )
 
 
 # A launch for the whole household: Domo acts on his own.
@@ -413,7 +449,8 @@ async def _launched(
     scope = LaunchScope(
         tool_name=ready.name,
         tool_id=ready.tool_id,
-        for_whom=ForWhom(ready.person),
+        # How sure the code was of who asked it, for the launches made from inside it.
+        for_whom=ForWhom.asked_by(ready.person, ready.who),
         actor=ready.who,
         depth=depth,
         chain=gathers,
@@ -433,6 +470,36 @@ async def _launched(
 
         await wake_chain(deps, gathers)
     return launched
+
+
+def _in_the_house(host: str) -> bool:
+    """Whether ``host`` is, as written, an address of the house: a name's zone is found only when
+    it is sent (the gatekeeper's), so it is not known at a launch."""
+    return is_an_address(host) and literal_zone(host) == "house"
+
+
+async def reach_of(session: AsyncSession, tool: MadeTool) -> Risks | None:
+    """Every risk a launch of ``tool`` may reach by its own means, read at the launch (ruling T22,
+    round 2): the risks its operations declare, all of them, when nothing it holds can go beyond
+    them; ``None`` (the barrier then reads it as sensitive, ``barrier.may_act_weakly``) when
+    something can, or cannot be known now: it declares no operation, an operation names an
+    account (a request through one may write: it cannot be undone), an address that is not the
+    house's by its literal, or an address is open for it that is not (on the host machine
+    aside). A tool it launches in turn is decided on its own, with the same doubt (``ForWhom``),
+    and what it would launch later is refused it (``means``: ruling T22, round 3)."""
+    operations = operations_of(tool.operations)
+    if not operations:
+        return None
+    for operation in operations.values():
+        if operation.accounts or not all(_in_the_house(host) for host, _ in operation.addresses):
+            return None
+    opened = await open_for(session, tool.name)
+    if any(not (address.on_host or _in_the_house(address.host)) for address in opened):
+        return None
+    reached = NO_RISK
+    for operation in operations.values():
+        reached |= operation.risks
+    return reached
 
 
 async def _person_now(session: AsyncSession, person: Person, now: datetime) -> Person | None:
@@ -463,10 +530,15 @@ async def _judged(
     # A launch for the house is judged as Domo's (``domo_actor``): it is the house's.
     action = described(name, for_house=who.subject == "domo")
     policy = await load_policy(session, deps.policy_base)
-    decision = await decide_now(session, who, action, policy, now)
+    # Who asked it may be someone the code is not sure of (a launch from inside theirs): what the
+    # tool may reach decides whether it is ordinary (ruling T22, round 2).
+    tool = None if who.trusted else await session.get(MadeTool, tool_id)
+    risks = None if tool is None else await reach_of(session, tool)
+    decision = await decide_now(session, who, action, policy, now, risks=risks)
     await record_decision(session, who, action, decision, tool_name=f"{OFFERED_PREFIX}{name}")
-    if isinstance(decision, Allow) and decision.rule is None:
+    if isinstance(decision, Allow) and decision.rule is None and not decision.judge_identity:
         return None
+    # Nobody can be asked here: a doubt on who asks needs someone's word, as an agreement does.
     reason = decision.reason if isinstance(decision, Refuse) else "needs_confirmation"
     first = (
         await _refusal_noted(session, action, name, reason, now, about)
@@ -558,7 +630,7 @@ async def _judged_and_counted(
             if person is None:
                 # Someone who left: nothing is launched for them any more.
                 return Launched("refused", {"reason": "not_allowed"})
-        who = domo_actor() if person is None else actor_of(person)
+        who = domo_actor() if person is None else for_whom.actor(person)
         actor = actor_label(who)
         if cause != "turn" or (person is None and not judged_as_domo):
             # A turn judged its call already (for the house, as Domo's); any other launch is
@@ -657,7 +729,7 @@ async def _hand_run_ready(
         if run.for_person_id != (None if person is None else person.id):
             # Only for whom it was opened.
             return Launched("refused", {"reason": "not_allowed"})
-        who = domo_actor() if person is None else actor_of(person)
+        who = domo_actor() if person is None else for_whom.actor(person)
         zone = (await load_policy_settings(session)).time_zone
         arguments = cast(JsonObject, dict(run.arguments))
         # The house's bounds, but its time: its own (``program_run``'s ``max_seconds``).

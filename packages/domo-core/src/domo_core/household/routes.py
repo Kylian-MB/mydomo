@@ -17,8 +17,9 @@ A *return link* (an invitation tied to a person who left, ``household_bring_back
 address with another form: "welcome back", the username the person keeps (shown, not asked) and a
 new password. ``POST`` then runs ``check_return``, the hash outside the transaction, and
 ``accept_return``, which brings the same person back (their history, not a new person), opens their
-session and writes ``household.brought_back`` (their identifier and role, never the token). The
-two kinds of link are never taken for each other, and the same throttle holds them back.
+session and writes ``household.brought_back`` (their identifier and role, never the token); then
+the vault forgets the phrase they once said aloud (ruling T11). The two kinds of link are never
+taken for each other, and the same throttle holds them back.
 
 A link that cannot be used (unknown, already used, cancelled or expired, or a return link for
 someone who is in the household again) gets one page, the same for each case, with the status 410.
@@ -78,6 +79,7 @@ the assistant's own marked so. Never a link (not kept), the assistant's reason f
 what he remembers. The page has no control: changes go through the assistant.
 """
 
+import contextlib
 import math
 import re
 import uuid
@@ -110,6 +112,7 @@ from domo_core.accounts.sessions import (
 from domo_core.accounts.throttle import LoginThrottle
 from domo_core.audit.log import append_audit
 from domo_core.config import CoreSettings
+from domo_core.gatekeeper_client import GatekeeperError
 from domo_core.household.models import Invitation
 from domo_core.household.service import (
     MAX_USERNAME_LENGTH,
@@ -139,6 +142,7 @@ from domo_core.policy.catalog import OpenKind
 from domo_core.policy.open_catalog import open_kinds
 from domo_core.policy.roles import DOMO_LABEL
 from domo_core.policy.settings import load_policy_settings
+from domo_core.proofs.kinds import phrase_ref
 from domo_core.texts.languages import (
     VISITOR_LANGUAGE_SECONDS,
     browser_language,
@@ -150,6 +154,7 @@ from domo_core.texts.store import Reader
 from domo_core.texts.view import RecueilTexts, Texts, recueil_for, shown_groups
 from domo_core.web.deps import (
     current_person,
+    gatekeeper_of,
     get_clock,
     get_session,
     get_settings,
@@ -467,6 +472,13 @@ async def join_household(
     await append_audit(session, actor=f"person:{person.id}", action=action, details=details)
     await session.commit()
     throttle.clear(key)
+    if isinstance(checked, Returning):
+        # The phrase said aloud went with the old access (ruling T11): its sealed copy at the
+        # vault goes too. A vault that does not answer (logged by the client) keeps nobody out:
+        # without the means it proves nothing, and agreeing a phrase again removes it first.
+        # The vault is asked for a return alone: a new member's joining never depends on it.
+        with contextlib.suppress(GatekeeperError):
+            await gatekeeper_of(request.app).phrase_remove(phrase_ref(person.id))
     response = RedirectResponse(HOME_PATH, status_code=303)
     set_session_cookie(response, session_token, settings.session_ttl)
     return response

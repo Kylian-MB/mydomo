@@ -23,6 +23,7 @@ from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.audit.models import AuditEntry
 from domo_core.confirmations.case import gather
+from domo_core.conversation.speaker import Clue, Speaker
 from domo_core.memory.embedder import NO_EMBEDDER
 from domo_core.memory.models import Memory
 from domo_core.memory.service import keep
@@ -30,7 +31,7 @@ from domo_core.policy.actions import DescribedAction
 from domo_core.policy.catalog import DEFAULT_POLICY
 from domo_core.policy.subjects import Subject
 from domo_core.tools.context import InvalidArguments, ToolContext
-from domo_core.tools.memory_tools import SECRET_REFUSED, origin_for
+from domo_core.tools.memory_tools import CAUTION, SECRET_REFUSED, origin_for
 from domo_core.tools.registry import TOOLS
 from fakes import FakeChatModel
 from sqlalchemy import select
@@ -143,9 +144,12 @@ def context(
     said: str | None = None,
     told_outside: bool = False,
     answers: bool = True,
+    told_unsure: bool = False,
+    speaker: Speaker | None = None,
 ) -> ToolContext:
     """The context of a call in ``person``'s turn: one that answers a message of theirs (``said``)
-    unless ``answers`` is false (a turn Domo started)."""
+    unless ``answers`` is false (a turn Domo started); ``told_unsure``: a sentence of a voice not
+    sure to be theirs is in it (a review); ``speaker``: who the code takes to speak."""
     return ToolContext(
         session_factory=session_factory,
         actor=actor_of(person),  # type: ignore[arg-type]
@@ -159,6 +163,18 @@ def context(
         reply_message_id=uuid.uuid4() if answers else None,
         said=said,
         told_outside=told_outside,
+        told_unsure=told_unsure,
+        speaker=speaker,
+    )
+
+
+def unsure_voice_of(person: Person) -> Speaker:
+    """A voice that reads weakly for ``person``: the code is not sure it is theirs."""
+    return Speaker(
+        person.id,
+        "voice",
+        clues=(Clue("voice", "for", "weak", "code", NOW, degree=0.45),),
+        microphone="mic-1",
     )
 
 
@@ -187,6 +203,44 @@ def test_the_origin_is_set_by_the_code():
     # A turn Domo started himself: what he deduced.
     assert origin_for(context(alex, answers=False), None) == "deduced"
     assert origin_for(context(alex, answers=False), "allergic") == "deduced"
+
+
+def test_what_an_unsure_voice_said_keeps_its_source():
+    # The owner, 2026-11-27 ("Domo juge quoi garder"): what is kept from a sentence of a voice
+    # the house was not sure was theirs is kept marked so, never as their own words.
+    alex = Person(id=uuid.uuid4(), display_name="Alex", role="adult")
+    sure_line = "I drink green tea."
+    # A review: the sure lines are their messages, the unsure ones are only told.
+    review = context(alex, said=sure_line, answers=False, told_unsure=True)
+    assert origin_for(review, None) == "unsure_voice"
+    assert origin_for(review, "my code is with Dana") == "unsure_voice"
+    # A passage of a sure line of the slice stays their own words.
+    assert origin_for(review, "I drink green tea") == "own_words"
+    # With someone else's words too: the more cautious of the two.
+    relayed = context(alex, said=sure_line, answers=False, told_unsure=True, told_outside=True)
+    assert origin_for(relayed, None) == "unsure_voice"
+    # A turn that answers a sentence of a voice not sure to be theirs: no passage of it is theirs.
+    heard = "I drink green tea."
+    live = context(alex, said=heard, speaker=unsure_voice_of(alex))
+    assert live.said_unsure
+    assert origin_for(live, None) == "unsure_voice"
+    assert origin_for(live, "I drink green tea", "I drink green tea") == "unsure_voice"
+    # The same words from a voice the code is sure of: theirs.
+    assert origin_for(context(alex, said=heard), "I drink green tea") == "own_words"
+    # More cautious than relayed words: a rewrite never launders it.
+    assert CAUTION.index("unsure_voice") < CAUTION.index("others_words")
+    assert CAUTION[0] == "external"
+
+
+def test_a_memory_of_an_unsure_voice_is_told_with_its_source():
+    from domo_core.memory.service import SOURCE_UNSURE_VOICE, source_of, told_unconfirmed
+    from domo_core.prompts import _MEMORY_GUARD  # pyright: ignore[reportPrivateUsage]
+
+    heard = Memory(origin="unsure_voice", by_domo=False, about_id=None, said_by_id=uuid.uuid4())
+    assert source_of(heard) == SOURCE_UNSURE_VOICE
+    assert not told_unconfirmed(heard)
+    # The context says what that source means.
+    assert SOURCE_UNSURE_VOICE in _MEMORY_GUARD
 
 
 async def test_the_model_never_chooses_the_origin(owner_chat: ChatPilot):
@@ -607,6 +661,66 @@ async def test_a_rewrite_never_launders_a_cautious_origin(session_factory):
             said="it is very noisy now",
         )
         assert await origin_of(session_factory, memory_id) == origin
+
+
+async def test_an_unsure_voice_s_memory_is_theirs_again_only_from_a_sure_line(session_factory):
+    alex, sam = await two_people(session_factory)
+    said = "I drink green tea."
+    # Kept in a turn answering a voice not sure to be Alex's: in Alex's name, marked so.
+    kept = await run(
+        "memory_keep",
+        {**BOILER, "content": said, "subject": "tea"},
+        alex,
+        session_factory,
+        said=said,
+        speaker=unsure_voice_of(alex),
+    )
+    async with session_factory() as session:
+        memory = await session.get(Memory, uuid.UUID(kept["id"]))
+        assert memory is not None
+        assert (memory.said_by_id, memory.origin, memory.words_checked) == (
+            alex.id,
+            "unsure_voice",
+            False,
+        )
+    # Rewritten in a turn that relays someone else's words, or by Sam: it stays as cautious.
+    await run(
+        "memory_change",
+        {"id": kept["id"], "content": "Alex drinks green tea."},
+        alex,
+        session_factory,
+        said="yes",
+        told_outside=True,
+    )
+    assert await origin_of(session_factory, kept["id"]) == "unsure_voice"
+    await run(
+        "memory_change",
+        {"id": kept["id"], "content": "Alex drinks tea.", "their_words": "Alex drinks tea."},
+        sam,
+        session_factory,
+        said="Alex drinks tea.",
+    )
+    assert await origin_of(session_factory, kept["id"]) == "unsure_voice"
+    # Again from a voice not sure to be Alex's, with a passage: still not theirs.
+    again = "I drink green tea every day."
+    await run(
+        "memory_change",
+        {"id": kept["id"], "content": again, "their_words": again},
+        alex,
+        session_factory,
+        said=again,
+        speaker=unsure_voice_of(alex),
+    )
+    assert await origin_of(session_factory, kept["id"]) == "unsure_voice"
+    # Alex, sure, gives the passage of their own message: their own words now.
+    await run(
+        "memory_change",
+        {"id": kept["id"], "content": said, "their_words": said},
+        alex,
+        session_factory,
+        said=said,
+    )
+    assert await origin_of(session_factory, kept["id"]) == "own_words"
 
 
 async def test_what_domo_told_cannot_be_rewritten_but_can_be_forgotten(session_factory):

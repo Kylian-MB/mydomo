@@ -86,6 +86,9 @@ class Confirmation(Base):
         CheckConstraint("approver_kind IN ('self', 'adult', 'owner')", name="approver_kind_values"),
         CheckConstraint("ask IN ('yes', 'explicit_yes', 'proof')", name="ask_values"),
         CheckConstraint(
+            "ask_before_doubt IN ('yes', 'explicit_yes', 'proof')", name="ask_before_doubt_values"
+        ),
+        CheckConstraint(
             "asked_by IN ('rule', 'judge', 'domo', 'approver')", name="asked_by_values"
         ),
         # The judge's reason, or Domo's (``confirmations.judge.MAX_JUDGE_REASON_LENGTH``).
@@ -146,6 +149,10 @@ class Confirmation(Base):
     ask: Mapped[str | None]
     asked_by: Mapped[str | None]
     ask_why: Mapped[str | None]
+    # What it asked before the judge raised it because he doubted who said yes in words
+    # (``conversation.turn``): a later yes the code is sure of is held to this, not to the raise
+    # (final fix wave, case 10). ``None``: never raised so.
+    ask_before_doubt: Mapped[str | None]
     # What Domo could not tell when a limit asked the owner (the right's question).
     ask_reason: Mapped[str | None]
     decided_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("persons.id"))

@@ -210,6 +210,10 @@ CHECK_FAILED: Final = "check_failed"
 # Why a step that waits for someone's arrival stopped the chain: their invitation ended (cancelled,
 # or past its date) without them, or none has that name. Nothing ran.
 NOT_ARRIVED: Final = "not_arrived"
+# Why a step only the judge's own verdict lets go (``DescribedAction.verdict_needed``) stopped the
+# chain: it was checked in its turn, after the chain was judged, so no verdict was given to it.
+# Nothing ran; it may be asked again on its own (``conversation.execution.not_weighed``).
+NOT_WEIGHED: Final = "not_weighed"
 # The reasons of a step that stopped the chain and is known not to have acted (spec 4.4): it never
 # ran, refused by the barrier (``not_allowed``, ``untrusted_identity``, ``limit``,
 # ``limit_error``, ``owner_directive``), no longer what was asked for (``no_longer_possible``),
@@ -229,6 +233,7 @@ KNOWN_NOT_DONE: Final = frozenset(
         "needs_confirmation",
         NOT_ARRIVED,
         CHECK_FAILED,
+        NOT_WEIGHED,
         "invalid",
         "ambiguous",
         "not_found",
@@ -591,9 +596,19 @@ class _Runner:
         if tool is None or is_made(tool.action_type) or tool.action_type != step.action_type:
             # A tool Domo made is never a step (``tools.chain`` refuses it when it plans).
             return await self._stop(position, step, "no_longer_possible")
-        action = await _described(tool, step, actor, replace(current, actor=actor))
+        # Checked when the chain was first asked only when it had its action then (a step
+        # checked in its turn is checked now, in full).
+        first = step.action is not None
+        action = await _described(
+            tool, step, actor, replace(current, actor=actor, checked_first=first)
+        )
         if action is None or not _same(action, step):
             return await self._stop(position, step, "no_longer_possible")
+        if action.verdict_needed and step.action is None:
+            # Only the judge's own verdict lets it go (someone else's spoken phrase removed), and
+            # the chain was judged before this step could be described: no verdict was given to
+            # it. Nothing is done and nothing is asked; it may be asked again on its own.
+            return await self._stop(position, step, NOT_WEIGHED)
         decided = await self._decided(current.actor, action, basis)
         if decided is None:
             return await self._stop(position, step, CHECK_FAILED)
@@ -631,7 +646,13 @@ class _Runner:
             step.arguments,
             # A step of a chain: what it makes for the one who asked alone waits behind its own
             # button on the chain's card (``ToolContext.leave_on_their_card``).
-            replace(current, actor=judged, described_action=action, in_a_chain=True),
+            replace(
+                current,
+                actor=judged,
+                described_action=action,
+                in_a_chain=True,
+                checked_first=first,
+            ),
         )
         if record.status != "done":
             return await self._stop(

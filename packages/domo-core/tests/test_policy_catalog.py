@@ -75,6 +75,16 @@ PROGRAM_TYPES = {
 }
 # The agreements that last, a guest's too, for themselves (2026-11-18): judged and shown.
 AGREEMENT_ACTIONS = {"agreement.keep", "agreement.drop"}
+# The voice (spec 6.2, 6.5, 6.9): the spoken phrase, stopping the listening, "that was not me".
+VOICE_ACTIONS = {
+    "proof.phrase_agree",
+    "proof.phrase_change",
+    "proof.phrase_remove",
+    "voice.stop_listening",
+    "voice.unlearn",
+}
+# Domo's own reading of how someone speaks (Task 23): everyone's turn, never judged nor shown.
+MANNER_ACTIONS = {"voice.manner_note"}
 # Domo saying his next action is his own idea, in everyone's turn, a guest's too (spec part 7).
 OWN_IDEA_ACTIONS = {"confirmation.own_idea"}
 # What a person agreed about being asked again before what cannot be undone (Task 26): everyone's,
@@ -180,6 +190,8 @@ MEMBER_ACTIONS = {
     *PROGRAM_TYPES,
     *PROGRAM_OUT,
     *AGREEMENT_ACTIONS,
+    *VOICE_ACTIONS,
+    *MANNER_ACTIONS,
     *OWN_IDEA_ACTIONS,
     *ASKING_ACTIONS,
     *CHILD_OUTWARD_ACTIONS,
@@ -232,7 +244,7 @@ NOBODYS_ACTIONS = {"texts.for_someone"}
 
 def test_catalog_matches_the_plan_table():
     assert KNOWN_ACTIONS == MEMBER_ACTIONS | ADULT_ACTIONS | OWNER_ACTIONS | NOBODYS_ACTIONS
-    assert len(KNOWN_ACTIONS) == 126
+    assert len(KNOWN_ACTIONS) == 132  # the people of the house; voice, judge, manner, house name
 
 
 def test_handing_the_owners_role_over_is_the_owners_alone_and_judged():
@@ -347,6 +359,8 @@ def test_who_may_use_what_matches_the_plan_table():
             *PROGRAM_TYPES,
             *PROGRAM_OUT,
             *AGREEMENT_ACTIONS,
+            *VOICE_ACTIONS,
+            *MANNER_ACTIONS,
             *OWN_IDEA_ACTIONS,
             *ASKING_ACTIONS,
             *GUEST_OUTWARD_ACTIONS,
@@ -420,7 +434,10 @@ def test_the_tables_cannot_be_changed_by_accident():
 def test_an_actor_is_trusted_unless_said_otherwise():
     person_id = uuid4()
     assert Actor(person_id, "adult").trusted is True
-    assert Actor(person_id, "adult", trusted=False).trusted is False
+    assert Actor(person_id, "adult", standing="unsure").trusted is False
+    assert Actor(person_id, "adult", standing="unknown").trusted is False
+    # A voice too short to tell: sure for the ordinary, not for anything.
+    assert Actor(person_id, "adult", voice_too_short=True).trusted is False
 
 
 # --- the described action ------------------------------------------------------------------
@@ -598,6 +615,8 @@ def test_what_changes_nothing_passes_without_the_judge():
         "role.look",
         "access.promises_look",
         "people.directives_look",
+        # Domo's own reading of how someone speaks (Task 23).
+        *MANNER_ACTIONS,
     } == CHANGES_NOTHING
     assert {"confirmation.amend", "chain.continue"} == JUDGED_WITHIN
     assert needs_the_judge("household.invite") is True
@@ -640,6 +659,8 @@ def test_domo_memory_and_plans_are_never_shown_whatever_came_of_them():  # spec 
             "people.directives_look",
             "child.agree",
         }
+        | {"voice.stop_listening"}
+        | MANNER_ACTIONS
         | {"house.name_domo"}
     ) == SILENT_ACTIONS
     assert all(is_silent(action_type) for action_type in SILENT_ACTIONS)
@@ -871,3 +892,35 @@ def test_who_goes_out_and_handles_accounts_by_default():
     # Sharing a house account is the owner's alone, whatever a right says.
     assert {action for action in every_outward if action in OWNER_ONLY_ACTIONS} == {"account.share"}
     assert not every_outward & ADULT_AGREES_FOR_A_CHILD
+
+
+def test_the_voice_types_are_known_and_a_guest_may_stop_listening():  # voice, spec 6.2, 6.5, 6.9
+    from domo_core.policy.catalog import SILENT_ACTIONS
+
+    assert VOICE_ACTIONS <= KNOWN_ACTIONS
+    # Everyone with an account has all five, for themselves: the tools' own guards say whose.
+    for role in ROLES:
+        assert actions_allowed(role) >= VOICE_ACTIONS, role
+    # Only stopping the listening is silent; the others are judged and shown like any act.
+    assert {"voice.stop_listening"} == VOICE_ACTIONS & SILENT_ACTIONS
+    assert not VOICE_ACTIONS & CHANGES_NOTHING
+    assert all(needs_the_judge(action_type) for action_type in VOICE_ACTIONS - SILENT_ACTIONS)
+    # The phrase and stopping the listening are about the person whose conversation it is: Domo
+    # has them in a turn he acts in on his own only by a right the owner gives him. What was
+    # learnt of a voice is his own recording (the owner, Task 27): his to erase on his own.
+    from domo_core.policy.catalog import NOT_ON_HIS_OWN, on_his_own_tables
+
+    assert VOICE_ACTIONS - {"voice.unlearn"} <= NOT_ON_HIS_OWN
+    assert "voice.unlearn" not in NOT_ON_HIS_OWN
+    assert VOICE_ACTIONS & on_his_own_tables(DEFAULT_POLICY).domo == {"voice.unlearn"}
+    # None of them is a secret, a spending limit or who may do what: Domo has them by default.
+    assert DEFAULT_POLICY.domo >= VOICE_ACTIONS
+
+
+def test_removing_a_phrase_and_forgetting_a_voice_cannot_be_undone():
+    from domo_core.policy.catalog import CODE_RISKS
+
+    for action_type in ("proof.phrase_remove", "voice.unlearn"):
+        assert CODE_RISKS[action_type].irreversible, action_type
+    for action_type in ("proof.phrase_agree", "proof.phrase_change", "voice.stop_listening"):
+        assert not CODE_RISKS[action_type].irreversible, action_type

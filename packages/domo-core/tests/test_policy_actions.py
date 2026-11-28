@@ -255,6 +255,16 @@ _FIVE_FIELDS: dict[str, Any] = {
         ("note.withdraw", {"recipient": "person", "seen": "boolean"}),
         ("note.keep", {"recipient": "person", "days": "number"}),
         ("device.remove", {"person": "person", "is_self": "boolean"}),
+        # Whose spoken phrase is removed (the owner, or an adult for a child: 2026-11-27).
+        (
+            "proof.phrase_remove",
+            {
+                "person": "person",
+                "person_role": "role",
+                "is_self": "boolean",
+                "invited_them": "boolean",
+            },
+        ),
         ("successors.set", {"count": "number"}),
         ("successors.note_death", {"name": "text"}),
         ("successors.undo_death", {"name": "text"}),
@@ -821,6 +831,8 @@ _DESCRIBED_ELSEWHERE: Final = frozenset(
         # A split needs a merge to split first: its facts name the two records of the merge
         # (``test_people_merge.py``, where what it undoes is read from them).
         "people.split",
+        # Described with a speaker and the person's words (``test_voice_tools``).
+        "proof.phrase_remove",
     }
 )
 

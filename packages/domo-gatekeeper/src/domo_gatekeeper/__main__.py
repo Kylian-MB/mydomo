@@ -35,6 +35,7 @@ from domo_gatekeeper.errors import (
 from domo_gatekeeper.internal_api import create_internal_app
 from domo_gatekeeper.master_key import load_or_create_master_key
 from domo_gatekeeper.out import ProgramRelay, create_out_ssl_context
+from domo_gatekeeper.phrases import PhraseStore
 from domo_gatekeeper.providers import ProviderRegistry
 from domo_gatekeeper.public_app import create_public_app
 from domo_gatekeeper.reach import describe, reach_from
@@ -80,14 +81,18 @@ def create_http_client() -> httpx.AsyncClient:
     )
 
 
-def open_stores(settings: GatekeeperSettings) -> tuple[Vault, SecretRequestStore, ProviderRegistry]:
-    """Load (or, for an empty vault, create) the master key and open the three databases."""
+def open_stores(
+    settings: GatekeeperSettings,
+) -> tuple[Vault, SecretRequestStore, ProviderRegistry, PhraseStore]:
+    """Load (or, for an empty vault, create) the master key and open the three databases, and
+    the spoken phrases, kept in the vault's file under the vault's key."""
     stored = Vault.count_secrets(settings.vault_db_path)
     key = load_or_create_master_key(settings.master_key_path, vault_has_secrets=stored > 0)
     return (
         Vault(settings.vault_db_path, key),
         SecretRequestStore(settings.requests_db_path),
         ProviderRegistry(settings.providers_db_path),
+        PhraseStore(settings.vault_db_path, key),
     )
 
 
@@ -200,7 +205,7 @@ def stop_on_signals(stop: Callable[[], None]) -> Generator[None, None, None]:
 async def serve(settings: GatekeeperSettings) -> None:
     """Start both servers and run them until they are asked to stop."""
     token = load_core_token(settings.core_token_file)
-    vault, requests, providers = open_stores(settings)
+    vault, requests, providers, phrases = open_stores(settings)
     reach = reach_from(settings)
     logger.info("%s", describe(reach))
     out_relay = ProgramRelay(
@@ -214,7 +219,9 @@ async def serve(settings: GatekeeperSettings) -> None:
                 providers=providers,
                 http_client=http_client,
                 core_token=token,
+                phrases=phrases,
                 out_relay=out_relay,
+                reach=reach,
             ),
             create_public_app(requests, vault),
             host=settings.gatekeeper_host,

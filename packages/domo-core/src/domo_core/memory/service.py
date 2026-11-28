@@ -51,6 +51,9 @@ A_PROGRAM_OR_A_TOOL: Final = "a program or a tool"
 SOURCE_RELAYED: Final = "relayed"
 SOURCE_HIS_CONCLUSION: Final = "your conclusion"
 SOURCE_TOLD_BY_HIM: Final = "what you told them"
+# Kept from a sentence of a voice the house was not sure was theirs (origin ``unsure_voice``):
+# probably theirs, never surely their own words.
+SOURCE_UNSURE_VOICE: Final = "a voice not sure to be theirs, probably them"
 
 _LONG_TOKEN: Final = re.compile(r"[A-Za-z0-9_-]{20,}")
 _URL_SECRET: Final = re.compile(r"https?://\S*[?&](?:token|code|key)=", re.IGNORECASE)
@@ -347,7 +350,8 @@ def source_of(memory: Memory) -> str | None:
     (``Memory.origin``, ``by_domo``): ``None`` for the own words of who said it; what he told the
     person (``told_by_domo``); his conclusion (what he wrote himself, or deduced); relayed (kept
     in a turn that held words or text that were not the person's own, ``others_words``); a
-    program or a tool (kept in a turn nobody wrote in that held what one gave, ``external``)."""
+    program or a tool (kept in a turn nobody wrote in that held what one gave, ``external``);
+    a voice not sure to be theirs (``unsure_voice``)."""
     if memory.origin == "told_by_domo":
         return SOURCE_TOLD_BY_HIM
     if memory.by_domo or memory.origin == "deduced":
@@ -356,6 +360,8 @@ def source_of(memory: Memory) -> str | None:
         return A_PROGRAM_OR_A_TOOL
     if memory.origin == "others_words":
         return SOURCE_RELAYED
+    if memory.origin == "unsure_voice":
+        return SOURCE_UNSURE_VOICE
     return None
 
 

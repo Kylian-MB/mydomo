@@ -813,3 +813,32 @@ button.link {
   flex-wrap: wrap;
   gap: 0.5rem;
 }
+
+/* The voice of the chat page (fragments/voice.html): a button and a line saying whether the
+   microphone listens. The line is always shown. */
+.voice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin-top: 0.75rem;
+}
+
+.voice [data-voice="state"] {
+  margin: 0;
+  color: var(--muted);
+}
+
+.voice[data-state="listening"] [data-voice="state"] {
+  color: var(--ok-text);
+}
+
+.voice[data-state="listening"][data-speech="on"] [data-voice="state"] {
+  font-weight: 600;
+}
+
+.voice[data-state="unavailable"] [data-voice="state"],
+.voice[data-state="refused"] [data-voice="state"],
+.voice[data-state="no_microphone"] [data-voice="state"] {
+  color: var(--danger-text);
+}

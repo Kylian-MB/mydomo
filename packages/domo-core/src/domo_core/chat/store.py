@@ -74,10 +74,12 @@ class ConversationStore:
         status: str,
         provenance: str,
         model: str | None = None,
+        heard_unsure: bool | None = None,
     ) -> Message:
         """Add a message to the conversation. ``role`` is ``user`` or ``assistant``; ``provenance``
         says where the text comes from (``person`` or ``model``); ``model`` names the model that
-        wrote an assistant message."""
+        wrote an assistant message; ``heard_unsure`` whether the code was not sure a person's
+        message was theirs (``Message.heard_unsure``)."""
         message = Message(
             conversation_id=conversation_id,
             role=role,
@@ -85,6 +87,7 @@ class ConversationStore:
             status=status,
             provenance=provenance,
             model=model,
+            heard_unsure=heard_unsure,
         )
         self._session.add(message)
         await self._session.flush()

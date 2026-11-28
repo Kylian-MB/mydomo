@@ -80,6 +80,30 @@ async def test_a_compatible_server_without_a_list_gives_none(wire_for, gk_client
     assert await list_models(gk_client, kind, transport=wire.transport) == ()
 
 
+async def test_a_hearing_the_speech_service_marks_slow_is_listed_and_so_used(wire_for, gk_client):
+    """On a weak machine the house's speech service keeps its fastest hearing although too slow,
+    marked ``slow``: the core lists it like any model (the house hears, slowly), not as missing."""
+    wire = wire_for("openai_compatible")
+    wire.reply_json(
+        {
+            "data": [
+                {
+                    "id": "faster-whisper-base",
+                    "object": "model",
+                    "does": "hear",
+                    "at_once": 1,
+                    "slow": True,
+                    "measures": {"device": "cpu", "real_time_factor": 0.56},
+                },
+                {"id": "supertonic-3", "object": "model", "does": "say", "at_once": 1},
+            ]
+        }
+    )
+    kind = provider("openai_compatible")
+    models = await list_models(gk_client, kind, transport=wire.transport)
+    assert models == ("faster-whisper-base", "supertonic-3")
+
+
 async def test_a_missing_list_is_a_failure_for_the_other_kinds(wire_for, gk_client):
     wire = wire_for("openai")
     wire.reply(404, body=b'{"error": "not found"}')

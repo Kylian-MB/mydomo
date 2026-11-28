@@ -50,6 +50,15 @@ def test_every_variable_is_read_from_the_environment(monkeypatch, tmp_path):
     assert settings.trusted_proxies == "172.20.0.2"
 
 
+def test_the_speech_service_is_declared_only_when_its_address_is_given(monkeypatch):
+    assert CoreSettings().speech_url is None
+    monkeypatch.setenv("DOMO_SPEECH_URL", "http://speech:8083/v1")
+    assert CoreSettings().speech_url == "http://speech:8083/v1"
+    # An empty value, as a Compose file passes an unset variable, means none.
+    monkeypatch.setenv("DOMO_SPEECH_URL", "")
+    assert CoreSettings().speech_url is None
+
+
 def test_the_gatekeeper_settings_in_the_same_environment_are_ignored(monkeypatch):
     monkeypatch.setenv("DOMO_GATEKEEPER_DATA_DIR", "/elsewhere")
     assert CoreSettings().db_host == "db"

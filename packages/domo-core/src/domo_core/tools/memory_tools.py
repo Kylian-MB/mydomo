@@ -12,7 +12,11 @@ word as a note's exact words are, ``tools.notes.exact_text_from``), else someone
 the turn was given words that are not theirs (``ToolContext.told_outside``), else the person's own
 words when the turn answers a message of theirs, else what Domo deduced; in a turn nobody wrote in
 that holds a program's text it is from outside (``external``), told as nobody's words
-(``memory.service.who_said``). What he deduces in a turn
+(``memory.service.who_said``). In a turn that holds a sentence of the person heard from a voice the
+house was not sure was theirs (``ToolContext.unsure_words``: a review given one, or a turn that
+answers one), what is kept is at most ``unsure_voice`` (probably theirs, never their own words;
+the owner, 2026-11-27: "Domo juge quoi garder"), and no passage of such a sentence is their own
+words. What he deduces in a turn
 nobody asked for, and a lesson always, is his (``by_domo``, ``tools.context.acts_alone``: nobody's
 but his on his own). Who it is about
 (``about``) is a person of the household, named as the household knows them; when Domo leaves it
@@ -144,8 +148,10 @@ def _verified(ctx: ToolContext, their_words: str | None, content: str | None = N
     (``_passage``). While text from outside is in the turn (``ToolContext.outside_text``: told
     words, what a tool woke him with or gave) that is not enough, the passage being tied to
     nothing the model writes: the memory's own ``content`` must be a passage of their message
-    itself (any other content, whatever passage is cited, is not theirs; ruling R50)."""
-    if not _passage(ctx, their_words):
+    itself (any other content, whatever passage is cited, is not theirs; ruling R50). Never in a
+    turn that answers a sentence of a voice not sure to be theirs (``ToolContext.said_unsure``):
+    a passage of it is not surely their words."""
+    if ctx.said_unsure or not _passage(ctx, their_words):
         return False
     return not ctx.outside_text or _passage(ctx, content)
 
@@ -159,22 +165,29 @@ def origin_for(ctx: ToolContext, their_words: str | None, content: str | None = 
     from outside in the turn, their own words only when ``content`` is that passage. In a turn
     nobody wrote in that holds a program's text (a tool woke him, or one gave text), it is from
     outside (``external``): no person's words, least of all the conversation's person's (a note
-    told to such a turn is a person's words: ``others_words``)."""
+    told to such a turn is a person's words: ``others_words``). With a sentence of a voice not
+    sure to be theirs in the turn (``unsure_words``), anything but their checked own words of a
+    sure line is at most ``unsure_voice``."""
     if _verified(ctx, their_words, content):
         return "own_words"
+    origin: Origin
     if ctx.reply_message_id is None and (ctx.tool_woke or ctx.outside.raised):
-        return "external"
-    if ctx.outside_text:
-        return "others_words"
-    if ctx.reply_message_id is not None:
-        return "own_words"
-    return "deduced"
+        origin = "external"
+    elif ctx.outside_text:
+        origin = "others_words"
+    elif ctx.reply_message_id is not None:
+        origin = "own_words"
+    else:
+        origin = "deduced"
+    return _more_cautious(origin, "unsure_voice") if ctx.unsure_words else origin
 
 
 # The origins, from the most cautious to the least: what the yes-judge may read of a person's
-# memories is only their own words and what Domo told them (spec 6.8).
+# memories is only their own words and what Domo told them (spec 6.8). What a voice not sure to be
+# theirs said is more cautious than relayed words: a rewrite never makes it someone's word.
 CAUTION: Final[tuple[Origin, ...]] = (
     "external",
+    "unsure_voice",
     "others_words",
     "deduced",
     "told_by_domo",
@@ -513,7 +526,8 @@ class MemoryKeep:
         if lesson:
             # A lesson is his own conclusion: never the person's own words. Written with text from
             # outside in the turn (a note, a site, what a tool gave) it may be kept, yet it is not
-            # his conclusion: someone else's words, which the judge files with their real author.
+            # his conclusion: someone else's words, which the judge files with their real author;
+            # with a sentence of a voice not sure to be theirs, it stays ``unsure_voice``.
             origin = _more_cautious(origin, "others_words" if ctx.outside_text else "deduced")
         # What he concludes in a turn nobody asked for is his (``acts_alone``), and a lesson he
         # draws without text from outside; what the person said in their own words, or what came
@@ -725,11 +739,14 @@ class MemoryChange:
             was_private = memory.kept_private
             now = ctx.clock()
             # The person the memory is about, in a turn that answers a message of theirs (F4),
-            # whatever else it holds: "they confirmed it" is their saying.
+            # whatever else it holds: "they confirmed it" is their saying. Not from a voice the
+            # house was not sure was theirs (``said_unsure``): then he judges it, as from
+            # elsewhere, with his reason.
             theirs = (
                 memory.about_id is not None
                 and memory.about_id == ctx.person.id
                 and ctx.reply_message_id is not None
+                and not ctx.said_unsure
             )
             if given.confirmed:
                 if not unconfirmed(memory):

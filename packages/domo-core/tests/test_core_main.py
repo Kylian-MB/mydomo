@@ -19,6 +19,7 @@ import uvicorn
 from chat_support import live_server
 from domo_core import __main__ as entry
 from domo_core.accounts.models import Person
+from domo_core.channels.voice.protocol import MAX_FRAME_BYTES
 from domo_core.config import CoreSettings
 from domo_core.db import create_engine, make_session_factory
 from domo_core.setup_flow.code import verify_setup_code
@@ -203,6 +204,15 @@ def test_the_server_is_started_on_port_8000_with_the_application(recorder):
     assert options["host"] == "0.0.0.0"
     assert options["port"] == 8000
     assert options["access_log"] is True
+
+
+def test_no_websocket_frame_bigger_than_the_voice_route_takes_is_assembled(recorder):
+    """The voice socket closes on any frame over ``MAX_FRAME_BYTES``: the server stops one a
+    little above it, before it holds megabytes of it (its own default is 16 MiB)."""
+    entry.main()
+    limit = recorder.server_options["ws_max_size"]
+    assert isinstance(limit, int)
+    assert MAX_FRAME_BYTES < limit <= MAX_FRAME_BYTES + 16 * 1024
 
 
 def test_only_the_trusted_proxy_may_set_the_forwarded_headers(recorder):

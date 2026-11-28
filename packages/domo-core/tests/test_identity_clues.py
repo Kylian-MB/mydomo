@@ -89,3 +89,96 @@ async def test_a_proof_is_for_the_channel_the_device_and_the_person_it_was_given
         await kept_clues(session, person_id=alex.id, channel="page", device_id=None, now=at(16))
         == ()
     )
+
+
+async def test_a_proof_lives_for_this_microphone_alone(session, add_person):
+    alex = await add_person("Alex", "adult")
+    await keep_proof_clue(
+        session,
+        person_id=alex.id,
+        channel="voice",
+        device_id=None,
+        means="spoken_phrase",
+        now=NOW,
+        microphone="kitchen",
+    )
+
+    async def kept(microphone):
+        return await kept_clues(
+            session,
+            person_id=alex.id,
+            channel="voice",
+            device_id=None,
+            now=at(1),
+            microphone=microphone,
+        )
+
+    assert [clue.means for clue in await kept("kitchen")] == ["spoken_phrase"]
+    assert await kept("living room") == ()
+    assert await kept(None) == ()
+
+
+async def test_a_proof_without_a_microphone_is_as_before(session, add_person):
+    alex = await add_person("Alex", "adult")
+    await keep_proof_clue(
+        session, person_id=alex.id, channel="page", device_id=None, means="password", now=NOW
+    )
+    assert await kept_clues(
+        session, person_id=alex.id, channel="page", device_id=None, now=at(1)
+    ) == (Clue("proof", "for", "strong", "code", NOW, means="password"),)
+    assert (
+        await kept_clues(
+            session, person_id=alex.id, channel="page", device_id=None, now=at(1), microphone="m"
+        )
+        == ()
+    )
+    await still_speaking(session, person_id=alex.id, channel="page", now=at(10))
+    assert (
+        len(
+            await kept_clues(session, person_id=alex.id, channel="page", device_id=None, now=at(20))
+        )
+        == 1
+    )
+
+
+async def test_speaking_on_another_microphone_does_not_extend_it(session, add_person):
+    alex = await add_person("Alex", "adult")
+    await keep_proof_clue(
+        session,
+        person_id=alex.id,
+        channel="voice",
+        device_id=None,
+        means="spoken_phrase",
+        now=NOW,
+        microphone="kitchen",
+    )
+
+    async def kept(now):
+        return await kept_clues(
+            session,
+            person_id=alex.id,
+            channel="voice",
+            device_id=None,
+            now=now,
+            microphone="kitchen",
+        )
+
+    await still_speaking(
+        session, person_id=alex.id, channel="voice", now=at(10), microphone="living room"
+    )
+    await still_speaking(session, person_id=alex.id, channel="voice", now=at(11))
+    assert await kept(at(15, 1)) == ()
+    # On the same microphone, it lives on.
+    await keep_proof_clue(
+        session,
+        person_id=alex.id,
+        channel="voice",
+        device_id=None,
+        means="spoken_phrase",
+        now=at(20),
+        microphone="kitchen",
+    )
+    await still_speaking(
+        session, person_id=alex.id, channel="voice", now=at(30), microphone="kitchen"
+    )
+    assert len(await kept(at(44))) == 1

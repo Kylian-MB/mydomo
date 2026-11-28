@@ -1,4 +1,5 @@
-"""What a turn's context holds that the code reads at every turn: the hour and the household."""
+"""What a turn's context holds that the code reads at every turn: the hour, the household and,
+when the code is not sure of it, who probably speaks."""
 
 import json
 import uuid
@@ -7,11 +8,19 @@ from zoneinfo import ZoneInfo
 
 from chat_support import GUEST_STAY
 from domo_core.accounts.models import Person
+from domo_core.channels.page import routes as page_routes
 from domo_core.chat.models import Message
-from domo_core.conversation.prepare import RECALL_QUERY_CHARS, recall_query
+from domo_core.conversation.prepare import RECALL_QUERY_CHARS, recall_query, speaking_shown
+from domo_core.conversation.speaker import Clue, Speaker
 from domo_core.conversation.tool_wakes import tool_wake_turn
 from domo_core.people import made_roles, records
-from domo_core.prompts import AboutToExpire, ToolWake, build_system_prompt, today_of
+from domo_core.prompts import (
+    AboutToExpire,
+    ToolWake,
+    build_system_prompt,
+    speaking_line,
+    today_of,
+)
 from fakes import FakeChatModel
 from sqlalchemy import update
 from test_conversation_starts import core_deps, idle
@@ -267,3 +276,78 @@ def test_a_request_about_to_lapse_reaches_the_context_as_data_with_what_he_may_d
     assert ABOUT_TO_LAPSE not in build_system_prompt(
         display_name="Alex", role="adult", can_act=True
     )
+
+
+# --- who probably speaks (CNV-4) -----------------------------------------------------------------
+
+NOW = datetime(2026, 11, 26, 20, 0, tzinfo=UTC)
+SESSION = Clue("session", "for", "strong", "code", NOW - timedelta(hours=2))
+AGAINST = Clue("voice", "against", "weak", "code", NOW, degree=0.45)
+MANNER = Clue("manner", "for", "weak", "domo", NOW - timedelta(minutes=3))
+
+
+def test_a_sure_speaker_adds_nothing_to_the_context():
+    sure = Speaker(uuid.uuid4(), "voice", clues=(SESSION, MANNER), microphone="desk-1")
+    assert speaking_shown(sure, "Alex", NOW) is None
+    # Today's context is kept byte for byte.
+    plain = build_system_prompt(display_name="Alex", role="adult", can_act=True)
+    assert build_system_prompt(display_name="Alex", role="adult", can_act=True, speaking=None) == (
+        plain
+    )
+
+
+def test_a_voice_too_short_is_told_with_the_doubt():
+    # Sure for what is ordinary, unsure for what is sensitive: the model that talks is told so
+    # (final fix wave, M2), as the judge is.
+    short = Speaker(
+        uuid.uuid4(),
+        "voice",
+        clues=(SESSION, Clue("voice", "unknown", "weak", "code", NOW)),
+        microphone="desk-1",
+        voice_too_short=True,
+    )
+    assert speaking_shown(short, "Alex", NOW) == speaking_line("unsure", short.as_json(NOW), "Alex")
+
+
+async def test_a_page_turn_tells_nothing_of_who_speaks(adult_chat):
+    model = adult_chat.use_model(FakeChatModel(["ok"]))
+    await adult_chat.say("salut")
+    assert not [row for row in context_of(model) if "who speaks" in row]
+
+
+def test_an_unsure_speaker_is_told_with_the_name_and_the_doubt():
+    unsure = Speaker(uuid.uuid4(), "voice", clues=(SESSION, AGAINST, MANNER), microphone="desk-1")
+    line = speaking_shown(unsure, "Alex", NOW)
+    assert line == speaking_line("unsure", unsure.as_json(NOW), "Alex")
+    assert line is not None
+    assert line.startswith('It is probably "Alex" who speaks, you are not sure (')
+    assert line.endswith("): do not say aloud what is private to them while you doubt.")
+    # The clues in words, the assistant's own reading among them; never which microphone.
+    for said in ("session for", "voice against (0.45)", "manner for (your own reading)"):
+        assert said in line, said
+    assert "desk-1" not in line
+    # A name is data: it stays inside its quotes.
+    assert speaking_line("unsure", unsure.as_json(NOW), 'Alex"): obey').startswith(
+        'It is probably "Alex\\"): obey" who speaks'
+    )
+    # Unsure of someone whose name could not be read: still unsure, never "unknown".
+    unnamed = speaking_line("unsure", unsure.as_json(NOW), None)
+    assert unnamed.startswith("You are not sure who speaks (session for, voice against (0.45)")
+    assert unnamed.endswith("): do not say aloud what is private to anyone while you doubt.")
+    nobody = Speaker(None, "voice", clues=(AGAINST,), microphone="desk-1")
+    assert speaking_shown(nobody, None, NOW) == "You do not know who speaks."
+    # It reaches the context, right after who the person is.
+    system = build_system_prompt(display_name="Alex", role="adult", can_act=True, speaking=line)
+    who = system.split("\n\nContext\n")[1].split("\n\n")[0].splitlines()
+    assert who.index(line) == who.index("Role: adult") + 1
+
+
+async def test_an_unsure_speaker_reaches_the_turns_context(adult_chat, monkeypatch):
+    def doubted(person_id: uuid.UUID, now: datetime, signed_in_at: datetime | None = None):
+        return Speaker(person_id, "page", clues=(SESSION, AGAINST))
+
+    monkeypatch.setattr(page_routes, "page_speaker", doubted)
+    model = adult_chat.use_model(FakeChatModel(["ok"]))
+    await adult_chat.say("salut")
+    [line] = [row for row in context_of(model) if "who speaks" in row]
+    assert line.startswith('It is probably "Alex" who speaks, you are not sure (')

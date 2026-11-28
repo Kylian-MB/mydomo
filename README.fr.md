@@ -31,8 +31,11 @@ lui-même (voir [La mémoire et le temps](#la-mémoire-et-le-temps)). Quand il n
 pas le moyen de faire quelque chose, il peut s'écrire un petit programme, le
 lancer tout de suite et le garder comme outil à lui, qui tourne à part dans un
 bac à sable sans réseau et garde ses données dans une base à lui (voir
-[L'assistant se crée des outils](#domo-se-crée-des-outils)). D'autres outils et
-d'autres façons de parler à l'assistant viendront dans les itérations suivantes.
+[L'assistant se crée des outils](#domo-se-crée-des-outils)). Sur sa page, tu
+peux aussi lui parler à voix haute et l'entendre répondre (voir
+[Parler à l'assistant à voix haute](#parler-à-lassistant-à-voix-haute)). D'autres
+outils et d'autres façons de parler à l'assistant viendront dans les itérations
+suivantes.
 
 ## Prérequis
 
@@ -51,6 +54,15 @@ d'autres façons de parler à l'assistant viendront dans les itérations suivant
   de mémoire (quatre lancements de 256 Mo à la fois au départ, et son lanceur ;
   L'assistant peut changer les deux, jamais au-delà de cette limite) : il n'en
   approche que quand ses outils travaillent.
+- Pour la voix (voir
+  [Parler à l'assistant à voix haute](#parler-à-lassistant-à-voix-haute)) :
+  environ 600 Mo de plus pour l'image du service de parole et, à son premier
+  démarrage, environ 1,1 Go de modèles ouverts qu'il télécharge (environ 2,9 Go
+  avec une carte graphique). Ses petits modèles prennent peu de mémoire (sur le
+  PC où ils ont été essayés : environ 130 Mo pour entendre, 430 Mo pour la voix,
+  moins de 50 Mo pour reconnaître les voix). Une carte graphique (NVIDIA) n'est
+  pas obligatoire : avec, il peut prendre de meilleurs modèles. Un micro sur
+  l'appareil d'où tu parles.
 
 ## Installation
 
@@ -700,9 +712,10 @@ elle a été donnée. Chacun commence avec les moyens qu'il a déjà : son mot d
 passe, et ses clés d'accès s'il en a ajouté. Sur la page, la preuve se donne sur
 la carte sous la réponse de l'assistant (une clé d'accès ou le mot de passe) ; dans le
 programme de texte (voir « Parler à l'assistant hors de la page »), elle se donne
-avec le mot de passe, tapé à part et jamais affiché. Une preuve vaut au moins un
-oui ferme. Convenir d'autres moyens (un mot de passe dit à voix haute, par
-exemple) viendra avec eux, dans une version suivante.
+avec le mot de passe, tapé à part et jamais affiché. À voix haute, elle se donne
+avec une phrase convenue avec lui (voir
+[Parler à l'assistant à voix haute](#parler-à-lassistant-à-voix-haute)). Une
+preuve vaut au moins un oui ferme.
 
 **Ce qui ne change pas.** Un adulte doit donner son accord quand un enfant quitte
 le foyer. Une suite d'actions est jugée une seule fois, en entier, et demande le
@@ -912,8 +925,11 @@ programme garde un secret à lui dans ton dossier de configuration ; il n'est
 jamais affiché. Ensuite, `domo-talk` ouvre la discussion.
 
 **Ce qui marche là-bas.** Une carte y est dite en mots. Une demande qui attend
-un oui se répond en mots ; une demande qui attend une preuve se prouve avec ton
-mot de passe (`/prove`, tapé sans écho, envoyé seulement au code de l'assistant). Un
+un oui se répond en mots ; pour une demande qui attend une preuve, le programme
+ouvre de lui-même une ligne cachée, où tu tapes ton mot de passe (jamais
+affiché, envoyé seulement au code de l'assistant). Avant d'être appairé, le
+programme n'a aucune langue à suivre : ses quelques lignes y sont en anglais
+simple. Un
 lien d'invitation ou un code y est montré une fois, comme sur la page. Une clé
 ne s'y tape jamais : le formulaire sûr t'attend sur ta page. Demande à l'assistant de
 voir tes appareils, ou d'en retirer un : il ne peut alors plus lui parler. Le
@@ -928,6 +944,223 @@ appareils, et retire ceux que tu ne connais pas.
 
 Les détails (`/quit`, `domo-talk forget`) sont dans
 `packages/domo-talk/README.md`.
+
+## Parler à l'assistant à voix haute
+
+Sur sa page, tu peux parler à l'assistant et l'entendre répondre, sans clavier
+ni souris. Il répond dans la langue dans laquelle tu lui parles, avec une voix
+de cette langue quand il en a une. Ce qu'il dit est aussi écrit dans la
+discussion, comme d'habitude.
+
+**Allumer la voix.** Une fois, avec le bouton de la page ; le navigateur demande
+le micro. Le choix est retenu sur cet appareil : aux visites suivantes, la page
+écoute dès qu'elle s'ouvre. Pour l'éteindre, clique à nouveau, ou dis-le-lui
+avec tes mots (« arrête d'écouter ») : seuls tes propres mots éteignent ton
+micro. La page montre toujours si elle écoute, avec ses mots à lui. Elle
+n'envoie que les moments où quelqu'un parle, jamais le silence ; un onglet en
+arrière-plan continue d'écouter tant qu'il est ouvert.
+
+**Pendant qu'il parle.** Dès que quelqu'un parle, sa voix baisse. À la fin de la
+phrase, un jugement rapide (un petit modèle à la maison) décide si elle lui était
+adressée, et s'il se tait, continue, ou laisse tomber ce qu'il disait. Le code
+ne contient aucune liste de mots : « stop », « attends », ou n'importe quoi
+d'autre, dans n'importe quelle langue, est compris. Un « stop » fait taire la
+page qui l'a entendu, pas celle d'une autre pièce. Ce qu'il n'a pas eu le temps
+de dire reste écrit dans la discussion. Ce que tu dis pendant qu'il écrit une
+réponse est gardé et a sa réponse, jamais refusé.
+
+**Ce qui ne lui est pas adressé** n'entre dans aucune discussion. C'est gardé en
+mémoire un moment, puis donné en un lot quand la pièce est calme : il peut en
+retenir ce qui lui semble utile dans sa mémoire, marqué comme entendu en passant,
+et le reste est jeté. Ce qu'a dit quelqu'un d'autre, ou une voix dont il n'est pas
+sûr, ne change ni n'efface jamais ce qu'il sait ; ta propre voix, quand il en est
+sûr, peut corriger un de tes propres souvenirs. Sans petit modèle à la maison pour cela, il n'en garde rien.
+
+**Ce qui est gardé.**
+
+| Quoi | Gardé ? |
+| --- | --- |
+| Le son | Jamais. Il est en mémoire le temps d'être traité, puis lâché : jamais écrit, jamais journalisé, ni dans le cœur ni dans le service de parole. |
+| Ce qui lui est adressé | Le texte, dans la discussion de la personne qui a parlé. |
+| Ce qui ne lui est pas adressé | Rien, sauf ce qu'il choisit de retenir dans sa mémoire, marqué comme entendu en passant. |
+| Les empreintes de voix | Des nombres qui décrivent une voix (jamais du son), par voix et par micro, avec la hauteur et le débit habituels. Effacées avec la personne, quand tu le demandes, ou quand il les juge inutiles. Une voix que personne ne connaît est oubliée 30 jours après la dernière fois qu'il l'a entendue. |
+| La phrase secrète | Dans le coffre du gardien, chiffrée. Nulle part ailleurs. |
+
+**Qui parle, c'est son jugement.** Pour chaque phrase, le code lui dit qui parle
+sans doute, à quel point c'est sûr, et d'après quoi : la page où tu t'es
+connecté, ta voix comparée à ce qu'il en a appris, ta hauteur et ton débit, une
+preuve récente, et sa propre lecture de ta manière de parler. Une voix seule ne
+prouve jamais qui tu es. Il apprend une voix lentement : seulement quand autre
+chose dit qui parle (ta page, une preuve), à partir de plusieurs phrases qui se
+ressemblent, sur deux visites à au moins une heure d'écart. Il suit une voix qui
+change avec le temps ; enrhumé, ta voix colle moins et il le garde à part
+quelques jours. Devant ta propre page connectée, une voix qui ne ressemble à
+personne qu'il connaît n'est pas prise pour un inconnu sur le seul score : il
+juge, d'après ce qui vient d'être dit là, si c'est encore toi (tu es alors « pas
+sûr », et cette phrase n'apprend rien de ta voix). À un autre micro que celui où
+il t'a appris, un gros rhume peut encore te faire passer pour un inconnu. Un
+nouveau micro s'apprend aussi ; changer de langue fait recommencer
+l'apprentissage d'une voix : si tu changes souvent de langue, il te connaît plus
+lentement.
+S'il a appris la voix de quelqu'un d'autre comme la tienne, dis-le-lui avec tes
+mots (« ce n'était pas moi ») : il oublie ce qu'il a appris depuis.
+
+- **Sûr** (ta page, et la voix colle, n'est pas encore apprise, ou tu tapes) :
+  comme d'habitude.
+- **Pas sûr** (un rhume, un nouveau casque, une voix proche de la tienne ; une
+  phrase trop courte pour le dire, pour ce qui est sensible) : ce qui est
+  ordinaire est fait avec les droits de la personne qui parle sans doute. Ce qui
+  est sensible, il le juge avec les indices : il le fait, demande un oui, demande
+  une preuve, ou ne le fait pas. Il ne vérifie que s'il a un vrai doute ; si son
+  modèle de jugement ne répond pas, il demande une preuve. Tant qu'il n'est pas
+  sûr, il laisse tes souvenirs privés de côté et ne dit rien de privé à voix
+  haute.
+- **Quelqu'un d'autre du foyer** (Paul devant la page d'Alex) : Paul parle dans
+  sa propre discussion (il la retrouve sur sa page). Après une preuve donnée
+  là, et tant que sa voix est nettement la sienne, il agit avec ses propres droits ; sinon,
+  chacune de ses actions est jugée, et les règles d'Alex comptent aussi : la plus
+  stricte l'emporte. Si le modèle de jugement ne répond pas, ce qui est ordinaire
+  est fait quand même (sauf si le propriétaire a mis
+  `voice.ordinary_when_unsure` à `judge`, ou si la phrase était trop courte pour
+  reconnaître la voix : il demande alors une preuve). Là, l'assistant se sert de ce qui a été dit à cette page
+  pendant cette visite ; quand il est sûr que c'est Paul, il a aussi les mots et
+  les rendez-vous qui attendent Paul, et juge s'il les dit dans cette pièce ;
+  sinon, il dit seulement que quelque chose l'attend. Jamais l'ancienne
+  discussion ni les souvenirs privés de Paul.
+- **Une voix que personne ne connaît** : pas de fiche, donc pas de droits à
+  elle. Elle a droit à un court échange, sans outil et sans rien du foyer, et il
+  laisse un mot à la personne de la page. Après quelques réponses (6 en 10
+  minutes), elle n'a plus que le silence pendant un moment. Ce que ça coûte de ne
+  pas te prendre pour un inconnu sur le seul score : devant une page connectée,
+  si le jugement rapide prend la phrase d'un inconnu pour celle de la personne de
+  la page, cet inconnu passe pour elle, « pas sûr ». Les choses ordinaires peuvent
+  alors se faire avec ses droits à elle, et l'inconnu entend des réponses tirées
+  de ce qui s'est dit pendant cette visite. Tout ce qui est sensible passe quand
+  même par le jugement, qui voit que la voix ne colle pas ; rien de cette voix
+  n'est appris.
+
+**Ordinaire et sensible.** Ordinaire : parler avec lui ; changer ton propre
+prénom, ou le sien ; ses textes et sa façon d'écrire ; son choix de modèles ;
+retenir quelque chose dans sa mémoire ; voir qui est dans le foyer et ses
+règles ; éteindre le micro ; un outil qu'il s'est créé qui agit seulement dans la
+maison, ne peut ni dépenser, ni sortir, ni faire ce qui ne se défait pas, et ne
+tient aucun compte qui écrit (une lumière). Sensible : ce qui coûte de l'argent,
+sort de la maison ou ne se défait pas ; les droits, les rôles, les personnes et
+les règles du propriétaire ; les clés, les comptes et les secrets ; les
+appareils ; chercher, changer ou oublier dans sa mémoire, et ce qui est privé ;
+la confiance ; les mots ; répondre à une demande ou à un accord ; les rendez-vous
+et les rappels ; écrire, changer ou programmer un outil ; la phrase secrète et
+l'oubli d'une voix ; tout ce que le code ne sait pas classer. « Sensible » ne
+veut pas dire refusé : il juge.
+
+**Cartes, codes, secrets.** Une carte est dite en mots, et tu réponds en mots
+(« oui », « non », « oui, mais à huit heures »). Ce qui ne se montre qu'une fois
+(le lien d'une invitation, un code) reste sur la carte de la page et n'est jamais
+dit à voix haute. Une clé ou un mot de passe ne se dit jamais : le formulaire sûr
+t'attend sur la page.
+
+**La phrase secrète**, une preuve qui se dit. Demande-lui d'en convenir d'une (ou
+il te le propose) : tu la dis, puis tu la redis. Les deux vont au coffre et nulle
+part ailleurs : ni modèle, ni discussion, ni journal. Il te dit une fois que la
+pièce peut l'entendre. Toi seul peux convenir de ta phrase, la changer ou la
+retirer ; quand il n'est pas sûr que la voix est la tienne, il juge d'abord avec
+les indices et peut demander une preuve. Pour en convenir ou la changer, après
+une preuve par ton mot de passe ou ta clé d'accès si tu en as. Quand une demande
+attend ta preuve et qu'il vient de te parler à ce micro (dans les 90 dernières
+secondes), chaque phrase entendue là, qui que ce soit qui la dise, est d'abord
+comparée à ta phrase par le gardien, avant tout modèle ; c'est le code qui
+vérifie, jamais un modèle. La comparaison pardonne les petites erreurs
+d'écoute. Un essai presque bon est jeté et il te dit que ça n'a pas marché. Dite
+par une voix qui ne colle pas à la tienne (quelqu'un qui l'a entendue), elle est
+quand même vérifiée, puis il juge avec les indices et peut demander une autre
+preuve. Si tu préfères une autre preuve, dis-le.
+
+Ses limites : ta phrase dite à un micro où il ne vient pas de te parler, ou au
+milieu d'une phrase plus longue, est une phrase ordinaire, non protégée. Cinq
+essais presque bons, ou cinquante phrases comparées, en quinze minutes, mettent
+la phrase de côté un moment : pendant ce temps, le micro ne prend rien tant
+qu'une preuve y est attendue (il te le dit une fois) ; écrire et les autres
+preuves marchent toujours. Quelqu'un dans la pièce peut le faire exprès.
+
+**Les réglages du propriétaire**, qu'il donne à l'assistant avec ses mots :
+
+- `speech.hear_outside` (`no` par défaut) : ce que le micro entend, et le texte de
+  ce qui ne lui est pas adressé, reste à la maison. `yes` permet de l'envoyer à un
+  fournisseur dehors, sur une clé payante. Une phrase qui peut être une preuve
+  est toujours entendue à la maison.
+- `voice.ordinary_when_unsure` (`do` par défaut) : ce qui est ordinaire est fait
+  quand il n'est pas sûr de qui parle ; `judge` le fait juger aussi.
+- `voice.after_a_gesture` (`no` par défaut) : sans petit modèle à la maison pour
+  savoir si une phrase lui est adressée, la voix reste éteinte, et il le dit une
+  fois au propriétaire en lui proposant deux choix : laisser ce qui est entendu
+  sortir, ou n'entendre que pendant qu'on tient un bouton. Avec `yes`, la page
+  montre ce bouton.
+
+**Le service de parole.** Entendre, parler et reconnaître les voix se fait à la
+maison, par un petit service à part, `speech` dans `compose.yaml`, que seul le
+gardien joint. Aucun modèle n'est choisi d'avance : à son premier démarrage, il
+télécharge des modèles ouverts candidats dans son volume, les essaie sur cette
+machine, et liste ceux qui tiennent ; l'assistant choisit parmi eux. Cela prend
+plusieurs minutes, pendant lesquelles la page dit qu'il ne peut pas encore
+entendre (écrire marche). Il n'a besoin d'Internet que pour ce téléchargement,
+par un réseau à lui. Combien de personnes il sert à la fois est mesuré sur la
+machine aussi. Une demande dont l'appelant ne veut plus attendre quitte sa file.
+Sa voix peut aussi venir du modèle d'un fournisseur, quand une des
+clés en a un ; entendre n'y va que si le propriétaire le permet
+(`speech.hear_outside`). Avec une carte graphique NVIDIA et le NVIDIA Container
+Toolkit :
+
+```bash
+docker compose -f compose.yaml -f compose.gpu.yaml up -d
+```
+
+Un modèle qui ne tient pas sur la carte (ses bibliothèques manquent, plus assez
+de mémoire, trop lent) est essayé sur le processeur aussi : la carte ne laisse
+jamais un usage sans rien quand le processeur peut le faire. Sur un petit
+processeur seul, entendre peut être trop lent pour tenir (aucun modèle plus léger
+que faster-whisper base n'est listé) : alors rien n'entend à la maison, sauf si
+le propriétaire laisse ce qui est entendu sortir. Même un processeur correct est
+tout près de cette limite : un premier démarrage chargé peut juger l'écoute trop
+lente et le laisser sourd ; quand le service la mesure de nouveau et la garde,
+l'assistant s'en rend compte en une minute environ, sans redémarrer. Une fois,
+une toute première réponse a mis 16 s sur la carte (pas revu depuis). Les réglages du service dans
+`.env` (`DOMO_SPEECH_DEVICE`, `DOMO_SPEECH_RESTRICTED_MODELS`,
+`DOMO_SPEECH_AT_ONCE`, `DOMO_SPEECH_VOICE_PROGRAM`) sont décrits dans
+`.env.example`.
+
+Il peut aussi tourner hors de Docker, sur cette machine ou une autre de la
+maison, comme une commande et une adresse : voir
+`packages/domo-speech/README.md` (en anglais), qui dit aussi comment garder ses
+modèles sur un autre disque.
+
+**Un petit modèle local pour écouter.** Savoir si une phrase lui est adressée, et
+quoi retenir de ce qu'il a entendu en passant, est jugé par un modèle de
+discussion ordinaire, à la maison. Donne-lui son adresse dans la discussion,
+comme une clé : n'importe quel serveur qui parle l'API d'OpenAI, sans clé, sur
+une machine de la maison ou sur celle-ci (`host.docker.internal`). « À la
+maison », c'est ce que le gardien compte comme la maison ou cette machine ; le
+service de parole de l'installation compte comme la maison par son propre réglage
+(`DOMO_SPEECH_URL`).
+
+**Les modèles et leurs licences** (des candidats : chaque machine garde ceux qui
+tiennent) :
+
+| Modèle | Fait | Licence des poids | Comment il tourne |
+| --- | --- | --- | --- |
+| faster-whisper base, small, large-v3-turbo | entendre | MIT | dans le service (large-v3-turbo : carte graphique) |
+| supertonic-3 | dire (la voix du simple processeur) | BigScience Open RAIL-M : libre d'usage, avec des conditions | dans le service |
+| Piper, une voix française et une anglaise | dire | CC-BY-4.0 (le programme : GPL-3.0 ou plus récente) | un programme à part que tu installes toi-même |
+| WeSpeaker ResNet34, CAM++, ResNet221 | reconnaître les voix | CC-BY-4.0 | dans le service (ResNet221 : carte graphique) |
+| Silero VAD | distinguer la parole du silence | MIT | dans la page |
+
+La voix qui tourne sur un simple processeur, supertonic-3, n'est pas sous une
+licence libre : son usage est gratuit mais limité (pas d'imitation de quelqu'un
+sans son accord, pas de conseil médical, dire qu'un contenu est fait par une
+machine...), et ses auteurs l'ont archivée. C'est la voix de départ, en
+attendant qu'une voix libre la remplace. Ses conditions sont dans
+`packages/domo-speech/README.md` ; pour cacher tous les modèles qui ont de telles
+conditions, mets `DOMO_SPEECH_RESTRICTED_MODELS=no`. Un programme sous GPL ne
+fait jamais partie de l'assistant : il tourne à part.
 
 ## Changer la clé du modèle depuis la discussion
 
@@ -1570,7 +1803,10 @@ Tout ce que l'assistant conserve est dans des volumes Docker. Sauvegardez-les **
 | `caddy-config` | Les réglages propres au serveur web. |
 
 Le volume `sandbox-socket` ne contient que la socket entre le cœur et le bac à
-sable : il n'y a rien à y sauvegarder.
+sable : il n'y a rien à y sauvegarder. Pas plus dans `speech-models` : il
+contient les modèles que le service de parole a téléchargés et ce qu'il a
+mesuré, téléchargés et mesurés à nouveau quand il est vide. (Les empreintes de
+voix sont dans la base, les phrases secrètes dans le coffre.)
 
 Gardez les sauvegardes privées, hors du serveur : elles contiennent la clé
 maîtresse et la clé de l'autorité. Conservez avec elles une copie de votre fichier
@@ -1731,6 +1967,17 @@ docker image rm alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda91
   écritures des autres (une valeur par défaut, un contrôle ou une politique de
   lignes qu'il y pose). Un
   outil ne lit rien de la base du cœur.
+- **Ce que le micro entend.** Seuls les moments de parole quittent la page, par
+  sa propre connexion chiffrée, et le son n'est jamais écrit ni journalisé, ni
+  par le cœur ni par le service de parole. Ce qui est entendu reste à la maison
+  sauf si le propriétaire permet autre chose. La phrase secrète ne fait que
+  traverser le cœur en mémoire, vers le coffre, comme un mot de passe tapé ;
+  elle n'arrive jamais à un modèle, une discussion, le journal d'audit ou les
+  logs. Les réponses en son passent par le gardien sans être changées, mais
+  surveillées : un secret de 8 octets ou plus trouvé entier dedans coupe la
+  réponse (un plus court n'est pas cherché : il apparaîtrait par hasard). Le
+  service de parole n'a pas de mot de passe : seul le gardien le joint. Voir
+  aussi [SECURITY.md](SECURITY.md).
 
 ## Organisation du dépôt
 
@@ -1740,6 +1987,7 @@ docker image rm alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda91
 | `packages/domo-gatekeeper` | Coffre de secrets chiffré et relais vers les fournisseurs |
 | `packages/domo-core` | Interface web, discussion et actions de l'assistant (le foyer, les mots, les demandes et leurs confirmations, les règles et les droits du propriétaire, les outils qu'il se crée et leurs contrôles), comptes et clés d'accès, journal d'audit |
 | `packages/domo-sandbox` | Le lanceur du bac à sable : fait tourner un outil de l'assistant dans un processus à part, avec ses limites, et son analyseur |
+| `packages/domo-speech` | Le service de parole à la maison : le son en texte, le texte en son, le son en empreinte de voix ; il ne garde rien, et mesure ses modèles sur sa machine |
 | `deploy/` | Configuration du serveur web placé devant l'assistant |
 | `compose.yaml` | L'installation (`compose.test.yaml` ajoute un faux modèle pour les tests) |
 | `scripts/` | Contrôles d'hygiène du dépôt (données personnelles, licences des dépendances) |

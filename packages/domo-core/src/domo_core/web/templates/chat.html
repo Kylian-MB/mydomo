@@ -46,9 +46,12 @@
                   placeholder="{{ t('chat.input.placeholder', domo=domo) }}" autocomplete="off"></textarea>
         <button type="submit" class="primary" data-action="send">{{ t("chat.send") }}</button>
       </form>
+{% include "fragments/voice.html" %}
     </section>
     <script src="{{ static_url('chat.js') }}" defer></script>
 {#- What speaks to the passkey of a card that asks a proof (fragments/confirmation_card.html):
     those cards come with the page, the stream and the approvals zone, whenever they come. -#}
     <script src="{{ static_url('passkeys.js') }}" defer></script>
+{#- The voice (microphone, speech found in the page, the socket): a module, loaded on its own. -#}
+    <script src="{{ static_url('voice.js') }}" type="module"></script>
 {% endblock %}

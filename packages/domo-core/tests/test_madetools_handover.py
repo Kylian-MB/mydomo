@@ -47,6 +47,7 @@ from domo_core.madetools.offered import READ_AS
 from domo_core.madetools.service import fingerprint, set_aside
 from domo_core.madetools.settings import set_for_tool, set_house
 from domo_core.policy.catalog import DEFAULT_POLICY
+from domo_core.policy.roles import Actor
 from domo_core.prompts import ToolWake, tool_wake_heading
 from domo_core.toolsdb.store import ToolsBase
 from fakes import FakeAsk, FakeCall, FakeChatModel, FakeSandbox, is_judge_call
@@ -984,3 +985,34 @@ async def test_a_house_run_handed_over_is_kept_as_the_houses_and_told_to_domo_al
     await until_idle(wakes)
     assert [whom for whom, _ in woken] == [dana.id]
     assert alone == [True]
+
+
+def test_how_sure_the_code_was_of_who_asked_goes_with_the_launch_whoever_asked():
+    """Never sure by default: the standing of whoever asked travels with a launch for someone
+    else or for the house (an owner's yes to a stop of the house's, heard unsure, say); a launch
+    nobody asked in a turn is the house's or the assistant's own."""
+    person = Person(id=uuid.uuid4(), display_name="Dana", role="adult")
+    other = Actor(uuid.uuid4(), "owner", standing="unsure")
+    assert not handover._for(person, other).trusted
+    assert not handover._for(None, other).trusted
+    assert handover._for(person, Actor(person.id, "adult")).trusted
+    assert handover._for(None, None).trusted
+
+
+async def test_a_program_run_by_hand_is_told_as_a_program_even_without_its_run():
+    # A program run by hand is told as one by what the code knows of it, never by the name it is
+    # told under: without its run id it is still a program; a tool of that name stays a tool.
+    told: list[list[ToolWake]] = []
+
+    async def waker(_: uuid.UUID, wakes: Sequence[ToolWake], *, on_his_own: bool) -> bool:
+        told.append(list(wakes))
+        return True
+
+    deps: Any = type("Deps", (), {"waker": staticmethod(waker)})()
+    person = uuid.uuid4()
+    assert await handover._tell(deps, person, [(handover.BY_HAND, [1])], by_hand=True)
+    assert await handover._tell(deps, person, [(handover.BY_HAND, [2])])
+    assert told == [
+        [ToolWake(handover.BY_HAND, 1, given_by="program")],
+        [ToolWake(handover.BY_HAND, 2)],
+    ]

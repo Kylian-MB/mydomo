@@ -11,6 +11,7 @@ reads facts as values only, so a text a person wrote in a fact (a name, a note) 
 asked.
 """
 
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -51,12 +52,13 @@ class SubjectRule:
     ``keys`` gives the canonical key first, then aliases (other keys the same thing is known by);
     the second argument is the tool's ``model_result`` once it ran (``None`` before), for what has
     no id before it exists. ``owner`` says whom the thing belongs to: the house, the person of the
-    turn, or the person a fact names (``person_fact``; a fact ``for_house`` set makes it the
-    house's). ``the_turn_person`` makes the person of the turn the thing itself (its key
+    turn, the person a fact names (``person_fact``; a fact ``for_house`` set makes it the
+    house's), or the person the target names (``target``: ``person:<id>``; any other target is
+    the house's). ``the_turn_person`` makes the person of the turn the thing itself (its key
     ``person:<id>``), for what a person asks about themselves."""
 
     keys: Keys
-    owner: Literal["house", "turn_person", "person_fact"]
+    owner: Literal["house", "turn_person", "person_fact", "target"]
     person_fact: str | None = None
     the_turn_person: bool = False
 
@@ -194,6 +196,40 @@ def _tool(action: DescribedAction, result: JsonObject | None) -> tuple[str, ...]
     return (f"tool:{action.action_type.removeprefix(MADE_PREFIX)}",)
 
 
+def _person_in(target: str | None) -> UUID | None:
+    """The person's id of a target ``person:<id>``; ``None`` for any other."""
+    if target is None or not target.startswith("person:"):
+        return None
+    try:
+        return UUID(target.removeprefix("person:"))
+    except ValueError:
+        return None
+
+
+def _of_the_person(kind: str) -> Keys:
+    """``<kind>:<person id>`` from the target ``person:<id>``: the voice's actions are about the
+    person's own phrase or voice (``tools.voice_tools``), never a word that was said."""
+
+    def keys(action: DescribedAction, result: JsonObject | None) -> tuple[str, ...]:
+        person_id = _person_in(action.target)
+        return () if person_id is None else (f"{kind}:{person_id}",)
+
+    return keys
+
+
+# A voice nobody knows, as the voice keeps it (``channels.voice.models``): ``v-`` and 16 hex digits.
+_UNKNOWN_VOICE: Final = re.compile(r"voice:v-[0-9a-f]{16}")
+
+
+def _voice(action: DescribedAction, result: JsonObject | None) -> tuple[str, ...]:
+    """What was learnt of a voice: ``voice:<person id>`` for a person's (target ``person:<id>``),
+    ``voice:<reference>`` for a voice nobody knows; never a word that was said."""
+    target = action.target
+    if target is not None and _UNKNOWN_VOICE.fullmatch(target):
+        return (target,)
+    return _of_the_person("voice")(action, result)
+
+
 SUBJECT_RULES: Final[Mapping[str, SubjectRule]] = MappingProxyType(
     {
         **{
@@ -253,6 +289,15 @@ SUBJECT_RULES: Final[Mapping[str, SubjectRule]] = MappingProxyType(
             kind: SubjectRule(_directive, "house")
             for kind in ("people.directive_set", "people.directive_lift", "people.directives_look")
         },
+        # The voice (spec 6.2, 6.5, 6.9): the person's spoken phrase, and what was learnt of their
+        # voice.
+        **{
+            kind: SubjectRule(_of_the_person("phrase"), "turn_person")
+            for kind in ("proof.phrase_agree", "proof.phrase_change", "proof.phrase_remove")
+        },
+        # What was learnt of a voice is the assistant's recording, erased as his idea too: it
+        # belongs to the person whose voice it is, not to the person of the turn (Task 27).
+        "voice.unlearn": SubjectRule(_voice, "target"),
         **{
             kind: SubjectRule(_target, "turn_person")
             for kind in (
@@ -334,6 +379,7 @@ UNDOES: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
             )
             for kind in ("people.mistake", "people.directive_set")
         },
+        "proof.phrase_remove": frozenset({"proof.phrase_agree", "proof.phrase_change"}),
     }
 )
 
@@ -349,6 +395,9 @@ def _belongs_to(
             return HOUSE
         case "turn_person":
             return turn_person_id
+        case "target":
+            named = _person_in(action.target)
+            return HOUSE if named is None else named
         case "person_fact":
             if action.facts.get("for_house") is True:
                 return HOUSE

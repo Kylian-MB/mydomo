@@ -254,7 +254,7 @@ from domo_core.learning.undone import note_undoing
 from domo_core.llm.types import JsonObject
 from domo_core.memory.told import told
 from domo_core.policy.actions import DescribedAction
-from domo_core.policy.asks import Ask, Asked, most_demanding
+from domo_core.policy.asks import Ask, Asked, as_ask, most_demanding
 from domo_core.policy.barrier import (
     Allow,
     Decision,
@@ -946,6 +946,16 @@ def _not_enough(
     return None
 
 
+def asked_of_a_yes(c: Confirmation, sure: bool, rule: Ask | None = None) -> Ask | None:
+    """What the request ``c`` asks of a yes: what it stores; for a yes the code is sure of, when
+    the judge raised it only because he doubted who said yes (``ask_before_doubt``), what it
+    asked before that raise and what the rules (``rule``) ask now."""
+    before = c.ask_before_doubt
+    if not sure or before is None:
+        return ask_of(c)
+    return most_demanding(as_ask(before), rule)
+
+
 def what_the_yes_gave(via: DecidedVia) -> Ask | None:
     """What a yes given ``via`` gives (as ``_not_enough`` reads it): a proof gives a proof, the
     button and a firm yes in words an explicit yes, other words a yes; the judge's leave
@@ -1043,7 +1053,7 @@ async def _described_again(
     the call, fails, or takes more than ``_DESCRIBE_SECONDS`` (describing changes nothing)."""
     with anyio.move_on_after(_DESCRIBE_SECONDS):
         try:
-            return await tool.describe(arguments, actor, ctx)
+            return await tool.describe(arguments, actor, replace(ctx, checked_first=True))
         except InvalidArguments:
             return None
         except Exception as error:
@@ -1241,6 +1251,7 @@ async def _run_and_settle(
                 described_action=action,
                 approved_by=decider.id,
                 request_id=c.id,
+                checked_first=True,
                 said=None,
                 said_later=(),
             ),
@@ -1346,8 +1357,14 @@ async def decide_confirmation(
     means: str | None = None,
     speaker: Speaker | None = None,
     words: str | None = None,
+    sure: bool = True,
 ) -> tuple[DecideOutcome, ActionRecord | None]:
     """Carry out ``decider``'s yes (``approve``) or no on the request (see the module docstring).
+
+    ``sure``: the code is sure the yes is the decider's (a button, a page signed in, a voice it
+    is sure of). A request the judge raised because he doubted who said yes in words
+    (``Confirmation.ask_before_doubt``) asks of such a yes only what it asked before the raise,
+    and what the rules ask now; the raise binds only a yes that is not sure (case 10).
 
     A no said in words (``via`` a phrase or the classifier) keeps the person's message, ``words``,
     cut short and without the shape of a secret (``Confirmation.refusal_words``: what they said
@@ -1365,8 +1382,8 @@ async def decide_confirmation(
     ``not_yours``: nobody learns which ids exist. A yes given by a proof (``via`` ``proof``, from
     ``proofs.service.prove``, which checked it) names its ``means`` in the audit entry of the
     decision, and, when the ``speaker`` it was given by is known, is kept as one more clue that it
-    is the decider (``identity.clues.keep_proof_clue``), for the channel and the device it was given
-    on.
+    is the decider (``identity.clues.keep_proof_clue``), for the channel, the device and the
+    microphone it was given on.
     """
     if approve and via == "proof" and speaker is not None and means is not None:
         async with session_factory() as clues:
@@ -1377,6 +1394,7 @@ async def decide_confirmation(
                 device_id=speaker.device_id,
                 means=means,
                 now=now,
+                microphone=speaker.microphone,
             )
             await clues.commit()
     async with session_factory() as session:
@@ -1394,7 +1412,7 @@ async def decide_confirmation(
         if approve:
             # A second lock on the same door: a yes that does not give what the request asks
             # changes nothing.
-            early = _not_enough(ask_of(c), via)
+            early = _not_enough(asked_of_a_yes(c, sure), via)
             if early is not None:
                 return early, None
         await _mark_decided(
@@ -1547,7 +1565,7 @@ async def decide_confirmation(
             # approver's yes covers its requester's own: ``store.covers``).
             await _reroute(session, c, current, "self", None, replay=replay)
             return "approver_changed", rerouted_yes(c)
-        not_enough = _not_enough(ask_of(c), via)
+        not_enough = _not_enough(asked_of_a_yes(c, sure, rule), via)
         if not_enough is not None:
             # This yes does not give it: nothing changes but what the request asks now.
             _unmark(c)

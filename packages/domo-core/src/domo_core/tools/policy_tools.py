@@ -28,6 +28,7 @@ from sqlalchemy import select
 from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import is_active
 from domo_core.audit.log import append_audit
+from domo_core.confirmations.describe import describe_rule_change
 from domo_core.llm.types import JsonObject, ToolDefinition
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.rights import Right, load_rights, paused_rights
@@ -35,12 +36,14 @@ from domo_core.policy.roles import Actor
 from domo_core.policy.settings import (
     ADULT_AGE_KEY,
     GUESTS_OWN_KEY,
+    HEAR_OUTSIDE_KEY,
     KEYS_SETTINGS,
     LIFETIME_KEY,
     NAME_SETTINGS,
     TELL_ACCESS_KEY,
     TIME_ZONE_KEY,
     TOOLS_BASE_KEY,
+    VOICE_GESTURE_KEY,
     WRITER_SECONDS_KEY,
     InvalidSetting,
     SettingValue,
@@ -48,7 +51,7 @@ from domo_core.policy.settings import (
     update_policy_setting,
     validate_setting,
 )
-from domo_core.texts.view import Texts
+from domo_core.texts.view import REFERENCE, Texts
 from domo_core.tools.context import InvalidArguments, ToolContext, ToolOutcome
 
 _UPDATE_ARGUMENTS: Final = frozenset({"key", "value"})
@@ -180,7 +183,9 @@ class PolicyUpdate:
         name="policy_update",
         description=(
             "Record their choice: how long a request may wait, the rights writer's time, "
-            "the household's time zone, how big your tools' own base may grow. A null value "
+            "the household's time zone, how big your tools' own base may grow, how the voice "
+            "listens. Their choice is theirs: never refuse it yourself; as you do it, say once "
+            "what it brings (means) unless they know it. A null value "
             "clears it. Whether an action is confirmed, "
             'and how, is not a setting: your judge decides it, and their rules "always ask me '
             'before…" are rights (rights_propose). Keys: '
@@ -199,7 +204,14 @@ class PolicyUpdate:
             f"{GUESTS_OWN_KEY} (true: whoever joins as a visitor, invited by anyone or by you, "
             "comes with their own key and is off the general key; someone who lives here never "
             "is; false or null: someone you invite yourself uses the general key, within its "
-            "limits)."
+            "limits); "
+            f"{HEAR_OUTSIDE_KEY} (yes or no, no unless they choose: whether what "
+            "the microphones hear may go to a model outside the house: the voice then listens "
+            "freely, and the sound, who speaks and the words said near it leave the house); "
+            f"{VOICE_GESTURE_KEY} (yes or no, no unless they choose: when no model at home can "
+            "tell whether a sentence is said to you, the voice hears only what is said while the "
+            "gesture is made, such as a held key: they talk while holding it, and what is heard "
+            "stays at home unless it may go outside the house)."
         ),
         parameters={
             "type": "object",
@@ -211,8 +223,8 @@ class PolicyUpdate:
                         "A number of hours for the lifetime, a number of seconds for the writer, "
                         "the name of a time zone, a number of MB for the tools' base, a number of "
                         "years for the age of a grown-up, true or false for being told of each "
-                        "access given or for guests bringing their own key, or null to clear "
-                        "their choice."
+                        "access given or for guests bringing their own key, yes or no for the "
+                        "voice, or null to clear their choice."
                     ),
                 },
             },
@@ -253,8 +265,22 @@ class PolicyUpdate:
                 details={"key": key, "old": old, "new": new},
             )
             await session.commit()
+        result: JsonObject = {"key": key, "value": new}
+        means = change_means(arguments)
+        if means is not None:
+            result["means"] = means
         return ToolOutcome(
             status="done",
-            model_result={"key": key, "value": new},
+            model_result=result,
             card={"key": "action.card.done.policy.update", "params": {}},
         )
+
+
+def change_means(arguments: JsonObject) -> str | None:
+    """What a ``policy_update`` call brings, in one plain English sentence (the one its card and
+    the judge read, ``describe_rule_change``), for Domo to say once as he does it; ``None`` for a
+    setting that has no sentence of its own."""
+    try:
+        return describe_rule_change(arguments, REFERENCE)
+    except (KeyError, ValueError, InvalidSetting):
+        return None

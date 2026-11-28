@@ -29,7 +29,9 @@ you again on his own (see [Memory and time](#memory-and-time)). When he has no
 way to do something, he can write himself a small program, run it at once and
 keep it as a tool of his own, which runs apart in a sandbox with no network and
 keeps its data in a base of its own (see
-[The assistant makes himself tools](#domo-makes-himself-tools)). More tools and
+[The assistant makes himself tools](#domo-makes-himself-tools)). On his page,
+you can also talk to him aloud and hear him answer (see
+[Talking to the assistant aloud](#talking-to-the-assistant-aloud)). More tools and
 other ways to talk to the assistant come in later iterations.
 
 ## Requirements
@@ -48,6 +50,13 @@ other ways to talk to the assistant come in later iterations.
   tools run is capped at 1.5 GB of memory (four runs of 256 MB at once at the
   start, and its launcher; the assistant may change both, never past that cap): it
   reaches that only when its tools are busy.
+- For the voice (see [Talking to the assistant aloud](#talking-to-the-assistant-aloud)):
+  about 600 MB more for the image of the speech service, and, at its first
+  start, about 1.1 GB of open models it downloads (about 2.9 GB with a graphics
+  card). Its small models take little memory (on the PC they were tried on:
+  about 130 MB to hear, 430 MB for the voice, under 50 MB to recognise voices).
+  A graphics card (NVIDIA) is optional: with one, it can use better models. A
+  microphone on the device you talk from.
 
 ## Install
 
@@ -645,8 +654,9 @@ given. Everyone starts with the means they already have: their password, and
 their passkeys if they added some. On the page, the proof is given on the card
 under the assistant's reply (a passkey or the password); in the text program (see
 "Talking to the assistant away from the page") it is given with the password, typed
-apart and never shown. A proof counts at least as an explicit yes. Agreeing on
-other means (a spoken password, say) comes with them, in a later version.
+apart and never shown. Aloud, it is given with a phrase you agreed with him (see
+[Talking to the assistant aloud](#talking-to-the-assistant-aloud)). A proof counts
+at least as an explicit yes.
 
 **What does not change.** An adult must agree when a child leaves the household.
 A chain of actions is judged once, as a whole, and asks the strictest yes of its
@@ -834,8 +844,10 @@ program keeps a secret of its own in your configuration folder; it is never
 shown. Then `domo-talk` opens the conversation.
 
 **What works there.** A card is said in words. A request that waits for a yes
-is answered in words; a request that waits for a proof is proven with your
-password (`/prove`, typed without echo, sent to the assistant's code only). An
+is answered in words; for a request that waits for a proof, the program opens
+a hidden line by itself, where you type your password (never shown, sent to the
+assistant's code only). Before it is paired, the program has no language to
+follow: its few lines there are in plain English. An
 invitation's link or a code is shown once, as on the page. A key is never typed
 there: the safe form waits for you on your page. Ask the assistant to see your devices,
 or to take one back: from then on it can no longer talk to him. The owner can
@@ -849,6 +861,211 @@ devices, and take back any you do not know.
 
 See `packages/domo-talk/README.md` for the details (`/quit`, `domo-talk
 forget`).
+
+## Talking to the assistant aloud
+
+On his page, you can speak to the assistant and hear him answer, with no
+keyboard and no mouse. He answers in the language you speak to him, with a voice
+of that language when he has one. What he says is also written in the
+conversation, as usual.
+
+**Turning the voice on.** Once, with the button of the page; the browser asks
+for the microphone. The choice is kept on that device: at the next visits the
+page listens as soon as it opens. To turn it off, click again, or tell him, in
+your own words ("stop listening"): only your own words turn your microphone off.
+The page always shows whether it listens, in his words. It sends only the
+moments where someone speaks, never the silence; a tab in the background keeps
+listening while it is open.
+
+**While he speaks.** As soon as someone speaks, his voice gets quieter. At the
+end of the sentence a quick judgement (a small model at home) decides whether it
+was said to him and whether he goes quiet, goes on, or drops what he was saying.
+There is no list of words in the code: "stop", "wait", or anything else, in any
+language, is understood. A stop quiets the page that heard it, not another
+room's. What he had no time to say stays written in the conversation. What you
+say while he writes an answer is kept and answered, never refused.
+
+**What is not said to him** enters no conversation. It is kept in memory for a
+while, then given to him in one batch when the room is quiet: he may keep what
+he finds useful in his memory, marked as overheard, and the rest is thrown away.
+What someone else said, or a voice he is not sure of, never changes nor removes
+what he knows; your own voice, when he is sure of it, may correct one of your
+own memories. Without a small
+model at home for that, he keeps nothing of it.
+
+**What is kept.**
+
+| What | Kept? |
+| --- | --- |
+| The sound | Never. It is in memory while it is processed, then dropped: never written, never logged, in the core or in the speech service. |
+| What is said to him | The text, in the conversation of the person who spoke. |
+| What is not said to him | Nothing, except what he chooses to keep in his memory, marked as overheard. |
+| Voice prints | Numbers that describe a voice (never sound), by voice and by microphone, with the usual pitch and speed. Erased with the person, when you ask, or when he judges them useless. A voice nobody knows is forgotten 30 days after it was last heard. |
+| The spoken phrase | In the gatekeeper's vault, encrypted. Nowhere else. |
+
+**Who speaks is his judgement.** For each sentence, the code tells him who
+probably speaks, how sure it is, and from what: the page you signed in to, your
+voice compared with what he learnt of it, your pitch and speed, a recent proof,
+and his own reading of how you speak. A voice alone never proves who you are.
+He learns a voice slowly: only when something else says who speaks (your page,
+a proof), from several sentences alike, on two visits at least an hour apart.
+He follows a voice that changes with time; with a cold, your voice fits less
+and he keeps that apart for a few days. At your own signed-in page, a voice that
+resembles nobody he knows is not made a stranger by the score alone: he judges,
+from what was just said there, whether it is still you (then you are "not sure",
+and that sentence never teaches your voice). At another microphone than the one
+he learnt you on, a heavy cold can still read as a stranger. A new microphone is
+learnt too; a change of language starts the learning of a voice again, so if you
+switch language often he knows you more slowly. If he learnt someone else's voice as yours, tell him
+so in your own words ("that was not me"): he forgets what he learnt since.
+
+- **Sure** (your page, and the voice fits, is not learnt yet, or you type): as
+  usual.
+- **Not sure** (a cold, a new headset, a voice like yours; a sentence too
+  short to tell, for what is sensitive): what is ordinary is done with the rights of the person who probably
+  speaks. What is sensitive, he judges with the clues: he does it, asks a yes,
+  asks a proof, or does not. He checks only when he has a real doubt; if his
+  judging model does not answer, he asks a proof. While he is not sure, he
+  leaves your private memories aside and does not say private things aloud.
+- **Someone else of the household** (Paul at Alex's page): Paul speaks in his
+  own conversation (he finds it on his own page). After a proof given there, and
+  while his voice reads clearly his, he acts with his own rights; otherwise every action
+  of his is judged, and Alex's rules count too: the stricter wins. If the judging
+  model does not answer, what is ordinary is still done (unless the owner set
+  `voice.ordinary_when_unsure` to `judge`, or the sentence was too short to tell
+  the voice: then a proof is asked). There, the assistant
+  uses what was said at that page during this visit; when he is sure it is Paul,
+  he also has the notes and plans waiting for Paul and judges whether to tell
+  them in that room; otherwise he only says that something waits. Never Paul's
+  earlier conversation or private memories.
+- **A voice nobody knows**: no record, so no rights of its own. It gets a short
+  exchange with no tool and nothing of the household, and he leaves a word to the
+  person of the page. He judges whether he goes on answering it; when he stops,
+  it gets silence for the while he chose (an hour at most), with no model asked
+  at all. Each answer is paid on the page person's key, within its limits, and a
+  microphone that keeps talking (60 answers in 10 minutes: a radio, a
+  recording) gets silence until it calms down. The cost of not making you a stranger by the score alone: at a
+  signed-in page, a stranger whose sentence the quick judgement takes for the
+  page's person is "not sure" that person. Ordinary things can then be done with
+  that person's rights, and the stranger hears answers drawn from this visit's
+  conversation there. Anything sensitive still goes to the judge, who sees that
+  the voice weighs against it; nothing of that voice is learnt.
+
+**Ordinary and sensitive.** Ordinary: talking with him; changing your own name,
+or his; his texts and the way he writes; his choice of models; keeping
+something in his memory; seeing who is in the household and its rules; turning
+the microphone off; a tool he made that only acts in the house in a way he
+declared harmless (checked when the tool is built: a light, a speaker's volume,
+never a lock, an alarm, a garage door, heating or an oven), cannot spend, go out
+or do what cannot be undone, and holds no account that writes. Acting in the
+house with a risk (unlocking the door), or not declared harmless (every tool
+made before), is sensitive.
+Sensitive: what costs money, goes out of the house or cannot be undone; rights,
+roles, people and the owner's rules; keys, accounts and secrets; devices;
+searching, changing or forgetting his memory, and what is private; trust;
+notes; answering a request or an agreement; plans and reminders; writing,
+changing or timing a tool; the spoken phrase and forgetting a voice; anything
+the code cannot class. "Sensitive" does not mean refused: he judges.
+
+**Cards, codes, secrets.** A card is said in words, and you answer in words
+("yes", "no", "yes, but at eight"). What is shown only once (an invitation's
+link, a code) stays on the card of the page and is never said aloud. A key or a
+password is never said: the safe form waits on the page.
+
+**The spoken phrase**, a proof you say aloud. Ask him to agree on one (or he
+offers it): you say it, then say it again. Both go to the vault and nowhere
+else: no model, no conversation, no log. He tells you once that the room can
+hear it. Only you can agree, change or remove your phrase; when he is not sure
+the voice is yours, he judges with the clues first and may ask a proof. To agree
+or change it, after a proof by your password or passkey when you have one. When a
+request waits for your proof and he has just spoken to you at that microphone
+(in the last 90 seconds), every sentence heard there, whoever says it, is first
+compared with your phrase by the gatekeeper, before any model; the code checks,
+a model never does. The comparison forgives small hearing errors. A near miss
+is dropped and he tells you it did not work. Said by a voice that does not fit
+yours (someone who overheard it), it is still checked, then he judges with the
+clues and may ask another proof. If you prefer another proof, say so.
+
+Its limits: your phrase said at a microphone where he did not just speak to you,
+or inside a longer sentence, is an ordinary sentence, not protected. Five near
+misses, or fifty sentences compared, in fifteen minutes hold the phrase back for
+a while: during that time the microphone takes nothing while a proof waits there
+(he tells you once); typing and the other proofs still work. Someone in the room
+can do that on purpose.
+
+**The owner's settings**, which the owner gives him in his own words:
+
+- `speech.hear_outside` (`no` by default): what the microphone hears, and the
+  text of what is not said to him, stays at home. `yes` lets it go to a
+  provider outside, on a paid key. A sentence that may be a proof is always
+  heard at home.
+- `voice.ordinary_when_unsure` (`do` by default): what is ordinary is done
+  when he is not sure who speaks; `judge` has it judged too.
+- `voice.after_a_gesture` (`no` by default): without a small model at home to
+  tell whether a sentence is said to him, the voice stays off, and he tells
+  the owner once, offering two choices: let what is heard go outside, or hear
+  only while a button is held. With `yes`, the page shows that button.
+
+**The speech service.** Hearing, speaking and recognising voices are done at
+home by a small service of its own, `speech` in `compose.yaml`, which only the
+gatekeeper reaches. No model is chosen in advance: at its first start it
+downloads open candidate models into its volume, tries them on this machine,
+and lists those that hold; the assistant chooses among them. That takes several
+minutes, while the page says he cannot hear yet (typing works). It needs the
+Internet for that download only, through a network of its own. How many people
+it serves at once is measured on the machine too. A caller that gives up waiting
+leaves its queue. His voice may also come from
+a provider's model, when one of the keys has one; hearing goes there only if
+the owner allows it (`speech.hear_outside`). With an NVIDIA graphics card
+and the NVIDIA Container Toolkit:
+
+```bash
+docker compose -f compose.yaml -f compose.gpu.yaml up -d
+```
+
+A model that does not hold on the card (its libraries missing, short of memory,
+too slow) is tried on the processor too, so the card never leaves a use with
+nothing the processor could do. On a modest processor alone, hearing may be too
+slow to hold (no model lighter than faster-whisper base is listed): then nothing
+hears at home unless the owner lets hearing go outside. Even a fair processor
+sits near that limit: a busy first start can measure hearing as too slow and
+leave him deaf; when the service measures it again and keeps it, the assistant
+notices within about a minute, without a restart. One cold first answer once
+took 16 s on the card (not seen again). The service's settings
+in `.env` (`DOMO_SPEECH_DEVICE`, `DOMO_SPEECH_RESTRICTED_MODELS`,
+`DOMO_SPEECH_AT_ONCE`, `DOMO_SPEECH_VOICE_PROGRAM`) are described in
+`.env.example`.
+
+It can also run outside Docker, on this machine or another one of the house,
+as a command and an address: see `packages/domo-speech/README.md`, which also
+says how to keep its models on another disk.
+
+**A small local model for listening.** Whether a sentence is said to him, and
+what to keep of what he overheard, is judged by an ordinary chat model at home.
+Give him its address in the chat, as you would a key: any server that speaks
+the OpenAI API, with no key, on a machine of the house or on this one
+(`host.docker.internal`). "At home" is what the gatekeeper counts as the house
+or this machine; the speech service of the stack counts as home by its own
+setting (`DOMO_SPEECH_URL`).
+
+**The models and their licences** (candidates: each machine keeps those that
+hold):
+
+| Model | Does | Licence of the weights | How it runs |
+| --- | --- | --- | --- |
+| faster-whisper base, small, large-v3-turbo | hear | MIT | in the service (large-v3-turbo: graphics card) |
+| supertonic-3 | say (the plain processor's voice) | BigScience Open RAIL-M: free, with conditions of use | in the service |
+| Piper, a French and an English voice | say | CC-BY-4.0 (the program: GPL-3.0 or later) | a separate program you install yourself |
+| WeSpeaker ResNet34, CAM++, ResNet221 | recognise voices | CC-BY-4.0 | in the service (ResNet221: graphics card) |
+| Silero VAD | tell speech from silence | MIT | in the page |
+
+The voice that runs on a plain processor, supertonic-3, is not under an
+open-source licence: its use is free but restricted (no impersonation without
+consent, no medical advice, saying that content is machine-made...), and its
+authors archived it. It is the starting voice until a free one replaces it.
+Read its conditions in `packages/domo-speech/README.md`; to hide every model
+with such conditions, set `DOMO_SPEECH_RESTRICTED_MODELS=no`. A GPL program is
+never part of the assistant: it runs apart.
 
 ## Changing the model's key from the chat
 
@@ -1431,7 +1648,10 @@ Everything the assistant keeps is in Docker volumes. Back up **all of them**:
 | `caddy-config` | The web server's own settings. |
 
 The `sandbox-socket` volume holds only the socket between the core and the
-sandbox: there is nothing in it to back up.
+sandbox: there is nothing in it to back up. Neither does `speech-models`: it
+holds the speech service's downloaded models and what it measured, fetched and
+measured again when it is empty. (The voice prints are in the database, the
+spoken phrases in the vault.)
 
 Keep the backups private, off the server: they contain the master key and the
 authority's key. Keep a copy of your `.env` file (your settings) with them. With
@@ -1579,6 +1799,16 @@ docker image rm alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda91
   the size of the base. And a tool that shares the common space can make the
   others' writes there fail (a default, a check or a row policy it plants). A tool reads none
   of the core's own database.
+- **What the microphone hears.** Only the moments of speech leave the page, over
+  its own encrypted connection, and the sound is never written or logged, by
+  the core or by the speech service. What is heard stays at home unless the
+  owner allows otherwise. The spoken phrase crosses the core in memory only, on
+  its way to the vault, like a typed password; it never reaches a model, a
+  conversation, the audit log or a log. Sound answers pass through the
+  gatekeeper unchanged but watched: a secret of 8 bytes or more found whole in
+  them cuts the answer (a shorter one is not looked for: it would turn up by
+  chance). The speech service has no password: only the gatekeeper reaches it.
+  See also [SECURITY.md](SECURITY.md).
 
 ## Repository layout
 
@@ -1588,6 +1818,7 @@ docker image rm alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda91
 | `packages/domo-gatekeeper` | Encrypted secret vault and provider relay |
 | `packages/domo-core` | Web interface, chat and the assistant's actions (the household, notes, requests and their confirmations, the owner's rules and rights, the tools he makes and their checks), accounts and passkeys, audit trail |
 | `packages/domo-sandbox` | The launcher of the sandbox: runs a tool the assistant made in a process of its own, with its limits, and its analyser |
+| `packages/domo-speech` | The speech service at home: sound into text, text into sound, sound into a voice print; it keeps nothing, and measures its models on its machine |
 | `deploy/` | Configuration of the web server in front of the assistant |
 | `compose.yaml` | The installation (`compose.test.yaml` adds a fake model for the tests) |
 | `scripts/` | Repository hygiene checks (personal data, dependency licenses) |

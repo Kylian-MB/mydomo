@@ -13,7 +13,7 @@ from sqlalchemy.types import TypeDecorator
 from domo_core.db import Base
 
 Kind = Literal["fact", "preference", "moment", "lesson", "self"]
-Origin = Literal["own_words", "others_words", "deduced", "told_by_domo", "external"]
+Origin = Literal["own_words", "others_words", "deduced", "told_by_domo", "external", "unsure_voice"]
 
 # The size of a memory's vector: the local model's (``memory.embedder``).
 EMBEDDING_DIMENSIONS: Final = 384
@@ -39,12 +39,14 @@ class Memory(Base):
     word or two (a name, "me", "the boiler"). ``kept_private`` is Domo's own mark, "I keep it
     to myself": such a memory is never put under his eyes in another person's turn of itself.
     ``core`` memories are always present in the turn. ``origin`` is fixed by the code from the turn
-    that made the memory, never by the model; ``action_type`` names the action Domo told the
-    person about, for ``told_by_domo`` only. ``by_domo`` says the assistant himself wrote it
-    (``said_by_id`` may then be empty). A lesson (``kind``) may say whom it is for
-    (``for_everyone``) and what it is about (``lesson_action_type``, ``lesson_subject_key``); what
-    he told a person keeps the answer they gave (``told_answer``) and whether they agreed to be
-    asked again (``told_keep_asking``). ``words_checked`` says the code checked, word for word,
+    that made the memory, never by the model (``unsure_voice``: kept from a sentence of a voice the
+    house was not sure was this person's, probably theirs: never their own words);
+    ``action_type`` names the action Domo told the person about, for ``told_by_domo`` only.
+    ``by_domo`` says the assistant himself wrote it (``said_by_id`` may then be empty).
+    A lesson (``kind``) may say whom it is for (``for_everyone``) and what it is about
+    (``lesson_action_type``, ``lesson_subject_key``); what he told a person keeps the answer they
+    gave (``told_answer``) and whether they agreed to be asked again
+    (``told_keep_asking``). ``words_checked`` says the code checked, word for word,
     that its content is itself a passage of the person's own message (rulings R73, R79):
     only such a memory may count as an adult's agreement for a child (``may_agree``, ruling R73).
     ``served_at`` is the last time it was put under his
@@ -65,7 +67,8 @@ class Memory(Base):
             "kind IN ('fact', 'preference', 'moment', 'lesson', 'self')", name="kind_values"
         ),
         CheckConstraint(
-            "origin IN ('own_words', 'others_words', 'deduced', 'told_by_domo', 'external')",
+            "origin IN ('own_words', 'others_words', 'deduced', 'told_by_domo', 'external', "
+            "'unsure_voice')",
             name="origin_values",
         ),
         CheckConstraint(

@@ -48,10 +48,11 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domo_core.accounts.models import Person
 from domo_core.people.directives import refusal_for
 from domo_core.policy.actions import DescribedAction
-from domo_core.policy.barrier import Decision, Refuse, decide, stricter
-from domo_core.policy.catalog import PolicyTables
+from domo_core.policy.barrier import Decision, Refuse, decide, identity_judged, stricter
+from domo_core.policy.catalog import PolicyTables, Risks
 from domo_core.policy.facts import decision_facts
 from domo_core.policy.models import PolicyRight
 from domo_core.policy.rights import RightsTable, load_rights
@@ -117,6 +118,7 @@ async def decide_now(
     unrecorded: Sequence[str] = (),
     spent_leaving_out: UUID | None = None,
     directives_read: bool = False,
+    risks: Risks | None = None,
 ) -> Decision:
     """What may happen to ``action`` when ``actor`` asks for it now: the rights in force, read on
     ``session`` (or ``rights``, when the caller read them: ``decide_in_chain``), on top of the
@@ -129,12 +131,21 @@ async def decide_now(
     are the types of the actions the person did a moment ago that no table holds yet, which the
     history counts all the same (``policy.facts``: the steps of a chain that runs at once).
     ``spent_leaving_out`` is a declaration of spending the facts' ``spent`` leaves out (a
-    program's relaunch whose begin it is).
+    program's relaunch whose begin it is). ``risks`` are what the operations of a launch declare,
+    when the caller knows them (``barrier.may_act_weakly``). When the code is not sure of who asks
+    (``Actor.trusted``), the owner's word on ordinary things is read too
+    (``PolicySettings.ordinary_when_unsure``).
 
     An action that is Domo's own act too, asked by a person (``DescribedAction.also_domo``,
     ruling R29), is decided for the person, exactly as any action of theirs, and for Domo, and
     the stricter stands (``barrier.stricter``): what the person may not do never goes out in his
-    name, and what the owner took from him neither."""
+    name, and what the owner took from him neither.
+
+    Someone heard at a page signed in as another person (``Actor.page_person_id``), when the code
+    is not sure of them, is decided as themselves and as that person, the stricter standing,
+    always with the doubt on who asks (``judge_identity``): the rules the owner wrote for the page's
+    person are not escaped by sounding like someone else. One it is sure of (a proof given there)
+    acts with their own rights."""
     if action.also_domo and actor.subject == "person":
         once = replace(action, also_domo=False)
         decided = [
@@ -148,6 +159,7 @@ async def decide_now(
                 rights=rights,
                 unrecorded=unrecorded,
                 spent_leaving_out=spent_leaving_out,
+                risks=risks,
             )
             for who in (actor, domo_actor())
         ]
@@ -158,10 +170,50 @@ async def decide_now(
     refused = None if directives_read else await refusal_for(session, actor, action, now)
     if refused is not None:
         return refused
+    if (
+        actor.page_person_id is not None
+        and actor.page_person_id != actor.person_id
+        and not actor.trusted
+    ):
+        # Heard at a page signed in as someone else, not surely: that person's rules count too,
+        # and the stricter of the two stands (review of Task 24); a refusal is the asker's to be
+        # told. A voice the code is sure of acts with its own rights (final fix wave, case 6).
+        page = await session.get(Person, actor.page_person_id)
+        if page is not None:
+            # The asker's side keeps what their directives were read with (``directives_read``);
+            # the page's person's are read for them.
+            mine, theirs = [
+                await decide_now(
+                    session,
+                    who,
+                    action,
+                    policy,
+                    now,
+                    not_counting=not_counting,
+                    rights=rights,
+                    unrecorded=unrecorded,
+                    spent_leaving_out=spent_leaving_out,
+                    risks=risks,
+                    directives_read=read,
+                )
+                for who, read in (
+                    (replace(actor, page_person_id=None), directives_read),
+                    (
+                        replace(
+                            actor, person_id=page.id, role=as_role(page.role), page_person_id=None
+                        ),
+                        False,
+                    ),
+                )
+            ]
+            both = stricter(mine, theirs)
+            judged = replace(both, judge_identity=True) if not isinstance(both, Refuse) else both
+            return replace(judged, side=None) if isinstance(judged, Refuse) else judged
     table = await load_rights(session) if rights is None else rights
     facts: dict[str, object] | None = None
+    settings = None if actor.trusted else await load_policy_settings(session)
     if table.resolve(actor, action.action_type, policy).limit is not None:
-        settings = await load_policy_settings(session)
+        settings = settings or await load_policy_settings(session)
         facts = await decision_facts(
             session,
             actor,
@@ -172,7 +224,15 @@ async def decide_now(
             unrecorded=unrecorded,
             spent_leaving_out=spent_leaving_out,
         )
-    decision = decide(actor, action, policy, table, facts)
+    decision = decide(
+        actor,
+        action,
+        policy,
+        table,
+        facts,
+        risks=risks,
+        ordinary_when_unsure="do" if settings is None else settings.ordinary_when_unsure,
+    )
     if isinstance(decision, Refuse) and decision.reason == "limit_error":
         logger.error(
             "A limit on %s could not be checked for %s: the action is refused",
@@ -180,6 +240,24 @@ async def decide_now(
             "Domo" if actor.subject == "domo" else f"a {actor.role}",
         )
     return decision
+
+
+async def doubted(
+    session: AsyncSession,
+    person: Actor,
+    action: DescribedAction,
+    policy: PolicyTables,
+    *,
+    risks: Risks | None = None,
+) -> bool:
+    """Whether the yes-judge must weigh who asks ``action`` when ``person`` asked it but it is
+    decided as someone else's act (the assistant's own, ``ActsAsDomo``): the code is not sure of
+    them and it is sensitive, or ordinary under the owner's ``"judge"``
+    (``barrier.identity_judged``). Reads the owner's settings only when it is not sure."""
+    if person.trusted:
+        return False
+    settings = await load_policy_settings(session)
+    return identity_judged(person, action.action_type, policy, risks, settings.ordinary_when_unsure)
 
 
 def judged_actor(actor_now: Actor, basis: ChainBasis, done: Sequence[DescribedAction]) -> Actor:

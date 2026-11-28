@@ -20,12 +20,13 @@ from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.audit.models import AuditEntry
 from domo_core.conversation.execution import execute_allowed
+from domo_core.conversation.speaker import Clue, Speaker
 from domo_core.db import SessionFactory
 from domo_core.llm.choices import HOUSEHOLD_SCOPE, Choices, save_choices
 from domo_core.llm.models import ModelLesson
 from domo_core.llm.types import ToolCall
 from domo_core.memory.models import Memory
-from domo_core.memory.service import keep
+from domo_core.memory.service import SOURCE_UNSURE_VOICE, keep, source_of
 from domo_core.policy.catalog import DEFAULT_POLICY, is_silent, needs_the_judge
 from domo_core.tools.context import InvalidArguments, NamesPeople, ToolContext, ToolOutcome
 from domo_core.tools.registry import TOOLS
@@ -675,6 +676,25 @@ async def test_a_memory_rewritten_by_the_review_gives_no_confirmed_fact(
     assert await facts(session_factory) == []
 
 
+async def test_a_memory_of_a_voice_not_sure_to_be_theirs_gives_no_confirmed_fact(
+    session_factory: SessionFactory,
+):
+    # The owner, 2026-11-27 ("Domo juge quoi garder"): kept from a voice the house was not sure
+    # was Sam's, it is never Sam's own word, so it says nothing of what Sam's word is worth.
+    alex, sam, _ = await household(session_factory)
+    note = {"person": "Sam", "outcome": "lied", "how": "confirmed", "about": "Sam lied."}
+    memory = await said(session_factory, sam, alex, "Alex hates spinach.")
+    async with session_factory() as session:
+        kept = await session.get(Memory, memory)
+        assert kept is not None
+        kept.origin = "unsure_voice"
+        await session.commit()
+    alexs = context(alex, session_factory)
+    refused = await refusal("trust_note", alexs, **note, memory=str(memory))
+    assert refused.code == "not_possible"
+    assert await facts(session_factory) == []
+
+
 async def test_a_denial_counts_for_hearsay_kept_in_the_words_of_whoever_said_it(
     session_factory: SessionFactory,
 ):
@@ -916,6 +936,8 @@ async def test_a_reported_fact_outside_an_answer_rests_on_a_members_own_words(
     refused = await refusal("trust_note", started, **note)
     assert "turn where they say it" in (refused.detail or "")
     async with session_factory() as session:
+        # A voice not sure to be Sam's is never Sam's word either (the owner, 2026-11-27): it
+        # names no reporter (test_a_report_from_a_voice_not_sure_to_be_theirs_names_no_reporter).
         for origin in ("deduced", "others_words", "external"):
             memory = await keep(
                 session,
@@ -953,6 +975,46 @@ async def test_a_reported_fact_outside_an_answer_rests_on_a_members_own_words(
     # A seen fact takes no memory.
     seen = {**note, "how": "seen"}
     assert (await refusal("trust_note", started, **seen, memory=str(sams))).code == "invalid"
+
+
+async def test_a_report_from_a_voice_not_sure_to_be_theirs_names_no_reporter(
+    session_factory: SessionFactory,
+):
+    # A turn that answers a sentence heard from a voice the code is not sure is Dana's: what is
+    # reported there is never Dana's own report; it keeps that source as a memory of it does.
+    alex, _, dana = await household(session_factory)
+    voice = Speaker(
+        dana.id, "voice", clues=(Clue("voice", "for", "weak", "code", NOW, degree=0.45),)
+    )
+    unsure = replace(context(dana, session_factory), speaker=voice)
+    assert unsure.said_unsure
+    note = {"person": "Alex", "outcome": "lied", "how": "reported", "about": "Said so."}
+    refused = await refusal("trust_note", unsure, **note)
+    assert refused.code == "not_possible" and "not sure" in (refused.detail or "")
+    assert await facts(session_factory) == []
+    async with session_factory() as session:
+        memory = await keep(
+            session,
+            said_by=dana.id,
+            subject="Alex",
+            content="Alex lied about the car.",
+            kind="preference",
+            origin="unsure_voice",
+            kept_private=False,
+            core=False,
+            now=NOW,
+            about_id=alex.id,
+        )
+        await session.commit()
+    await run("trust_note", unsure, **note, memory=str(memory.id))
+    (fact,) = await facts(session_factory)
+    # No reporter: it never counts as Dana's report; its memory carries the source.
+    assert (fact.reported_by_id, fact.memory_id) == (None, memory.id)
+    assert source_of(memory) == SOURCE_UNSURE_VOICE
+    # Counted once.
+    assert (
+        await refusal("trust_note", unsure, **note, memory=str(memory.id))
+    ).code == "not_possible"
 
 
 async def test_a_memory_kept_after_a_made_tool_is_not_own_words_and_no_fact_rests_on_it(

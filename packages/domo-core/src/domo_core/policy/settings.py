@@ -32,6 +32,15 @@ Whether an action is confirmed, and how, is no setting: the yes-judge decides it
   (``domo_common.text_rules.language_tag``: ``fr``, ``pt-BR``), never a name: the writer and
   the gatekeeper read it. Without it, ``en``. The owner's own language moves it
   (``tools.text_tools``);
+* ``speech.hear_outside``: ``"yes"`` lets what is heard go to a model outside the house (a paid
+  key); ``"no"``, by default, keeps it at home (``llm.speech.routes``);
+* ``voice.ordinary_when_unsure``: what is done of an ordinary thing asked by someone the code is
+  not sure of (``policy.barrier.decide``): ``"do"``, by default, does it with the rights of the
+  person who probably speaks; ``"judge"`` has the yes-judge weigh it too, as a sensitive thing;
+* ``voice.after_a_gesture``: ``"yes"`` has the voice hear only what is said with a gesture on the
+  page (held to talk), when no model may weigh whether a sentence is said to Domo
+  (``channels.voice.session``); ``"no"``, by default, keeps the voice off until such a model is
+  there or the owner chooses;
 * ``tools.base_mb``: how big the tools' own database may grow (``toolsdb``), a whole number of MB
   from 16 to 1048576. Without it, 1024 (1 GB): beyond, a program's write is refused;
 * ``people.adult_age``: the age from which the assistant may lift the child mark of a record on a
@@ -95,6 +104,12 @@ ADULT_AGE_KEY: Final = "people.adult_age"
 TELL_ACCESS_KEY: Final = "people.tell_access"
 # The owner's rule that guests come with their own key: his alone (``policy_update``).
 GUESTS_OWN_KEY: Final = "keys.guests_bring_own"
+HEAR_OUTSIDE_KEY: Final = "speech.hear_outside"
+VOICE_UNSURE_KEY: Final = "voice.ordinary_when_unsure"
+VOICE_GESTURE_KEY: Final = "voice.after_a_gesture"
+# What is done of an ordinary thing asked by someone the code is not sure of.
+OrdinaryWhenUnsure = Literal["do", "judge"]
+ORDINARY_WHEN_UNSURE: Final[tuple[OrdinaryWhenUnsure, ...]] = ("do", "judge")
 # The rules of the house on the keys: ``keys_house``'s to write.
 KEYS_SETTINGS: Final = frozenset({INVITEE_DEFAULT_KEY, INVITEE_GENERAL_KEY, UPKEEP_KEY})
 # The house's name for the assistant, and the one it had before: the owner's alone to change.
@@ -146,6 +161,9 @@ def _kind_of(
     "adult_age",
     "tell_access",
     "guests_bring_own",
+    "hear_outside",
+    "voice_unsure",
+    "voice_gesture",
     "domo_name",
 ]:
     """What the key holds; ``InvalidSetting`` if it is not a setting (the styles of before
@@ -158,6 +176,12 @@ def _kind_of(
         return "tell_access"
     if key == GUESTS_OWN_KEY:
         return "guests_bring_own"
+    if key == HEAR_OUTSIDE_KEY:
+        return "hear_outside"
+    if key == VOICE_UNSURE_KEY:
+        return "voice_unsure"
+    if key == VOICE_GESTURE_KEY:
+        return "voice_gesture"
     if key == LIFETIME_KEY:
         return "lifetime"
     if key == TIME_ZONE_KEY:
@@ -210,6 +234,20 @@ def _check(key: str, value: object) -> None:
     if kind == "upkeep":
         if not isinstance(value, bool):
             raise InvalidSetting("whether the general key serves the upkeep is true or false")
+        return
+    if kind == "voice_gesture":
+        if value not in ("no", "yes"):
+            raise InvalidSetting('whether the voice hears only after a gesture is "no" or "yes"')
+        return
+    if kind == "hear_outside":
+        if value not in ("no", "yes"):
+            raise InvalidSetting('whether what is heard may go outside the house is "no" or "yes"')
+        return
+    if kind == "voice_unsure":
+        if value not in ORDINARY_WHEN_UNSURE:
+            raise InvalidSetting(
+                'what is done of an ordinary thing when unsure of who asks is "do" or "judge"'
+            )
         return
     if kind == "tools_base":
         if not _is_whole_number_in(value, _TOOLS_BASE_MB_RANGE):
@@ -381,6 +419,23 @@ class PolicySettings:
         nobody said)."""
         return self._chosen(GUESTS_OWN_KEY) is True
 
+    @property
+    def hear_outside(self) -> bool:
+        """Whether what is heard may go to a model outside the house (no, unless said)."""
+        return self._chosen(HEAR_OUTSIDE_KEY) == "yes"
+
+    @property
+    def ordinary_when_unsure(self) -> OrdinaryWhenUnsure:
+        """What is done of an ordinary thing asked by someone the code is not sure of: ``do``
+        (unless said), or ``judge``."""
+        return "judge" if self._chosen(VOICE_UNSURE_KEY) == "judge" else "do"
+
+    @property
+    def after_a_gesture(self) -> bool:
+        """Whether the voice hears only what is said with a gesture, when no model may weigh
+        whether a sentence is said to Domo (no, unless said)."""
+        return self._chosen(VOICE_GESTURE_KEY) == "yes"
+
     def rows(self) -> list[dict[str, SettingValue]]:
         """What applies now, one row ``{"key", "value", "source"}`` per setting (the lifetime of
         a request, then the writer's time), then the household's time zone and the rules of the
@@ -405,6 +460,9 @@ class PolicySettings:
             ADULT_AGE_KEY,
             TELL_ACCESS_KEY,
             GUESTS_OWN_KEY,
+            HEAR_OUTSIDE_KEY,
+            VOICE_UNSURE_KEY,
+            VOICE_GESTURE_KEY,
             HOUSE_DOMO_NAME,
         ):
             chosen = self._chosen(key)

@@ -124,7 +124,7 @@ from domo_core.accounts.models import Person
 from domo_core.audit.log import append_audit
 from domo_core.db import SessionFactory
 from domo_core.household.service import resolve_person
-from domo_core.llm.router import usable_keys
+from domo_core.llm.router import text_keys
 from domo_core.llm.types import JsonObject, ToolDefinition
 from domo_core.naming import name_shown
 from domo_core.notes.models import Note
@@ -172,6 +172,18 @@ def _left_by(subject: Actor) -> ColumnElement[bool]:
     if subject.subject == "domo":
         return Note.by_domo.is_(True)
     return Note.author_id == subject.person_id
+
+
+async def from_unknown_among(session: AsyncSession, notes: Sequence[NoteToTell]) -> bool:
+    """Whether one of ``notes`` (as ``notes_to_tell`` gives them) was born of words nobody of the
+    house is known for (``Note.from_unknown``). Reads only."""
+    if not notes:
+        return False
+    ids = [uuid.UUID(note.id) for note in notes]
+    found = await session.scalar(
+        select(Note.id).where(Note.id.in_(ids), Note.from_unknown.is_(True)).limit(1)
+    )
+    return found is not None
 
 
 async def notes_to_tell(session: AsyncSession, person_id: uuid.UUID) -> tuple[NoteToTell, ...]:
@@ -485,12 +497,27 @@ class NoteLeave:
         when it is planned, and again when the step runs, as a direct call is (ruling R34)."""
         return ctx.on_his_own or self.as_domo(arguments)
 
+    def from_unknown(self, ctx: ToolContext) -> bool:
+        """Whether a note of his is born of words nobody of the house is known for
+        (``Note.from_unknown``): his turn read a program's, a site's or a tool's text, or such a
+        note. The code that leaves a word of a voice nobody knows says so here
+        (``channels.voice.stranger``)."""
+        return ctx.tool_woke or ctx.outside.raised or ctx.told_unknown
+
+    async def recipient(
+        self, session: AsyncSession, name: str, *, now: datetime, ctx: ToolContext
+    ) -> Person:
+        """The person ``name`` means (``resolve_person``, with the nicknames of the one who
+        speaks). The code that leaves a note for someone it already knows by their id says so
+        here (``channels.voice.stranger``)."""
+        return await resolve_person(session, name, now=now, speaker=ctx.person.id)
+
     async def describe(
         self, arguments: JsonObject, actor: Actor, ctx: ToolContext
     ) -> DescribedAction:
         name, text, _ = _note_from(arguments)
         async with ctx.session_factory() as session:
-            recipient = await resolve_person(session, name, now=ctx.clock(), speaker=ctx.person.id)
+            recipient = await self.recipient(session, name, now=ctx.clock(), ctx=ctx)
             await _must_be_able_to_answer(session, recipient, ctx.clock())
         facts = self._facts(recipient, text)
         # The words are an argument of the call: they are not in the action, which is audited as
@@ -516,7 +543,7 @@ class NoteLeave:
         exact = None if his else exact_text_in(ctx.said_messages, given)
         now = ctx.clock()
         async with ctx.session_factory() as session:
-            recipient = await resolve_person(session, name, now=now, speaker=ctx.person.id)
+            recipient = await self.recipient(session, name, now=now, ctx=ctx)
             await _must_be_able_to_answer(session, recipient, now)
             described = ctx.described_action
             if described is not None and described.target != f"person:{recipient.id}":
@@ -529,6 +556,7 @@ class NoteLeave:
                 Note(
                     author_id=None if his else ctx.person.id,
                     by_domo=his,
+                    from_unknown=his and self.from_unknown(ctx),
                     recipient_id=recipient.id,
                     text=text,
                     exact_text=exact,
@@ -633,7 +661,7 @@ class NoteListSent:
             keyless = {
                 person_id
                 for person_id, person in waiting.items()
-                if not await usable_keys(session, person)
+                if not await text_keys(session, person)
             }
             notes: list[JsonObject] = [
                 {

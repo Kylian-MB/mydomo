@@ -87,6 +87,7 @@ from domo_core.llm.provider_keys import (
     provider_kind,
 )
 from domo_core.llm.provider_kinds import PROVIDER_KINDS, ProviderKind
+from domo_core.llm.speech.home_key import HOME_SPEECH_ID
 from domo_core.llm.spending import (
     CURRENCIES,
     LIMIT_ROLES,
@@ -428,11 +429,13 @@ def _key_facts(provider: Provider, giver: Person) -> dict[str, FactValue]:
 
 
 def _working_keys_but(provider: Provider) -> Select[Provider]:
-    """The other keys, that list a model, oldest first."""
+    """The other keys, that list a model, oldest first. The house's speech service
+    (``HOME_SPEECH_ID``) is never one: it hears and says, nobody could think with it."""
     return (
         select(Provider)
         .where(
             Provider.id != provider.id,
+            Provider.id != HOME_SPEECH_ID,
             exists().where(ProviderModel.provider_id == Provider.id),
         )
         .order_by(Provider.created_at, Provider.id)

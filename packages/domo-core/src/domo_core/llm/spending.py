@@ -66,9 +66,10 @@ from sqlalchemy.orm import aliased
 from domo_core.accounts.models import Person
 from domo_core.audit.log import append_audit
 from domo_core.llm.catalog import Catalog, Prices
-from domo_core.llm.costs import cost_usd, estimate_tokens
+from domo_core.llm.costs import cost_usd, estimate_tokens, speech_cost_usd
 from domo_core.llm.models import Provider
 from domo_core.llm.router import Route, key_label
+from domo_core.llm.speech.catalog import SpeechPrices
 from domo_core.llm.spending_models import ExchangeRate, ModelCall, SpendingLimit
 from domo_core.llm.types import ChatUsage, ModelCallError
 
@@ -403,6 +404,39 @@ async def settle(
         .execution_options(synchronize_session=False)
     )
     return cost.usd
+
+
+async def settle_speech(
+    session: AsyncSession,
+    call_id: UUID,
+    *,
+    heard_seconds: float,
+    said_chars: int,
+    prices: SpeechPrices,
+    failed_before_any_answer: bool,
+    now: datetime,
+) -> Decimal:
+    """Replace the reservation ``call_id`` of a call of sound with what it cost, at ``now``, and
+    count what it heard and said (``prices`` are nothing at home: the call costs nothing, and is
+    counted all the same); returns the cost. A call that failed before any answer costs nothing
+    and counts nothing. The caller commits."""
+    if failed_before_any_answer:
+        heard_seconds, said_chars = 0.0, 0
+    cost = _rounded_up(speech_cost_usd(prices, heard_seconds=heard_seconds, said_chars=said_chars))
+    await session.execute(
+        update(ModelCall)
+        .where(ModelCall.id == call_id)
+        .values(
+            status="settled",
+            cost_usd=cost,
+            heard_seconds=Decimal(str(heard_seconds)).quantize(Decimal("0.01")),
+            said_chars=said_chars,
+            estimated=False,
+            settled_at=now,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    return cost
 
 
 async def settle_stale(session: AsyncSession, now: datetime) -> int:

@@ -244,6 +244,28 @@ async def test_a_call_is_run_in_the_sandbox_and_shown_nowhere(
         assert words not in audited
 
 
+async def test_the_judge_is_told_which_tool_gave_the_text_in_the_turn(
+    adult_chat: ChatPilot, chat_server: ChatServer, session_factory
+):
+    # Alex has a tool of his split a bill, then says "stop listening": the judge weighs whose wish
+    # it is, told which tool's text is in the turn and what it is built to reach (none here).
+    chat_server.sandbox = FakeSandbox(answers(done(EACH)))
+    await add_tool(session_factory, "split")
+    model = adult_chat.use_model(
+        FakeChatModel(
+            tool_script=[
+                ToolCall("c1", "t_split", json.dumps(LUNCH)),
+                ToolCall("c2", "voice_stop_listening", "{}"),
+                "Done.",
+            ]
+        )
+    )
+    await adult_chat.say("split the lunch, then stop listening")
+    [judged, *_] = model.judge_calls()
+    case = json.dumps([str(message) for message in judged.messages])
+    assert "split" in case and "built to reach no address" in case
+
+
 async def test_a_right_that_denies_the_tool_refuses_it_and_runs_nothing(
     adult_chat: ChatPilot, chat_server: ChatServer, session_factory, grant
 ):

@@ -33,7 +33,7 @@ from domo_core.policy.facts import DOMO_NAME, person_history
 from domo_core.policy.rights import NO_RIGHTS
 from domo_core.policy.roles import domo_actor
 from domo_core.prompts import NoteToTell
-from domo_core.tools.context import InvalidArguments, judged_actor_of
+from domo_core.tools.context import InvalidArguments, OutsideText, judged_actor_of
 from domo_core.tools.notes import notes_to_tell
 from domo_core.tools.registry import TOOLS
 from fakes import FakeChatModel, FakeSandbox, is_judge_call
@@ -651,3 +651,40 @@ async def test_his_note_that_went_through_a_yes_counts_in_his_daily_limit_once_l
     else:
         # A note refused at the yes was never his: the next one may still be.
         assert second.actions[0]["status"] == "waiting"
+
+
+# --- a note of his keeps where its words came from (final fix wave B2) -------------------------
+
+
+async def test_his_note_after_a_programs_text_is_from_an_unknown_source(
+    add_member, session_factory, live_clock, stored_notes
+):
+    owner = await add_member("Alex", "owner")
+    await add_member("Dana", "adult")
+    plain = alone(call_context(owner, session_factory, live_clock))
+    await leave(plain, "Dana", "First")
+    await leave(replace(plain, tool_woke=True), "Dana", "Second")
+    await leave(replace(plain, outside=OutsideText(raised=True)), "Dana", "Third")
+    marks = {note.text: note.from_unknown for note in await stored_notes()}
+    assert marks == {"First": False, "Second": True, "Third": True}
+
+
+async def test_a_persons_note_never_is_from_an_unknown_source(
+    add_member, session_factory, live_clock, stored_notes
+):
+    dana = await add_member("Dana", "adult")
+    await add_member("Sam", "child")
+    await leave(replace(call_context(dana, session_factory, live_clock), tool_woke=True), "Sam")
+    [note] = await stored_notes()
+    assert (note.by_domo, note.from_unknown) == (False, False)
+
+
+async def test_a_person_cannot_be_written_as_author_of_an_unknown_source(
+    add_member, session_factory
+):
+    dana = await add_member("Dana", "adult")
+    sam = await add_member("Sam", "child")
+    async with session_factory() as writer:
+        writer.add(Note(author_id=dana.id, recipient_id=sam.id, text="x", from_unknown=True))
+        with pytest.raises(IntegrityError):
+            await writer.commit()

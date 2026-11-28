@@ -529,18 +529,18 @@ async def test_a_reader_nothing_can_write_for_is_looked_at_again_only_an_hour_la
     # read their texts and look for their keys each time.
     paul = await keyless_paul(chat_server, add_member, owner_member, session_factory)
     looked: list[str] = []
-    real_written, real_keys = scheduler.written, scheduler.usable_keys
+    real_written, real_keys = scheduler.written, scheduler.text_keys
 
     async def written(session: Any, readers: Any) -> Any:
         looked.append("texts")
         return await real_written(session, readers)
 
-    async def usable_keys(session: Any, person: Person) -> Any:
+    async def text_keys(session: Any, person: Person) -> Any:
         looked.append("keys")
         return await real_keys(session, person)
 
     monkeypatch.setattr(scheduler, "written", written)
-    monkeypatch.setattr(scheduler, "usable_keys", usable_keys)
+    monkeypatch.setattr(scheduler, "text_keys", text_keys)
     async with chat_server.browser(Member(paul, "paul")) as browser:
         await browser.get("/account")
         await chat_server.texts_idle()

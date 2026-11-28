@@ -13,10 +13,10 @@ goes through it).
 
 The rules, in this order (spec 4.4, 5.8):
 
-1. an identity that cannot be trusted is refused (``untrusted_identity``), except for the types of
-   ``UNTRUSTED_MAY`` that a guest may do: those do not depend on who the person is. A right cannot
-   make such an identity more than that: whoever it claims to be, its personal rights unlock
-   nothing, and nobody's agreement makes it more (an agreement the rights ask for refuses it);
+1. nobody known (``Actor.standing`` ``unknown``: no record, so no rights) is refused
+   (``untrusted_identity``), whatever the action: they may be answered, never acted for (at a
+   page, a voice nobody knows gets a short exchange with no tool, ``channels.voice.stranger``,
+   which never reaches the barrier);
 2. changing the rules, handing the owner's role over and the list of successors
    (``catalog.OWNER_ONLY_ACTIONS``) are the owner's: asked by anyone else they are refused
    (``not_allowed``), whatever the tables and the rights say. This is the foundation: no right
@@ -46,13 +46,31 @@ The rules, in this order (spec 4.4, 5.8):
    An adult's agreement for a child that no right asks for (the catalog's default) is left to the
    yes-judge first too (``judge_first``): an adult's yes already heard for this very request lets
    it through; otherwise the adult is asked. An approver a right names is the owner's word: never
-   left to the judge.
+   left to the judge;
+6. who speaks, when the code is not sure of them (``Actor.standing`` ``unsure``: a probable
+   person nothing sure confirms; or a voice too short to tell, ``Actor.voice_too_short``, for what
+   is sensitive only): never refused out of hand. They act with the rights of the person who
+   probably speaks, all of the above applied as for anyone (a refusal stays a refusal). What is
+   ordinary (``may_act_weakly``, with the risks a launch's operations declare) is decided exactly
+   as for someone the code is sure of, unless the owner said to judge it too
+   (``ordinary_when_unsure`` ``"judge"``, ``settings.VOICE_UNSURE_KEY``); what is sensitive is
+   marked ``judge_identity``: the caller has the yes-judge weigh it with the clues of who speaks
+   (do it, ask a yes, ask a proof, or not), and a judge that does not answer asks a proof
+   (``conversation.execution``). Someone heard at a page signed in as another person
+   (``Actor.page_person_id``) has nothing ordinary: every action is marked ``judge_identity``,
+   and ``policy.decision.decide_now`` also decides it for the page's person, the stricter of the
+   two winning. A launch of a tool Domo made is ordinary under doubt only when its operations
+   declare acting physically alone, each such act declared harmless (a light, never a lock), and
+   the tool's own means cannot do more
+   (``madetools.launch.reach_of``). What the rights or the owner's rules ask is never lowered.
 
 Acknowledged divergences from spec section 10 (decided for 1b):
 
 * spec 10.3 escalates an action of an untrusted identity to a confirmation by the owner on a
-  trusted channel. 1b has no untrusted channel (the web page is the only one, and it logs people
-  in), so such an actor is refused. The escalation comes with the channels;
+  trusted channel. Since the voice (its spec 6.5), someone the code is not sure of is judged
+  instead (rule 6), and nobody known may not act (rule 1); nobody's agreement is asked for them,
+  though the voice's design lets Domo ask a trusted person: what a voice nobody knows asked
+  reaches the page's person only as a word Domo leaves them (``channels.voice.stranger``);
 * spec 10.4 asks for at least a confirmation for an action nobody has classified. 1b has only
   the core's own tools, all in the catalog, so an unknown action type is refused. Connector
   actions (1e) follow the spec;
@@ -82,7 +100,6 @@ from domo_core.policy.catalog import (
     an_adult_agrees_for,
     is_made,
     rights_type,
-    risks_of,
 )
 from domo_core.policy.limits import (
     InvalidLimit,
@@ -93,6 +110,7 @@ from domo_core.policy.limits import (
 )
 from domo_core.policy.rights import NO_RIGHTS, Limit, Resolved, RightsTable
 from domo_core.policy.roles import Actor, Role, actor_label, domo_actor
+from domo_core.policy.settings import OrdinaryWhenUnsure
 
 # ``limit``: a limit refused it; ``limit_error``: a limit could not say (refused all the same);
 # ``owner_directive``: a directive of the owner's on people applies (``people.directives``).
@@ -100,19 +118,17 @@ RefusalReason = Literal[
     "not_allowed", "untrusted_identity", "limit", "limit_error", "owner_directive"
 ]
 
-# What an identity that cannot be trusted may still do (when a guest may): renaming oneself,
-# which does not depend on who the person is (F27).
-UNTRUSTED_MAY: Final = frozenset({"profile.rename"})
-
 
 @dataclass(frozen=True)
 class Allow:
     """Do it; the judge decides the yes. ``rule`` is what the owner's rule asks before it, if one
     does; ``never_ask`` the owner's "never ask me for this", with his conditions
-    (``Resolved.never_ask``)."""
+    (``Resolved.never_ask``). ``judge_identity``: the code is not sure of who asks, and the
+    yes-judge must weigh it with the clues, whatever the type's usual judging (rule 6)."""
 
     rule: Ask | None = None
     never_ask: NeverAsk | None = None
+    judge_identity: bool = False
 
 
 @dataclass(frozen=True)
@@ -123,13 +139,15 @@ class NeedsApproval:
     ``never_ask`` as for ``Allow``. ``judge_first``: the yes-judge decides first, and its ``do``
     lets the action through without that agreement (a limit that says ``"judge"``, and an adult's
     agreement for a child that only the catalog asks for); any other verdict asks for it. Only
-    for a single action: a chain's step asks for the agreement as it says."""
+    for a single action: a chain's step asks for the agreement as it says. ``judge_identity`` as
+    for ``Allow``."""
 
     approver: Literal["adult", "owner"]
     question: str | None = None
     rule: Ask | None = None
     never_ask: NeverAsk | None = None
     judge_first: bool = False
+    judge_identity: bool = False
 
 
 @dataclass(frozen=True)
@@ -157,16 +175,17 @@ def stricter(person: Decision, domo: Decision) -> Decision:
     more demanding of the two when both ask one (the owner's over an adult's), with its question.
     Else it is allowed. What the owner's rules ask goes with it: the more demanding of the two
     sides' (``asks.most_demanding``); the owner's "never ask me" only when Domo's side asks
-    nothing."""
+    nothing. Who speaks is weighed by the judge when either side says so (``judge_identity``)."""
     if isinstance(person, Refuse):
         return replace(person, side="person")
     if isinstance(domo, Refuse):
         return replace(domo, side="domo")
     rule = most_demanding(person.rule, domo.rule)
     never_ask = person.never_ask if domo.rule is None else None
+    judge_identity = person.judge_identity or domo.judge_identity
     asking = [d for d in (person, domo) if isinstance(d, NeedsApproval)]
     if not asking:
-        return Allow(rule=rule, never_ask=never_ask)
+        return Allow(rule=rule, never_ask=never_ask, judge_identity=judge_identity)
     most = max(asking, key=lambda d: _APPROVERS.index(d.approver))
     # Left to the judge only when every side that asks leaves the same agreement to it.
     judge_first = all(d.judge_first and d.approver == most.approver for d in asking)
@@ -176,7 +195,29 @@ def stricter(person: Decision, domo: Decision) -> Decision:
         rule=rule,
         never_ask=never_ask,
         judge_first=judge_first,
+        judge_identity=judge_identity,
     )
+
+
+def may_act_weakly(action_type: str, policy: PolicyTables, *, risks: Risks | None = None) -> bool:
+    """Whether ``action_type`` is ordinary, so that someone the code is not sure of has it done as
+    anyone (rule 6). A type of the code: when it is in ``catalog.WEAKLY_FINE`` (``risks`` is not
+    read). A launch of a tool Domo made (``is_made``) and what its running program asks
+    (``PROGRAM_REQUESTS``): only when ``risks`` are given (what its operations declare) and none
+    of ``costs``, ``outward``, ``irreversible`` is set, nor acting in the house not declared
+    harmless (``Risks.risky_physical``: the owner, 2026-11-27, "the physical that carries risks is
+    judged, like unlocking the door; physical actions with no risk may pass with less certainty"):
+    acting physically alone is ordinary only when every such act was declared harmless; risks that
+    could not be read (``None``) are not. Anything else, a type nobody classified included, is
+    sensitive. ``policy`` is the catalog the type is read in (a launch of a kind it does not know
+    is sensitive)."""
+    if is_made(action_type) or action_type in PROGRAM_REQUESTS:
+        if is_made(action_type) and action_type not in policy.known:
+            return False
+        return risks is not None and not (
+            risks.costs or risks.outward or risks.irreversible or risks.risky_physical
+        )
+    return action_type in WEAKLY_FINE
 
 
 def given_for_an_idea(
@@ -194,39 +235,6 @@ def given_for_an_idea(
     if child:
         allowed["child"] = policy.allowed.get("child", frozenset()) | added
     return replace(policy, allowed=allowed)
-
-
-def may_act_weakly(action_type: str, policy: PolicyTables, *, risks: Risks | None = None) -> bool:
-    """Whether a speaker the code is not sure of (a channel's weak clue: ``conversation.speaker``)
-    may have ``action_type`` done on that clue alone (spec 6.12): an ordinary thing, which the
-    assistant does; anything else is sensitive, and he judges it first. Not called yet: the voice
-    wires it into ``decide``, at rule 1 and never before the owner's directives
-    (``policy.decision.decide_now`` checks them first). Default-deny, from the catalog's sets:
-
-    * a type of the code: ``True`` when it is ordinary (``catalog.WEAKLY_FINE``), ``False`` when it
-      is sensitive (``catalog.NOT_WEAKLY``); ``risks`` is not read;
-    * a launch of a tool of the assistant's (``made.<name>``) and what its running program asks
-      (``catalog.PROGRAM_REQUESTS``) follow the risks the caller read for the operation
-      (``risks``: ``madetools.risks.Operation``, or ``madetools.risks.minimum_risks`` for what a
-      program asks), with those its kind declares for a launch: ``True`` only when none of
-      ``costs``, ``outward``, ``irreversible`` is set (``physical`` alone is ordinary: a light).
-      ``False`` when ``risks`` is ``None`` (they could not be read), and for a launch whose kind
-      ``policy.kinds`` does not hold;
-    * any other type (one the catalog does not know, one nobody classified): ``False``.
-
-    It reads the type and the risks alone: who the action is for, whose thing it touches and what
-    the rights ask stay ``decide``'s. Open point for the voice before it calls this: ``physical``
-    alone counts as ordinary and ``Risks`` has no flag for a secret, so a launch that unlocks a door
-    or reads a vault reference answers ``True`` today."""
-    if is_made(action_type) or action_type in PROGRAM_REQUESTS:
-        if risks is None:
-            return False
-        if is_made(action_type):
-            if action_type not in policy.kinds:
-                return False
-            risks = risks | risks_of(action_type, policy)
-        return not (risks.costs or risks.outward or risks.irreversible)
-    return action_type in WEAKLY_FINE
 
 
 def approval_needed(actor: Actor, resolved: Resolved, action_type: str) -> NeedsApproval | None:
@@ -256,15 +264,19 @@ def decide(
     policy: PolicyTables = DEFAULT_POLICY,
     rights: RightsTable = NO_RIGHTS,
     facts: Mapping[str, object] | None = None,
+    *,
+    risks: Risks | None = None,
+    ordinary_when_unsure: OrdinaryWhenUnsure = "do",
 ) -> Decision:
     """What may happen to ``action`` when ``actor`` asks for it, under the catalog ``policy`` and
     the owner's ``rights`` in force (see the module docstring). ``facts`` are the facts of the
     moment that a limit reads (``policy.facts.decision_facts``): without them, an action under a
-    limit is refused (``limit_error``)."""
+    limit is refused (``limit_error``). How sure the code is of who asks is the actor's
+    (``Actor.standing``, ``Actor.voice_too_short``); ``risks`` are what the operations of a launch
+    declare, when the caller knows them (``may_act_weakly``), and ``ordinary_when_unsure`` the
+    owner's word on ordinary things asked by someone the code is not sure of (rule 6)."""
     action_type = action.action_type
-    if not actor.trusted and not (
-        action_type in UNTRUSTED_MAY and action_type in policy.allowed.get("guest", frozenset())
-    ):
+    if actor.standing == "unknown":
         return Refuse("untrusted_identity")
     if action_type in OWNER_ONLY_ACTIONS and actor.role != "owner":
         return Refuse("not_allowed")
@@ -298,10 +310,34 @@ def decide(
         decision = replace(needed, judge_first=resolved.approver is None)
     if decision is None:
         decision = Allow(resolved.ask, resolved.never_ask)
-    if not actor.trusted and isinstance(decision, NeedsApproval):
-        # Nobody's agreement makes an identity that cannot be trusted more than it may do alone.
-        return Refuse("untrusted_identity")
+    if action.whose_judged or identity_judged(
+        actor, action_type, policy, risks, ordinary_when_unsure
+    ):
+        # Not sure of who asks: the judge weighs it with the clues, never a refusal out of hand.
+        return replace(decision, judge_identity=True)
     return decision
+
+
+def identity_judged(
+    actor: Actor,
+    action_type: str,
+    policy: PolicyTables,
+    risks: Risks | None,
+    ordinary_when_unsure: OrdinaryWhenUnsure,
+) -> bool:
+    """Whether the judge must weigh who asks (rule 6): never for someone the code is sure of;
+    for what is sensitive when it is not sure of them, or when their voice was too short to tell;
+    for what is ordinary only when it is not sure of them and the owner said to judge it. Also
+    read for a call decided as the assistant's own act in a person's turn
+    (``conversation.execution``): the doubt on who asked it is never lost."""
+    if actor.standing == "sure" and not actor.voice_too_short:
+        return False
+    if actor.page_person_id is not None:
+        # Heard at a page signed in as someone else: nothing is ordinary (review of Task 24).
+        return True
+    if not may_act_weakly(action_type, policy, risks=risks):
+        return True
+    return actor.standing == "unsure" and ordinary_when_unsure == "judge"
 
 
 def _limit_says(limit: Limit, facts: Mapping[str, object] | None) -> LimitOutcome | None:

@@ -2,7 +2,14 @@ import json
 
 import pytest
 
-from scripts.check_licenses import ALLOWED, Violation, check, normalize_license, parse_report
+from scripts.check_licenses import (
+    ALLOWED,
+    EXCEPTIONS,
+    Violation,
+    check,
+    normalize_license,
+    parse_report,
+)
 
 
 def test_normalize_license_variants() -> None:
@@ -89,3 +96,14 @@ def test_parse_report_rejects_malformed_output() -> None:
 def test_parenthesized_expression_is_unwrapped() -> None:
     assert check({"p": "(MIT OR GPL-3.0)"}, ALLOWED, {}) == []
     assert check({"p": "(GPL-3.0)"}, ALLOWED, {}) != []
+
+
+def test_the_graphics_card_libraries_have_a_named_exception_and_nothing_wider() -> None:
+    # The extra `gpu` of domo-speech: proprietary software of the card's maker, installed only
+    # in the GPU image a person builds for his own card, accepted by name and exact licence.
+    gpu = {"nvidia-cublas-cu12", "nvidia-cudnn-cu12"}
+    assert gpu <= set(EXCEPTIONS)
+    licenses = {name: EXCEPTIONS[name] for name in gpu}
+    assert check(licenses, ALLOWED, EXCEPTIONS) == []
+    assert check({"nvidia-other-cu12": EXCEPTIONS["nvidia-cublas-cu12"]}, ALLOWED, EXCEPTIONS)
+    assert check({"nvidia-cublas-cu12": "GPL-3.0"}, ALLOWED, EXCEPTIONS) != []

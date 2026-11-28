@@ -152,7 +152,9 @@ async def test_htmx_is_configured_for_the_content_security_policy(offline_client
     assert config["allowEval"] is False  # no 'unsafe-eval' in the policy
     assert config["includeIndicatorStyles"] is False  # htmx would inject an inline <style>
     assert config["allowScriptTags"] is False
-    assert "unsafe" not in CONTENT_SECURITY_POLICY
+    # The only "unsafe" word is the one that lets the speech detector's WebAssembly compile (it
+    # allows no eval of text, no inline code).
+    assert CONTENT_SECURITY_POLICY.replace("'wasm-unsafe-eval'", "").count("unsafe") == 0
 
 
 async def test_pages_are_designed_for_the_phone_first(offline_client):

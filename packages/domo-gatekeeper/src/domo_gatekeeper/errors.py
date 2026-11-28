@@ -82,3 +82,14 @@ class OutRefused(GatekeeperError):
     def __init__(self, code: OutRefusalCode) -> None:
         super().__init__(code)
         self.code: OutRefusalCode = code
+
+
+class PhraseHeldBack(GatekeeperError):
+    """Too many near misses of a spoken phrase lately: no comparison for ``wait`` seconds.
+
+    The message says the wait only, never what was heard.
+    """
+
+    def __init__(self, wait: float) -> None:
+        super().__init__(f"The phrase is held back for {wait:.0f} s.")
+        self.wait = wait

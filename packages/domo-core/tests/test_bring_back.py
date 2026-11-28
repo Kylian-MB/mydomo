@@ -17,6 +17,7 @@ import json
 import re
 import uuid
 from datetime import UTC, date, datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 from chat_support import GUEST_STAY, Card, an_actor, dump, live_http_client, log_in_live, status_of
@@ -27,6 +28,7 @@ from domo_core.accounts.passwords import hash_password
 from domo_core.accounts.sessions import SESSION_COOKIE
 from domo_core.accounts.throttle import MAX_FAILED_ATTEMPTS, WINDOW
 from domo_core.confirmations.describe import describe_for_people
+from domo_core.gatekeeper_client import GatekeeperError
 from domo_core.household.models import Invitation
 from domo_core.household.service import (
     GUEST_DAYS_DEFAULT,
@@ -46,11 +48,13 @@ from domo_core.household.service import (
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.catalog import DEFAULT_POLICY, needs_the_judge
 from domo_core.policy.roles import Actor
+from domo_core.proofs.kinds import phrase_ref
 from domo_core.proofs.service import agree, means_of
 from domo_core.texts.view import CatalogTexts
 from domo_core.tools import household_return
 from domo_core.tools.context import InvalidArguments, ToolContext
 from domo_core.tools.registry import TOOLS, tools_for
+from domo_core.web.deps import get_gatekeeper
 from fakes import is_judge_call
 from sqlalchemy import func, select, update
 from web_support import in_words
@@ -724,6 +728,61 @@ async def test_coming_back_takes_the_passkey_means_away_and_keeps_the_password(
     async with chat_server.session_factory() as reader:
         kept = await means_of(reader, guest_member.person, clock())
     assert [mean.kind for mean in kept] == ["password"]
+
+
+async def test_coming_back_takes_the_spoken_phrase_means_away_too(
+    owner_chat, guest_chat, guest_member, clock, chat_server
+):
+    """A returning person starts with no phrase said aloud (ruling T11): the means goes with the
+    old access, and agreeing again enrols afresh."""
+    async with chat_server.session_factory() as writer:
+        await agree(
+            writer, guest_member.person.id, "spoken_phrase", proposed_by="person", now=clock()
+        )
+        await writer.commit()
+    clock.advance(GUEST_STAY + timedelta(hours=1))
+
+    card = await bring_back(owner_chat, person="Robin", role="guest")
+    assert (await use_link(owner_chat, card)).status_code == 303
+
+    async with chat_server.session_factory() as reader:
+        kept = await means_of(reader, guest_member.person, clock())
+    assert [mean.kind for mean in kept] == ["password"]
+
+
+class _VaultThatForgets:
+    """The gatekeeper client of the tests, noting each phrase it is asked to forget; it fails
+    when ``down`` (the person comes back all the same)."""
+
+    def __init__(self, client: Any, *, down: bool = False) -> None:
+        self._client = client
+        self.down = down
+        self.removed: list[str] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
+
+    async def phrase_remove(self, ref: str) -> bool:
+        self.removed.append(ref)
+        if self.down:
+            raise GatekeeperError("DELETE /internal/phrases/{ref}", code="unreachable")
+        return True
+
+
+@pytest.mark.parametrize("down", [False, True])
+async def test_coming_back_removes_the_stored_phrase_at_the_vault(
+    owner_chat, guest_member, clock, chat_server, gk_client, down
+):
+    """Where the passkeys go, the phrase said aloud goes too (ruling T11): its sealed copy at
+    the vault is removed; a vault that does not answer does not keep the person out."""
+    vault = _VaultThatForgets(gk_client, down=down)
+    chat_server.app.dependency_overrides[get_gatekeeper] = lambda: vault
+    clock.advance(GUEST_STAY + timedelta(hours=1))
+
+    card = await bring_back(owner_chat, person="Robin", role="guest")
+    assert (await use_link(owner_chat, card)).status_code == 303
+
+    assert vault.removed == [phrase_ref(guest_member.person.id)]
 
 
 async def test_the_old_password_is_replaced_not_kept_next_to_the_new_one(owner_chat, adult_member):

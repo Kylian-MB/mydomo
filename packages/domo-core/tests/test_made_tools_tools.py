@@ -504,8 +504,10 @@ async def test_a_look_at_ones_own_tool_shows_how_it_is_going(session_factory: Se
     await launched(session_factory, other_id, "failed", at=NOW)
     ctx = context(sam, session_factory)
     seen = await run("tool_look", ctx, name="tally")
-    # The error text its program said came into the turn (ruling R46).
+    # The error text its program said came into the turn (ruling R46), named: the judge is told
+    # which.
     assert ctx.outside_text
+    assert [(source.kind, source.name) for source in ctx.outside_sources] == [("tool", "tally")]
     assert seen["name"] == "tally" and seen["state"] == "ready" and "for" not in seen
     assert seen["description"] == "Does tally." and seen["aside_reason"] is None
     assert seen["checks"] == {"version": "ready", "summary": {"imports": "ok", "review": "ok"}}

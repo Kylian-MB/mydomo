@@ -27,19 +27,23 @@ from domo_core.conversation.prepare import UPKEEP_OUTPUT_TOKENS
 from domo_core.household.models import Invitation
 from domo_core.llm.catalog import shipped_catalog
 from domo_core.llm.key_flow import KEY_NEW_PATH
-from domo_core.llm.models import ProviderUser
+from domo_core.llm.models import Provider, ProviderModel, ProviderUser, new_provider_id
 from domo_core.llm.newcomers import newcomers_told
-from domo_core.llm.router import usable_keys
+from domo_core.llm.provider_keys import general_when_none
+from domo_core.llm.router import text_keys, usable_keys
+from domo_core.llm.speech.home_key import HOME_SPEECH_ID
 from domo_core.llm.spending_models import KeyNewcomer, ModelCall, SpendingLimit
 from domo_core.llm.types import ToolCall
 from domo_core.policy.roles import Actor
 from domo_core.prompts import FORM_LINE, abilities_line
+from domo_core.texts.install import house_key
 from domo_core.texts.view import REFERENCE
 from domo_core.tools.context import InvalidArguments
 from domo_core.tools.registry import TOOLS
 from fakes import FakeChatModel, is_judge_call
 from sqlalchemy import select, text
-from test_key_tools import context_lines, error_of, key_new_button_url
+from test_key_tools import all_keys, context_lines, error_of, facts_judged, key_new_button_url
+from test_speech_home import HEARING, SAYING
 from test_spending import add_key
 
 # The first sentence of ``prompts/upkeep.md``: an upkeep turn's instructions start with it.
@@ -155,6 +159,145 @@ async def test_without_upkeep_the_page_shows_the_fixed_message(
     assert len(server.calls) == calls
     page = await paul_chat.get(KEY_NEW_PATH)
     assert page.status_code == 200 and 'name="kind"' in page.text
+
+
+async def record_the_home_speech_key(chat) -> None:
+    """The house's speech service as its upkeep records it: a key without a secret, given by the
+    owner, let to the whole household, listing a model that hears and one that says."""
+    async with chat.server.session_factory() as session:
+        session.add(
+            Provider(
+                id=HOME_SPEECH_ID,
+                kind="openai_compatible",
+                base_url="http://speech:8083/v1",
+                secret_ref=None,
+                given_by=chat.person.id,
+                is_general=False,
+            )
+        )
+        await session.flush()
+        session.add(
+            ProviderUser(
+                provider_id=HOME_SPEECH_ID,
+                scope="household",
+                person_id=None,
+                allowed=True,
+                set_by=chat.person.id,
+            )
+        )
+        for model_id in (HEARING, SAYING):
+            session.add(ProviderModel(provider_id=HOME_SPEECH_ID, model_id=model_id))
+        await session.commit()
+
+
+async def test_a_person_whose_only_key_is_the_home_speech_service_is_asked_for_one(
+    owner_chat, paul_chat
+):
+    server = owner_chat.server
+    await record_the_home_speech_key(owner_chat)
+    await deny_on_the_general_key(owner_chat, "Paul")
+    # The speech service hears and says for him, but it has no model to talk with.
+    assert await usable_ids(paul_chat, paul_chat.person) == [HOME_SPEECH_ID]
+    async with server.session_factory() as reader:
+        assert await text_keys(reader, paul_chat.person) == []
+
+    paul_chat.use_model(FakeChatModel(["To talk with me, give a key of your own."]))
+    first = len(server.calls)
+    answer = await paul_chat.say("hello")
+    [call] = server.calls[first:]
+    assert call.system.startswith(UPKEEP_FIRST_SENTENCE)
+    assert [tool.name for tool in call.tools] == ["key_add"]
+    assert (answer.text, answer.status) == ("To talk with me, give a key of your own.", "complete")
+
+
+async def test_removing_the_general_key_beside_the_home_speech_key_warns_it_is_the_last(
+    owner_chat, gk_mock
+):
+    # The speech service hears and says, it never thinks: it is no key that works, and no heir.
+    await record_the_home_speech_key(owner_chat)
+    general = owner_chat.server.provider_id
+    await owner_chat.say_with_tool("key_remove", {"key": general}, judge="warn: hmm")
+    assert facts_judged(owner_chat) == {"last_key": True, "general_key_without_heir": True}
+
+
+async def test_removing_the_general_key_hands_it_to_a_thinking_key_not_the_home_speech_key(
+    owner_chat, gk_mock
+):
+    await record_the_home_speech_key(owner_chat)
+    general = owner_chat.server.provider_id
+    later = await add_key(owner_chat.server.session_factory, owner_chat.person.id)
+    reply = await owner_chat.say_with_tool("key_remove", {"key": general}, judge="do")
+    assert reply.actions == [{"tool": "key_remove", "status": "done"}]
+    assert facts_judged(owner_chat) == {"last_key": False, "general_key_without_heir": False}
+    generals = {key.id: key.is_general for key in await all_keys(owner_chat)}
+    assert generals == {HOME_SPEECH_ID: False, later.id: True}
+
+
+async def test_the_house_never_writes_its_texts_on_the_home_speech_key(session, add_person):
+    owner = await add_person("Owner", "owner")
+    session.add(
+        Provider(
+            id=HOME_SPEECH_ID,
+            kind="openai_compatible",
+            base_url="http://speech:8083/v1",
+            secret_ref=None,
+            given_by=owner.id,
+        )
+    )
+    await session.flush()
+    assert await house_key(session) is None
+    thinking = Provider(
+        id=new_provider_id(),
+        kind="openai_compatible",
+        base_url="https://llm.example.com/v1",
+        secret_ref=None,
+        given_by=owner.id,
+    )
+    session.add(thinking)
+    await session.flush()
+    found = await house_key(session)
+    assert found is not None and found.id == thinking.id
+
+
+async def test_the_home_speech_key_never_becomes_the_general_key(session, add_person):
+    # Whatever its service lists, even a model that is not known to hear or say.
+    owner = await add_person("Owner", "owner")
+    speech = Provider(
+        id=HOME_SPEECH_ID,
+        kind="openai_compatible",
+        base_url="http://speech:8083/v1",
+        secret_ref=None,
+        given_by=owner.id,
+    )
+    session.add(speech)
+    await session.flush()
+    session.add_all(
+        ProviderModel(provider_id=HOME_SPEECH_ID, model_id=m)
+        for m in (HEARING, SAYING, "example-unknown-1")
+    )
+    await session.flush()
+    await general_when_none(session, speech)
+    assert not speech.is_general
+
+
+async def test_with_only_the_home_speech_service_and_no_upkeep_the_page_offers_a_key(
+    owner_chat, paul_chat
+):
+    server = owner_chat.server
+    await record_the_home_speech_key(owner_chat)
+    reply = await owner_chat.say_with_tool(
+        "keys_house",
+        {"person": "Paul", "on_general_key": "deny", "upkeep_on_general_key": False},
+        judge="do",
+    )
+    assert reply.actions == [{"tool": "keys_house", "status": "done"}]
+    page = await paul_chat.get("/chat")
+    assert key_new_button_url(page.text) == KEY_NEW_PATH
+    calls = len(server.calls)
+    answer = await paul_chat.post("/chat/messages", data={"text": "hello"})
+    assert answer.status_code == 409
+    assert t("chat.error.no_key", "en") in plain(answer.text)
+    assert len(server.calls) == calls
 
 
 async def test_names_read_too_slowly_do_nothing_and_say_it_may_be_tried_again(

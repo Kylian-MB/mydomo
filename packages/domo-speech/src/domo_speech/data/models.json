@@ -1,0 +1,420 @@
+{
+  "about": "Candidates of the speech service: open models it may run, never a choice. The service measures them on the machine where it runs (domo_speech.measure) and lists those that hold; the assistant chooses among them. No measure of any machine is kept here. 'licence' is the weights' licence, 'code_licence' the licence of the code that runs them; 'floor' marks the small models meant to run on a plain processor.",
+  "models": [
+    {
+      "id": "faster-whisper-base",
+      "does": "hear",
+      "engine": "faster_whisper",
+      "source": "https://huggingface.co/Systran/faster-whisper-base",
+      "licence": "MIT",
+      "licence_url": "https://spdx.org/licenses/MIT.html",
+      "restricted": false,
+      "code": "https://github.com/SYSTRAN/faster-whisper",
+      "code_licence": "MIT",
+      "runs": "imported",
+      "languages": [
+        "*"
+      ],
+      "size_mb": 148,
+      "needs": "cpu",
+      "floor": true,
+      "repo": "Systran/faster-whisper-base",
+      "revision": "ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66",
+      "files": [
+        {
+          "path": "config.json",
+          "size": 2309,
+          "sha256": "56a6d8110d311f19c8f0471e562832c7527f146b567275bfca59fcf7c184da9a"
+        },
+        {
+          "path": "model.bin",
+          "size": 145217532,
+          "sha256": "d01c3014881c9c6f3133c182f3d2887eb6ca1c789a7538c5c007196857a0a6a9"
+        },
+        {
+          "path": "tokenizer.json",
+          "size": 2203239,
+          "sha256": "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab"
+        },
+        {
+          "path": "vocabulary.txt",
+          "size": 459861,
+          "sha256": "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913"
+        }
+      ]
+    },
+    {
+      "id": "faster-whisper-small",
+      "does": "hear",
+      "engine": "faster_whisper",
+      "source": "https://huggingface.co/Systran/faster-whisper-small",
+      "licence": "MIT",
+      "licence_url": "https://spdx.org/licenses/MIT.html",
+      "restricted": false,
+      "code": "https://github.com/SYSTRAN/faster-whisper",
+      "code_licence": "MIT",
+      "runs": "imported",
+      "languages": [
+        "*"
+      ],
+      "size_mb": 486,
+      "needs": "cpu",
+      "floor": false,
+      "repo": "Systran/faster-whisper-small",
+      "revision": "536b0662742c02347bc0e980a01041f333bce120",
+      "files": [
+        {
+          "path": "config.json",
+          "size": 2370,
+          "sha256": "b55496ac7940a7ae47d2c01eab40edfd8701feec1229d9cce3b40014383fb828"
+        },
+        {
+          "path": "model.bin",
+          "size": 483546902,
+          "sha256": "3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671"
+        },
+        {
+          "path": "tokenizer.json",
+          "size": 2203239,
+          "sha256": "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab"
+        },
+        {
+          "path": "vocabulary.txt",
+          "size": 459861,
+          "sha256": "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913"
+        }
+      ]
+    },
+    {
+      "id": "faster-whisper-large-v3-turbo",
+      "does": "hear",
+      "engine": "faster_whisper",
+      "source": "https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2",
+      "licence": "MIT",
+      "licence_url": "https://spdx.org/licenses/MIT.html",
+      "restricted": false,
+      "code": "https://github.com/SYSTRAN/faster-whisper",
+      "code_licence": "MIT",
+      "runs": "imported",
+      "languages": [
+        "*"
+      ],
+      "size_mb": 1622,
+      "needs": "gpu",
+      "floor": false,
+      "repo": "deepdml/faster-whisper-large-v3-turbo-ct2",
+      "revision": "4df90f75321148c3a29a9e2351b7ddf8f5b115a8",
+      "files": [
+        {
+          "path": "config.json",
+          "size": 2263,
+          "sha256": "b0253ea6c0d3bea6b1e19e91a02acfd3b53f4467362efcb5a3e6b16c9b3a9b7e"
+        },
+        {
+          "path": "model.bin",
+          "size": 1617884929,
+          "sha256": "e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da"
+        },
+        {
+          "path": "preprocessor_config.json",
+          "size": 340,
+          "sha256": "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711"
+        },
+        {
+          "path": "tokenizer.json",
+          "size": 2710337,
+          "sha256": "297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd"
+        },
+        {
+          "path": "vocabulary.json",
+          "size": 1068114,
+          "sha256": "c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1"
+        }
+      ]
+    },
+    {
+      "id": "supertonic-3",
+      "does": "say",
+      "engine": "flow_voice",
+      "source": "https://huggingface.co/supertone-oss-archive/supertonic-3",
+      "licence": "LicenseRef-OpenRAIL-M",
+      "licence_url": "https://huggingface.co/supertone-oss-archive/supertonic-3/blob/aafc6e32416a594460b32413efc49d7fe4ce6d46/LICENSE",
+      "restricted": true,
+      "code": "https://github.com/supertone-oss-archive/supertonic",
+      "code_licence": "MIT",
+      "runs": "imported",
+      "languages": [
+        "*"
+      ],
+      "size_mb": 401,
+      "needs": "cpu",
+      "floor": true,
+      "repo": "supertone-oss-archive/supertonic-3",
+      "revision": "aafc6e32416a594460b32413efc49d7fe4ce6d46",
+      "files": [
+        {
+          "path": "onnx/duration_predictor.onnx",
+          "size": 3700147,
+          "sha256": "c3eb91414d5ff8a7a239b7fe9e34e7e2bf8a8140d8375ffb14718b1c639325db"
+        },
+        {
+          "path": "onnx/text_encoder.onnx",
+          "size": 36416150,
+          "sha256": "c7befd5ea8c3119769e8a6c1486c4edc6a3bc8365c67621c881bbb774b9902ff"
+        },
+        {
+          "path": "onnx/vector_estimator.onnx",
+          "size": 256534781,
+          "sha256": "883ac868ea0275ef0e991524dc64f16b3c0376efd7c320af6b53f5b780d7c61c"
+        },
+        {
+          "path": "onnx/vocoder.onnx",
+          "size": 101424195,
+          "sha256": "085de76dd8e8d5836d6ca66826601f615939218f90e519f70ee8a36ed2a4c4ba"
+        },
+        {
+          "path": "onnx/tts.json",
+          "size": 8253,
+          "sha256": "42078d3aef1cd43ab43021f3c54f47d2d75ceb4e75f627f118890128b06a0d09"
+        },
+        {
+          "path": "onnx/unicode_indexer.json",
+          "size": 277676,
+          "sha256": "9bf7346e43883a81f8645c81224f786d43c5b57f3641f6e7671a7d6c493cb24f"
+        },
+        {
+          "path": "voice_styles/F1.json",
+          "size": 292046,
+          "sha256": "bbdec6ee00231c2c742ad05483df5334cab3b52fda3ba38e6a07059c4563dbc2"
+        },
+        {
+          "path": "voice_styles/F2.json",
+          "size": 292423,
+          "sha256": "7c722c6a72707b1a77f035d67f0d1351ba187738e06f7683e8c72b1df3477fc6"
+        },
+        {
+          "path": "voice_styles/F3.json",
+          "size": 290794,
+          "sha256": "12f6ef2573baa2defa1128069cb59f203e3ab67c92af77b42df8a0e3a2f7c6ab"
+        },
+        {
+          "path": "voice_styles/F4.json",
+          "size": 291808,
+          "sha256": "c2fa764c1225a76dfc3e2c73e8aa4f70d9ee48793860eb34c295fff01c2e032b"
+        },
+        {
+          "path": "voice_styles/F5.json",
+          "size": 291479,
+          "sha256": "45966e73316415626cf41a7d1c6f3b4c70dbc1ba2bee5c1978ef0ce33244fc8d"
+        },
+        {
+          "path": "voice_styles/M1.json",
+          "size": 291748,
+          "sha256": "e35604687f5d23694b8e91593a93eec0e4eca6c0b02bb8ed69139ab2ea6b0a5b"
+        },
+        {
+          "path": "voice_styles/M2.json",
+          "size": 292055,
+          "sha256": "b76cbf62bac707c710cf0ae5aba5e31eea1a6339a9734bfae33ab98499534a50"
+        },
+        {
+          "path": "voice_styles/M3.json",
+          "size": 290198,
+          "sha256": "ea1ac35ccb91b0d7ecad533a2fbd0eec10c91513d8951e3b25fbba99954e159b"
+        },
+        {
+          "path": "voice_styles/M4.json",
+          "size": 291522,
+          "sha256": "ca8eefad4fcd989c9379032ff3e50738adc547eeb5e221b82593a6d7b3bac303"
+        },
+        {
+          "path": "voice_styles/M5.json",
+          "size": 291469,
+          "sha256": "dd22b92740314321f8ae11c5e87f8dd60d060f15dd3a632b5adf77f471f77af2"
+        }
+      ],
+      "voices": [
+        "F1",
+        "F2",
+        "F3",
+        "F4",
+        "F5",
+        "M1",
+        "M2",
+        "M3",
+        "M4",
+        "M5"
+      ]
+    },
+    {
+      "id": "piper-fr_FR-siwis-medium",
+      "does": "say",
+      "engine": "program",
+      "source": "https://huggingface.co/rhasspy/piper-voices/tree/main/fr/fr_FR/siwis/medium",
+      "licence": "CC-BY-4.0",
+      "licence_url": "https://spdx.org/licenses/CC-BY-4.0.html",
+      "restricted": false,
+      "code": "https://github.com/OHF-Voice/piper1-gpl",
+      "code_licence": "GPL-3.0-or-later",
+      "runs": "separate_program",
+      "languages": [
+        "fr"
+      ],
+      "size_mb": 63,
+      "needs": "cpu",
+      "floor": true,
+      "repo": "rhasspy/piper-voices",
+      "revision": "e5349433ed883a32f893a434dc43a6c66b95ef7c",
+      "files": [
+        {
+          "path": "fr/fr_FR/siwis/medium/fr_FR-siwis-medium.onnx",
+          "size": 63221984,
+          "sha256": "b1d946fd68d0347155fa59bce0a018924abbef3c1561181db45ca463d83963ef"
+        },
+        {
+          "path": "fr/fr_FR/siwis/medium/fr_FR-siwis-medium.onnx.json",
+          "size": 6369,
+          "sha256": "3b3efdbcdcae930c40d8255527170ec5c87bf05e510b67f53d75fd028df40f43"
+        }
+      ],
+      "program_args": [
+        "--model",
+        "{weights}/fr/fr_FR/siwis/medium/fr_FR-siwis-medium.onnx",
+        "--output-raw"
+      ]
+    },
+    {
+      "id": "piper-en_GB-alba-medium",
+      "does": "say",
+      "engine": "program",
+      "source": "https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_GB/alba/medium",
+      "licence": "CC-BY-4.0",
+      "licence_url": "https://spdx.org/licenses/CC-BY-4.0.html",
+      "restricted": false,
+      "code": "https://github.com/OHF-Voice/piper1-gpl",
+      "code_licence": "GPL-3.0-or-later",
+      "runs": "separate_program",
+      "languages": [
+        "en"
+      ],
+      "size_mb": 63,
+      "needs": "cpu",
+      "floor": true,
+      "repo": "rhasspy/piper-voices",
+      "revision": "e5349433ed883a32f893a434dc43a6c66b95ef7c",
+      "files": [
+        {
+          "path": "en/en_GB/alba/medium/en_GB-alba-medium.onnx",
+          "size": 63221984,
+          "sha256": "1f9da809b6da1ef4190bb5dd6cce4f4af803274539e9cf9e0693085150bac3d7"
+        },
+        {
+          "path": "en/en_GB/alba/medium/en_GB-alba-medium.onnx.json",
+          "size": 6295,
+          "sha256": "ed4b1f015a8aae5eb26d4bdeed7b712c660f5698a0dd954aa6df9c8be60b900b"
+        }
+      ],
+      "program_args": [
+        "--model",
+        "{weights}/en/en_GB/alba/medium/en_GB-alba-medium.onnx",
+        "--output-raw"
+      ]
+    },
+    {
+      "id": "wespeaker-voxceleb-campplus-lm",
+      "does": "voice_print",
+      "engine": "speaker_embedding",
+      "source": "https://huggingface.co/Wespeaker/wespeaker-voxceleb-campplus-LM",
+      "licence": "CC-BY-4.0",
+      "licence_url": "https://spdx.org/licenses/CC-BY-4.0.html",
+      "restricted": false,
+      "code": "https://github.com/wenet-e2e/wespeaker",
+      "code_licence": "Apache-2.0",
+      "runs": "imported",
+      "languages": [
+        "*"
+      ],
+      "size_mb": 29,
+      "needs": "cpu",
+      "floor": true,
+      "repo": "Wespeaker/wespeaker-voxceleb-campplus-LM",
+      "revision": "c5e01c6fcffcce160861e7e79782828320192b5c",
+      "files": [
+        {
+          "path": "voxceleb_CAM++_LM.onnx",
+          "size": 29292449,
+          "sha256": "1068e4ac3a76bb9c769e6816ef30bf89363f6e966f1d938210cb8ed4038f8e93"
+        }
+      ],
+      "thresholds": {
+        "print_low": 0.2,
+        "same_voice": 0.35,
+        "print_high": 0.7
+      }
+    },
+    {
+      "id": "wespeaker-voxceleb-resnet34",
+      "does": "voice_print",
+      "engine": "speaker_embedding",
+      "source": "https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34",
+      "licence": "CC-BY-4.0",
+      "licence_url": "https://spdx.org/licenses/CC-BY-4.0.html",
+      "restricted": false,
+      "code": "https://github.com/wenet-e2e/wespeaker",
+      "code_licence": "Apache-2.0",
+      "runs": "imported",
+      "languages": [
+        "*"
+      ],
+      "size_mb": 27,
+      "needs": "cpu",
+      "floor": true,
+      "repo": "Wespeaker/wespeaker-voxceleb-resnet34",
+      "revision": "ff1ac5bca8ef11e90662b879aa923979e0bd277b",
+      "files": [
+        {
+          "path": "voxceleb_resnet34.onnx",
+          "size": 26534127,
+          "sha256": "9fea6516d7ad6bf0a76c7689f5a49b65d330fad6dde96c91bb4435ffbfe056a1"
+        }
+      ],
+      "thresholds": {
+        "print_low": 0.25,
+        "same_voice": 0.4,
+        "print_high": 0.75
+      }
+    },
+    {
+      "id": "wespeaker-voxceleb-resnet221-lm",
+      "does": "voice_print",
+      "engine": "speaker_embedding",
+      "source": "https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet221-LM",
+      "licence": "CC-BY-4.0",
+      "licence_url": "https://spdx.org/licenses/CC-BY-4.0.html",
+      "restricted": false,
+      "code": "https://github.com/wenet-e2e/wespeaker",
+      "code_licence": "Apache-2.0",
+      "runs": "imported",
+      "languages": [
+        "*"
+      ],
+      "size_mb": 95,
+      "needs": "gpu",
+      "floor": false,
+      "repo": "Wespeaker/wespeaker-voxceleb-resnet221-LM",
+      "revision": "26732f43821f238bfb258c5ef54924a798e62118",
+      "files": [
+        {
+          "path": "voxceleb_resnet221_LM.onnx",
+          "size": 95037357,
+          "sha256": "e6b8c14c022288ca186de39f038a9bd9404be4f174ac8a6a3b8dbf229c8f607d"
+        }
+      ],
+      "thresholds": {
+        "print_low": 0.2,
+        "same_voice": 0.4,
+        "print_high": 0.7
+      }
+    }
+  ]
+}

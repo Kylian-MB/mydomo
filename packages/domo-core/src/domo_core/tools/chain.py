@@ -960,9 +960,13 @@ class DoInOrder:
             case Allow():
                 decided.append(own)
         rules: list[Ask | None] = [told.rule for told in decided]
+        # Not sure of who asks: the doubt of any step, or of the chain itself, is the chain's.
+        doubted = any(told.judge_identity for told in decided)
         return ChainPlan(
             action=chain,
-            decision=_approval(needs) if needs else Allow(),
+            decision=replace(_approval(needs), judge_identity=doubted)
+            if needs
+            else Allow(judge_identity=doubted),
             steps=tuple(planned),
             basis=remembered,
             refused_step=None,

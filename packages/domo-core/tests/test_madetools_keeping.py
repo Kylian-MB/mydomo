@@ -345,8 +345,9 @@ async def test_checking_a_tool_says_which_example_gives_another_answer(session_f
     )
     assert not ctx.outside_text
     told = await run("tool_check", ctx, name="double")
-    # What its program gave came into the turn (ruling R46).
+    # What its program gave came into the turn (ruling R46), named: the judge is told which.
     assert ctx.outside_text
+    assert [source.name for source in ctx.outside_sources] == ["double"]
     assert told == {
         "name": "double",
         "examples": [

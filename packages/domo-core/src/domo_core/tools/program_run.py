@@ -77,7 +77,13 @@ from domo_core.policy.catalog import MADE_FACTS_WITHOUT_A_YES, PROGRAM_RUN
 from domo_core.policy.rights import load_rights
 from domo_core.policy.roles import Actor, domo_actor
 from domo_core.sandbox_client import SandboxUnavailable
-from domo_core.tools.context import InvalidArguments, ToolContext, ToolOutcome, WaitsForAYes
+from domo_core.tools.context import (
+    InvalidArguments,
+    OutsideSource,
+    ToolContext,
+    ToolOutcome,
+    WaitsForAYes,
+)
 
 # What the arguments of a program run by hand weigh at most: a trigger's at most five times.
 MAX_ARGUMENTS_CHARS: Final = 20_000
@@ -363,10 +369,24 @@ class ProgramRun:
             run_id = await _kept(ctx, given, None if for_person is None else for_person.id)
             reaches = await _reaches(ctx, run_id)
         launched = await launch_in_a_turn(
-            deps, AskingTool.of_run(run_id), arguments={}, for_person=for_person, yes=yes
+            deps,
+            AskingTool.of_run(run_id),
+            arguments={},
+            for_person=for_person,
+            yes=yes,
+            # How sure the code was of who asked it goes with it, to what it launches in turn.
+            asked_by=ctx.actor,
         )
         outcome = said_by(outcome_of(launched), launched, RUN_BY_HAND, reaches)
-        return replace(outcome, model_result={**outcome.model_result, "run": str(run_id)})
+        # For the judge: a program run by hand, by its run (it has no name of the household).
+        source = (
+            None
+            if outcome.source is None
+            else OutsideSource("program", run=str(run_id), reaches=outcome.source.reaches)
+        )
+        return replace(
+            outcome, model_result={**outcome.model_result, "run": str(run_id)}, source=source
+        )
 
 
 # How a program run by hand is named with what it gave back (``offered.said_by``).

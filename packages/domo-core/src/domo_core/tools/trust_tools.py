@@ -24,7 +24,10 @@ in a turn that answers a message of theirs (``ToolContext.reply_message_id``); i
 it rests on a memory said, in their own words, by a person of the household other than the
 fact's person, who is the
 reporter (the cap of
-``REPORTED_PER_REPORTER`` newest counts then applies to them). ``seen`` cannot be checked by the
+``REPORTED_PER_REPORTER`` newest counts then applies to them). In a turn that answers a voice the
+house was not sure was theirs it rests on a memory too; one heard from such a voice (origin
+``unsure_voice``) names no reporter: never that person's own report, its memory carries the
+source. ``seen`` cannot be checked by the
 code: the description says that whatever a person says is ``reported``. What a fact says is Domo's
 sentence, never a secret (``memory.service.refuses_secret_shapes``).
 
@@ -106,6 +109,11 @@ _NEEDS_THE_REPORT: Final = (
     "about the person the fact is about (memory): keep what a person says in the turn where they "
     "say it. What a note says was reported by its author, in their own conversation; what a tool "
     "of yours showed you is seen. Nothing was noted"
+)
+_NEEDS_THE_UNSURE_REPORT: Final = (
+    "this turn answers a voice the house was not sure was theirs: a reported fact noted here is "
+    "never their own report. It cites the memory you kept of what that voice said (memory), and "
+    "names no reporter. Nothing was noted"
 )
 _REPORT_IS_THE_SPEAKER: Final = (
     "this turn answers a message of the person you are talking with: a reported fact noted here "
@@ -269,18 +277,22 @@ async def _reporter(
 ) -> uuid.UUID | None:
     """Who reported a ``reported`` fact (``None`` for another): the person who speaks, in a turn
     that answers a message of theirs (``ToolContext.reply_message_id``), whatever else it holds:
-    a reported fact says "this person said so". In any other turn the fact cites a memory
-    (``memory``) said, in their own words
-    (origin ``own_words``), by a person of the household other than the fact's person, that rests
-    no other fact yet: its sayer, read from the row by the code, is the reporter."""
+    a reported fact says "this person said so". In any other turn, and in one that answers a
+    sentence of a voice the house was not sure was theirs (``ToolContext.said_unsure``), the fact
+    cites a memory (``memory``) said by a person of the household other than the fact's person,
+    that rests no other fact yet: in their own words (origin ``own_words``), its sayer, read from
+    the row by the code, is the reporter; heard from a voice not sure to be theirs (origin
+    ``unsure_voice``), there is no reporter (``None``): it is never counted as that person's own
+    report, and the memory it rests on carries that source (``memory.service.source_of``)."""
     if given.how != "reported":
         return None
-    if ctx.reply_message_id is not None:
+    if ctx.reply_message_id is not None and not ctx.said_unsure:
         if given.memory is not None:
             raise InvalidArguments("invalid", _REPORT_IS_THE_SPEAKER)
         return ctx.person.id
     if given.memory is None:
-        raise InvalidArguments("not_possible", _NEEDS_THE_REPORT)
+        needs = _NEEDS_THE_UNSURE_REPORT if ctx.said_unsure else _NEEDS_THE_REPORT
+        raise InvalidArguments("not_possible", needs)
     memory = await get_memory(session, given.memory)
     if memory is None:
         raise InvalidArguments("not_found", _NO_MEMORY)
@@ -290,7 +302,7 @@ async def _reporter(
         or memory.said_by_id == person.id
         or memory.said_by_id not in members
         or memory.about_id != person.id
-        or memory.origin != "own_words"
+        or memory.origin not in ("own_words", "unsure_voice")
         or memory.by_domo
     ):
         raise InvalidArguments("not_possible", _NEEDS_THE_REPORT)
@@ -301,6 +313,9 @@ async def _reporter(
     )
     if noted is not None:
         raise InvalidArguments("not_possible", _ALREADY_NOTED)
+    if memory.origin == "unsure_voice":
+        # A voice not sure to be theirs: never their report; the memory carries that source.
+        return None
     return memory.said_by_id
 
 

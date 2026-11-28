@@ -33,12 +33,12 @@ def marks_of(person: Person) -> dict[str, object]:
     }
 
 
-def actor_of(person: Person, *, trusted: bool = True) -> Actor:
-    """``person`` as the barrier sees them."""
+def actor_of(person: Person) -> Actor:
+    """``person`` as the barrier sees them, the code sure of who they are (``Actor.standing``):
+    a turn makes them as unsure as its clues say (``conversation.speaker.actor_of``)."""
     return Actor(
         person.id,
         as_role(person.role),
-        trusted=trusted,
         child=is_child(person),
         visiting=is_visiting(person),
         resident=person.standing == "lives_here" and person.role != "guest",
