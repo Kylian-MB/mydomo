@@ -29,7 +29,7 @@ class FakeSpeech:
         self.fail_after_first = False
         self.hang = False
 
-    async def transcribe(self, route, pcm, *, language=None) -> Heard:
+    async def transcribe(self, route, pcm, *, language=None, hint=None) -> Heard:
         self.calls.append("transcribe")
         if self.hang:
             self.started.set()

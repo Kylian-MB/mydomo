@@ -48,9 +48,10 @@ class EngineUnavailable(Exception):
 
 class Hears(Protocol):
     async def transcribe(
-        self, pcm: bytes, *, language: str | None, model: str | None
+        self, pcm: bytes, *, language: str | None, model: str | None, hint: str | None = None
     ) -> Transcript:
-        """``pcm`` is s16le, 16 kHz, mono."""
+        """``pcm`` is s16le, 16 kHz, mono; ``language`` is heard in, ``hint`` (the speaker's known
+        language) only when the model's own detection is not clear."""
         ...
 
 

@@ -90,7 +90,8 @@ async def test_three_like_utterances_on_two_visits_learn_the_voice(session):
 
 async def test_unlike_utterances_restart_the_candidate(session):
     """Alex and Sam in turn at Alex's page, hours apart: the code is "sure" of the page each time,
-    and the voice is never learnt."""
+    and the voice is never learnt (a clearly far sentence restarts at once; merely unlike ones:
+    see ``test_voice_learning_in_a_row``)."""
     alex = await person(session)
     results = []
     for n in range(12):

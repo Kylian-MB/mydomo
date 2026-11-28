@@ -37,9 +37,13 @@ What is reported is never lifted to "for" by the utterances just before: a print
 "for" against it (a degree of ``FOR_AT`` or more).
 
 A voice is learnt from several like utterances on two visits, and only when something other than
-the voice says who speaks (``sure_otherwise``): two people alternating at one page never make a
-voice. ``learn`` decides on the single print it stores, never on utterances joined to it. The base
-print moves slowly and at most once a visit (a visit ends after ``VISIT_GAP`` with nothing heard on
+the voice says who speaks (``sure_otherwise``). An unlike utterance is never counted nor mixed into
+a candidate, which starts again at once on a clearly far one (under ``print_low``) and otherwise
+only after ``RESTART_AFTER_UNLIKE`` of them in a row: two people alternating at one page never
+make one voice of the two (two far voices teach nothing; of two merely unlike ones, the one who
+began the candidate may be learnt alone; the nearest known other then keeps the other out).
+``learn`` decides on the single print it stores, never on utterances joined to it. The base print
+moves slowly and at most once a visit (a visit ends after ``VISIT_GAP`` with nothing heard on
 that microphone), the recent one follows every sure utterance but only when the voice reads "for"
 against the base (so the recent print never walks away from it), and a cold goes to a passing
 print that dies alone and never teaches the base or the recent print. "The nearest known other" is
@@ -81,6 +85,7 @@ from domo_core.channels.voice.thresholds import (
     OTHER_MICROPHONE,
     PASSING_LIVES,
     RECENT_WEIGHT,
+    RESTART_AFTER_UNLIKE,
     SHORT_CAP,
     STARTING_BOUNDS,
     UNKNOWN_LIVES,
@@ -813,11 +818,16 @@ async def learn(
     - another known voice in the way: "nothing";
     - learnt on other microphones only: a candidate here when the person's base prints read
       "for" (at the lesser weight), else "nothing";
-    - not learnt: the print joins the candidate of this microphone when it resembles it, else
-      restarts it; the candidate becomes the base and recent prints after ``LEARN_UTTERANCES``
-      like utterances on ``LEARN_VISITS`` visits (a visit is ``VISIT_GAP`` after the last
-      utterance), unless its mean has another known voice in the way or, on a new microphone,
-      no longer reads "for" against the person's bases."""
+    - not learnt: the print joins the candidate of this microphone when it resembles it; one that
+      does not is not counted nor mixed in; a clearly far one (under ``print_low``) restarts it
+      from itself at once, otherwise only ``RESTART_AFTER_UNLIKE`` unlike ones in a row do (a
+      person switching language in turn is still learnt, from the sentences like the candidate;
+      two voices in turn are never mixed into one print: two far ones teach nothing, of two
+      merely unlike ones the one that began the candidate is learnt alone); the candidate
+      becomes the base and recent prints after ``LEARN_UTTERANCES`` like utterances on
+      ``LEARN_VISITS`` visits (a visit is ``VISIT_GAP`` after the last utterance), unless its
+      mean has another known voice in the way or, on a new microphone, no longer reads "for"
+      against the person's bases."""
     bounds = usable_bounds(thresholds)
     if bounds is None or not is_a_print(print_.vector):
         return "nothing"
@@ -977,17 +987,27 @@ async def _candidate(
             row.last_at = max(row.last_at, visit_at)
             await session.flush()
         return "candidate"
-    if similarity(row.vector, print_.vector) < thresholds.same_voice:
-        # Not the same voice as before: start again from this one.
+    alike = similarity(row.vector, print_.vector)
+    if alike < thresholds.same_voice:
+        row.misses += 1
+        if alike >= thresholds.print_low and row.misses < RESTART_AFTER_UNLIKE:
+            # One unlike utterance, not clearly far: not counted, never mixed in, nothing thrown
+            # away.
+            await session.flush()
+            return "candidate"
+        # A clearly far one, or unlike ones in a row: not the same voice as before, start again
+        # from this one (the owner, 2026-11-28: "oui, tout de suite" for a far one).
         row.vector = list(print_.vector)
         row.utterances = 1
         row.visits = 1
+        row.misses = 0
         row.first_visit_at = visit_at
         row.last_at = visit_at
         row.pitch_mean = row.pitch_spread = row.rate_mean = row.rate_spread = None
         _move_habits(row, print_, 1.0)
         await session.flush()
         return "candidate"
+    row.misses = 0
     count = row.utterances
     row.vector = _mix(row.vector, print_.vector, 1.0 / (count + 1))
     row.utterances = count + 1

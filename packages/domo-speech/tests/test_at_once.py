@@ -284,7 +284,9 @@ class Waiting:
         if pcm in self.fail:
             raise RuntimeError("the engine broke")
 
-    def transcribe(self, pcm: bytes, language: str | None) -> Transcript:
+    def transcribe(
+        self, pcm: bytes, language: str | None, *, hint: str | None = None
+    ) -> Transcript:
         self._enter(pcm)
         return Transcript(text=pcm.decode(), language="en", seconds=1.0, words=())
 

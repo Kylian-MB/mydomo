@@ -87,11 +87,16 @@ class FakeSpeechService:
         self.heard: list[int] = []
         self.said: list[str] = []
         self.languages: list[str | None] = []
+        self.asked_languages: list[str | None] = []  # the language hint each hearing was given
         self.together = False  # the words wait until the print began: they run at once
         self._printing = asyncio.Event()
 
-    async def transcribe(self, route: Route, pcm: bytes, *, language: str | None = None) -> Heard:
+    async def transcribe(
+        self, route: Route, pcm: bytes, *, language: str | None = None, hint: str | None = None
+    ) -> Heard:
         self.calls.append("transcribe")
+        assert language is None  # the person's language is only ever a hint
+        self.asked_languages.append(hint)
         self.routes.append(("hear", route.provider.id))
         self.heard.append(len(pcm))
         if self.together:

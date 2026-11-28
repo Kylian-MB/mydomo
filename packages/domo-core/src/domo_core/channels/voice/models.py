@@ -59,7 +59,9 @@ class VoicePrint(Base):
     when a base or recent print was made from its candidate (so that "that was not me" can take
     it back). On a base print, ``heard_at`` is when the person was last heard on its microphone
     (whatever was learnt) and ``moved_in_visit`` whether the base already moved in the visit that
-    time belongs to: a base moves at most once a visit."""
+    time belongs to: a base moves at most once a visit. On a candidate, ``misses`` counts the
+    utterances in a row that did not resemble it (it starts again at ``RESTART_AFTER_UNLIKE``, or
+    at once on a clearly far one)."""
 
     __tablename__ = "voice_prints"
     __table_args__ = (
@@ -70,6 +72,7 @@ class VoicePrint(Base):
             f"array_length(vector, 1) BETWEEN 1 AND {MAX_DIMENSIONS}", name="vector_size"
         ),
         CheckConstraint("utterances >= 0 AND visits >= 0", name="counts_not_negative"),
+        CheckConstraint("misses >= 0", name="misses_not_negative"),
         UniqueConstraint("ref_id", "microphone", "kind", "model"),
     )
 
@@ -91,6 +94,7 @@ class VoicePrint(Base):
     rate_spread: Mapped[float | None]
     heard_at: Mapped[datetime | None]
     moved_in_visit: Mapped[bool] = mapped_column(server_default=text("false"), default=False)
+    misses: Mapped[int] = mapped_column(server_default=text("0"), default=0)
 
 
 class VoiceMoment(Base):

@@ -37,7 +37,7 @@ class FailingHears:
         self.error = error
 
     async def transcribe(
-        self, pcm: bytes, *, language: str | None, model: str | None
+        self, pcm: bytes, *, language: str | None, model: str | None, hint: str | None = None
     ) -> Transcript:
         raise self.error
 
@@ -167,7 +167,7 @@ async def test_the_model_asked_for_reaches_the_engine() -> None:
 
     class Recording:
         async def transcribe(
-            self, pcm: bytes, *, language: str | None, model: str | None
+            self, pcm: bytes, *, language: str | None, model: str | None, hint: str | None = None
         ) -> Transcript:
             asked.append(model)
             return Transcript(text="", language="en", seconds=0.0, words=())
