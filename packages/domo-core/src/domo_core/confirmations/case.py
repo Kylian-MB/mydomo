@@ -272,6 +272,10 @@ UNKNOWN_SOURCE_WORDS: Final = (
     "a note born of an unknown source: a voice nobody knows, or the assistant's own note written "
     "after reading a program's, a site's or a tool's text"
 )
+# What the judge reads in ``after_outside_words`` when the words a review's gesture was born of hold
+# a line heard from a voice the house was not sure was the person's (``ToolContext.told_unsure``):
+# the doubt itself, as the voice's clues tell it live (the owner's rule: the judge is given it).
+UNSURE_LINE_WORDS: Final = "a line heard from a voice the house was not sure was theirs"
 # What the judge reads in ``after_outside_words`` of each kind of a program's, a site's or a
 # tool's text in the turn (``ToolContext.outside_kinds``), as far as the code knows it (the owner,
 # 2026-11-26: the assistant tells each source apart, and the judge weighs it).
@@ -347,8 +351,10 @@ def outside_words(
     their_words: bool,
     sources: Sequence["OutsideSource"] = (),
     alone: bool = False,
+    unsure: bool = False,
 ) -> str | None:
     """Where the words not theirs in the turn come from, for ``IdeaTold.after_outside_words``: a
+    line heard from a voice not sure to be theirs (``unsure``: ``UNSURE_LINE_WORDS``), a
     note born of an unknown source (``unknown``: ``UNKNOWN_SOURCE_WORDS``), a program's, a site's
     or a tool's text of each kind (``kinds``, ``PROGRAM_TEXT_WORDS``), each named by which
     program it is and what it is built to reach (``sources``, ``source_words``: "not known which"
@@ -357,6 +363,8 @@ def outside_words(
     text is the only words not the assistant's own (``PROGRAM_TEXT_ALONE_WORDS``); ``None`` when
     neither a note nor such text is in it."""
     parts: list[str] = []
+    if unsure:
+        parts.append(UNSURE_LINE_WORDS)
     if unknown:
         parts.append(UNKNOWN_SOURCE_WORDS)
     programs = [kind for kind in kinds if kind != "channel"]

@@ -1297,8 +1297,11 @@ def _idea_told(ctx: ToolContext, idea: OwnIdea | None, born_of: str | None) -> I
     which program it is and what it is built to reach (``ToolContext.outside_sources``), the
     person's own words named as theirs beside it, or, with nobody's words in the turn at all
     (``ToolContext.anyones_words``), that nobody said or wrote anything (``outside_words``): the
-    judge weighs the source like a person would, and the code refuses nothing for it."""
+    judge weighs the source like a person would, and the code refuses nothing for it. So is a line
+    heard from a voice the house was not sure was the person's among the words of a review
+    (``ToolContext.told_unsure``, ``UNSURE_LINE_WORDS``): a review has no speaker to tell it."""
     told = outside_words(
+        unsure=ctx.told_unsure,
         unknown=ctx.told_unknown,
         kinds=ctx.outside_kinds,
         their_words=ctx.reply_message_id is not None or ctx.asked_before,

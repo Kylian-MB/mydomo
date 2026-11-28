@@ -660,11 +660,43 @@ async def test_a_gesture_born_of_an_unsure_voice_weighs_who_spoke(
 async def test_a_silent_judge_lets_a_sure_lines_gesture_run(
     owner_chat: ChatPilot, monkeypatch: pytest.MonkeyPatch
 ):
+    from domo_core.confirmations.case import UNSURE_LINE_WORDS
     from domo_core.confirmations.judge import fallback
 
     await owner_chat.say("Dana moves in with us next week.")
-    monkeypatch.setattr(execution_module, "judge", Judged(fallback("error")))
+    judge = Judged(fallback("error"))
+    monkeypatch.setattr(execution_module, "judge", judge)
     [opened] = await reviewed(
         owner_chat, his("record_open", name="Dana", standing="lives_here", ground="will_come")
     )
     assert opened["status"] == "done", opened
+    # Nothing in the case says a voice was doubted when none was.
+    for case in judge.cases:
+        assert UNSURE_LINE_WORDS not in str(case.as_json()["idea"]["after_outside_words"])
+
+
+async def test_a_judge_that_answers_is_told_the_line_was_from_an_unsure_voice(
+    owner_chat: ChatPilot, monkeypatch: pytest.MonkeyPatch
+):
+    """The judge's case of such a gesture says, as a fact of the idea, that the words it was born
+    of hold a line heard from a voice the house was not sure was the person's: a judge that
+    answers weighs that doubt, as it would weigh the voice's clues live (the code gives the
+    fact and decides nothing on it)."""
+    from domo_core.confirmations.case import UNSURE_LINE_WORDS
+    from test_memory_review import mark_unsure
+
+    server = owner_chat.server
+    heard = "Dana moves in with us next week."
+    await owner_chat.say(heard)
+    await mark_unsure(server, heard)
+    judge = Judged(Judgement("do"))
+    monkeypatch.setattr(execution_module, "judge", judge)
+    [opened] = await reviewed(
+        owner_chat, his("record_open", name="Dana", standing="lives_here", ground="will_come")
+    )
+    assert opened["status"] == "done", opened
+    opens = TOOLS["record_open"].action_type
+    [case] = [case for case in judge.cases if case.action["type"] == opens]
+    idea = case.as_json()["idea"]
+    assert idea["of"] == "domo"
+    assert UNSURE_LINE_WORDS in str(idea["after_outside_words"]), idea
