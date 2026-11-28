@@ -1,6 +1,6 @@
 [project]
 name = "domo-core"
-version = "0.14.1"
+version = "0.15.0"
 description = "The assistant core: web interface, chat, accounts and audit trail."
 requires-python = ">=3.12"
 license = "MIT"
