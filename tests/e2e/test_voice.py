@@ -115,6 +115,11 @@ class Row:
     resembles_nobody: bool
     cosine: float | None
     window: tuple[float, float] | None = None
+    # Who the product takes the speaker for at this person's own signed-in page
+    # (``channels.voice.speaker.voice_speaker``): "page" (that person, sure or unsure), "nobody"
+    # (a voice like nobody known: the whose-voice question X21 is asked, then the stranger's
+    # path if the quick model does not say "theirs") or "other" (another known person).
+    taken_for: str = "page"
 
 
 @dataclass
@@ -204,6 +209,7 @@ async def _read_all(
     from domo_core.accounts.models import Person
     from domo_core.channels.voice.models import VoicePrint, VoiceRef
     from domo_core.channels.voice.prints import learn, read_voice, similarity
+    from domo_core.channels.voice.speaker import voice_speaker
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
@@ -215,11 +221,13 @@ async def _read_all(
             outer = await connection.begin()
             session = AsyncSession(bind=connection, join_transaction_mode="create_savepoint")
             people: dict[str, uuid.UUID] = {}
+            persons: dict[str, Person] = {}
             for name, role in PEOPLE:
                 person = Person(display_name=name, role=role)
                 session.add(person)
                 await session.flush()
                 people[name] = person.id
+                persons[name] = person
             for name, person_id in people.items():
                 mine = [
                     s for s in sounds if s.who == name and s.kind == "learn" and s.mic == learnt_on
@@ -262,6 +270,22 @@ async def _read_all(
                         now=READ_AT,
                     )
                     base = bases.get(name)
+                    speaker = voice_speaker(
+                        page_person=persons[name],
+                        reading=reading,
+                        print_=print_,
+                        microphone=sound.mic,
+                        signed_in_at=READ_AT,
+                        proofs=(),
+                        now=READ_AT,
+                    )
+                    taken_for = (
+                        "nobody"
+                        if speaker.person_id is None
+                        else "page"
+                        if speaker.person_id == person_id
+                        else "other"
+                    )
                     rows.append(
                         Row(
                             model=model,
@@ -283,6 +307,7 @@ async def _read_all(
                             resembles_nobody=reading.resembles_nobody,
                             cosine=round(similarity(print_.vector, base), 3) if base else None,
                             window=window,
+                            taken_for=taken_for,
                         )
                     )
             await session.close()
@@ -488,6 +513,24 @@ def tables(found: Trial) -> str:
             if r.kind == "imitation" and r.person == "Alex" and r.cosine is not None
         ]
         out.append("")
+        for mic_kind in ("same", "cross"):
+            colds = [
+                r
+                for r in rows
+                if r.kind == "cold"
+                and r.person == "Alex"
+                and r.window is None
+                and (r.mic == learnt_on) == (mic_kind == "same")
+            ]
+            if colds:
+                counts = {
+                    k: sum(r.taken_for == k for r in colds) for k in ("page", "nobody", "other")
+                }
+                out.append(
+                    f"- cold Alex at his page, {mic_kind} mic: {counts['page']} Alex, "
+                    f"{counts['nobody']} to be judged (whose-voice question), {counts['other']} "
+                    f"another known person (n={len(colds)})"
+                )
         for title, values in (
             ("genuine, same mic", same),
             ("genuine, cross mic", cross),
@@ -599,12 +642,36 @@ def test_a_voice_learnt_on_one_microphone_is_not_a_stranger_on_the_other(trial: 
 
 
 def test_the_cold_voice_is_unsure_and_still_alex(trial: Trial) -> None:
+    """On the microphone Alex was learnt on: strict, a cold Alex is never against him nor a voice
+    like nobody (still fails: trials defect 2, five readings on the home server)."""
     wrong = [
         (r.model, r.learnt_on, r.file, r.weighs, r.degree, r.best_other)
         for r in _rows(trial, kind="cold", person="Alex")
-        if r.weighs == "against" or r.resembles_nobody
+        if r.mic == r.learnt_on and (r.weighs == "against" or r.resembles_nobody)
     ]
     assert wrong == []
+
+
+def test_the_cold_voice_on_another_microphone_is_alex_or_judged(trial: Trial) -> None:
+    """On a microphone where Alex has no base print, the owner (2026-11-28): "Domo juge à chaque
+    fois". A cold read like nobody known is not a failure of the reading: at his own signed-in
+    page the product asks the whose-voice question (X21: the quick model, with this visit's last
+    lines) before any stranger's path; the trial has no quick model, so it counts those readings
+    as judged. A cold taken for another known person is a failure."""
+    cold = [r for r in _rows(trial, kind="cold", person="Alex") if r.mic != r.learnt_on]
+    judged = [r for r in cold if r.taken_for == "nobody"]
+    other = [
+        (r.model, r.learnt_on, r.file, r.weighs, r.degree, r.best_other)
+        for r in cold
+        if r.taken_for == "other"
+    ]
+    # Never a silent stranger by score alone: a speaker who is nobody, said to him at a signed-in
+    # page, is first asked about (``session._theirs_after_all``), then the stranger's exchange.
+    print(
+        f"cold Alex on another microphone: {len(cold) - len(judged) - len(other)} Alex, "
+        f"{len(judged)} judged, {len(other)} another known person (n={len(cold)})"
+    )
+    assert cold and other == []
 
 
 def test_the_imitation_is_never_sure(trial: Trial) -> None:
