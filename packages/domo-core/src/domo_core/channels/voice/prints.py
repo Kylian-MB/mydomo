@@ -19,7 +19,7 @@ is someone else we know                        ``weighs == "against"``; who: ``b
                                                person)
 is not learnt yet for the person               ``not learnt`` (``weighs == "unknown"``)
 is an unknown voice                            ``resembles_nobody`` (never for a ``short``
-                                               sound, never on a ``new_microphone``)
+                                               sound)
 is unsure (between the thresholds, a cold, a   anything else: ``weighs == "unknown"``,
 ``short`` sound, a tie with a known other)     ``learnt``, not ``resembles_nobody``; a tie
                                                names the other in ``best_other``
@@ -31,9 +31,6 @@ is unsure (between the thresholds, a cold, a   anything else: ``weighs == "unkno
 voice learnt far from the page's person (under ``AGAINST_AT``, not a passing print) whom no known
 other reads "for" is taken for nobody known, even when a known other is named between the
 thresholds (``weighs == "against"`` here); a known other reading "for" and nearer is that person.
-Both hold only on a microphone where the person has a base print: on another
-(``Reading.new_microphone``) such a voice is unsure, never nobody known, and a known other only
-named between the thresholds is not "against" them (the owner, 2026-11-28).
 
 What is reported is never lifted to "for" by the utterances just before: a print of at least
 ``MIN_SECONDS`` is read alone; a shorter one is joined only with the earlier prints that read
@@ -115,9 +112,8 @@ class Reading:
     person's voice is learnt and far (under ``AGAINST_AT``) and ``best_other`` is named;
     ``unknown`` for everything else: nothing learnt for the person, a ``short`` sound, a tie with
     a known other who reads "for" (named in ``best_other``), a degree between the thresholds, a
-    voice only a passing print matches (``via_passing``), a voice far from the person that
-    resembles nobody known (``resembles_nobody``), or, on a ``new_microphone``, a voice far from
-    them whose nearest known other does not read "for".
+    voice only a passing print matches (``via_passing``), or a voice far from the person that
+    resembles nobody known (``resembles_nobody``).
 
     ``short``: under ``MIN_SECONDS`` of sound, even joined: never "against", never an unknown
     voice, only unsure.
@@ -148,13 +144,7 @@ class Reading:
 
     ``to_relearn``: the person's voice is to be learnt again (``mark_to_relearn``: the assistant
     erased it on his own idea), whatever is read: a voice taken for them is not sure for what is
-    sensitive until it is learnt again.
-
-    ``new_microphone``: the person's voice is learnt, but not on this microphone (no base print of
-    theirs here): a voice far from them is then never one that resembles nobody, nor "against"
-    them for a known other only named between the thresholds; it is unsure (the owner,
-    2026-11-28, "oui, pas sûr": a microphone they never used may change their voice, so a real
-    stranger there reads unsure too)."""
+    sensitive until it is learnt again."""
 
     weighs: Weighs
     degree: float
@@ -168,15 +158,13 @@ class Reading:
     short: bool = False
     usable: bool = True
     to_relearn: bool = False
-    new_microphone: bool = False
 
     @property
     def resembles_nobody(self) -> bool:
-        """The voice is learnt for the person on this microphone, long enough to judge, far from
-        it, and near no one else known."""
+        """The voice is learnt for the person, long enough to judge, far from it, and near no one
+        else known."""
         return (
             self.learnt
-            and not self.new_microphone
             and not self.short
             and not self.via_passing
             and self.degree < AGAINST_AT
@@ -508,7 +496,7 @@ def _verdict(measure: _Measure, *, short: bool, degree: float, via_passing: bool
         return "for"
     if degree >= AGAINST_AT:
         return "unknown"
-    if other >= AGAINST_AT and measure.other_is_nearer() and own.base_here:
+    if other >= AGAINST_AT and measure.other_is_nearer():
         return "against"
     return "unknown"
 
@@ -569,7 +557,6 @@ async def read_voice(
         via_passing=via_passing,
         short=short,
         to_relearn=person_id is not None and await _to_relearn(session, person_id),
-        new_microphone=own.learnt and not own.base_here,
     )
 
 
