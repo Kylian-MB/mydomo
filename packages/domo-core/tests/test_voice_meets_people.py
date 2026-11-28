@@ -2,13 +2,19 @@
 voice learnt of someone follows their record, and who speaks is judged with the marks of the
 records involved."""
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from domo_core.accounts.actors import actor_of as accounts_actor_of
 from domo_core.accounts.models import Person
 from domo_core.channels.voice.models import VoiceMoment, VoicePrint, VoiceRef
 from domo_core.people import forget, merge, records
+from domo_core.policy.actions import DescribedAction
+from domo_core.policy.barrier import Allow, NeedsApproval
+from domo_core.policy.catalog import DEFAULT_POLICY
+from domo_core.policy.decision import decide_now
 from sqlalchemy import func, select
 
 NOW = datetime(2026, 11, 28, 12, 0, tzinfo=UTC)
@@ -86,3 +92,45 @@ async def test_the_owner_keeps_his_voice_since_he_is_never_forgotten(session, ad
     with pytest.raises(records.NotPossible):
         await forget.forget(session, alex, by="domo", turn_of=None, now=NOW)
     assert await _count(session, VoicePrint) == 1
+
+
+# --- someone heard at another person's page --------------------------------------------------
+
+
+KEY_ADD = DescribedAction("core", "key.add", None, "permissions", "household")
+
+
+async def test_at_a_childs_page_the_childs_side_is_read_with_the_child_mark(session, add_person):
+    """Dana, an adult, heard unsure at the page of Paul, a record marked as a child though his
+    role is an adult's: Paul's side of the decision is his record's, child mark included, so an
+    adult's agreement is asked as for Paul himself."""
+    await add_person("Alex", "owner")
+    dana = a_record("Dana")
+    paul = a_record("Paul", is_child=True)
+    session.add_all([dana, paul])
+    await session.flush()
+    as_paul = await decide_now(
+        session,
+        replace(accounts_actor_of(paul), standing="unsure"),
+        KEY_ADD,
+        DEFAULT_POLICY,
+        NOW,
+    )
+    assert isinstance(as_paul, NeedsApproval) and as_paul.approver == "adult"
+    alone = await decide_now(
+        session,
+        replace(accounts_actor_of(dana), standing="unsure"),
+        KEY_ADD,
+        DEFAULT_POLICY,
+        NOW,
+    )
+    assert isinstance(alone, Allow)
+    at_pauls_page = await decide_now(
+        session,
+        replace(accounts_actor_of(dana), standing="unsure", page_person_id=paul.id),
+        KEY_ADD,
+        DEFAULT_POLICY,
+        NOW,
+    )
+    assert isinstance(at_pauls_page, NeedsApproval) and at_pauls_page.approver == "adult"
+    assert at_pauls_page.judge_identity

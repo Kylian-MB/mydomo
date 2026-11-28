@@ -48,6 +48,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domo_core.accounts.actors import actor_of as accounts_actor_of
 from domo_core.accounts.models import Person
 from domo_core.people.directives import refusal_for
 from domo_core.policy.actions import DescribedAction
@@ -198,9 +199,14 @@ async def decide_now(
                 )
                 for who, read in (
                     (replace(actor, page_person_id=None), directives_read),
+                    # The page's person as their record makes them (a child mark, a made role),
+                    # with the doubt on who speaks.
                     (
                         replace(
-                            actor, person_id=page.id, role=as_role(page.role), page_person_id=None
+                            accounts_actor_of(page),
+                            standing=actor.standing,
+                            voice_too_short=actor.voice_too_short,
+                            subject=actor.subject,
                         ),
                         False,
                     ),
