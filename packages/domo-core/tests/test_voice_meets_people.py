@@ -94,6 +94,29 @@ async def test_the_owner_keeps_his_voice_since_he_is_never_forgotten(session, ad
     assert await _count(session, VoicePrint) == 1
 
 
+async def test_a_merge_into_the_owner_never_gives_him_the_other_persons_voice(session, add_person):
+    """Tom merged into Alex, the owner, by mistake: Tom's voice stays on Tom's record (merged, so
+    nobody known to the voice) and never reads as Alex's; a split gives Tom back his voice."""
+    alex = await add_person("Alex", "owner")
+    tom = a_record("Tom")
+    session.add(tom)
+    await session.flush()
+    await _voice_of(session, tom, "v-tom")
+    trace = await merge.merge(
+        session, kept=alex, absorbed=tom, by="domo", reason=MERGE_WHY, turn_of=None, now=NOW
+    )
+    assert trace.kept_id == alex.id
+    on = await session.scalar(select(VoiceRef.person_id).where(VoiceRef.reference == "v-tom"))
+    assert on == tom.id
+    moments = set(await session.scalars(select(VoiceMoment.person_id)))
+    assert moments == {tom.id}
+    assert await _count(session, VoicePrint) == 1
+    await merge.split(session, trace, by="domo", reason=MERGE_WHY, turn_of=None, now=NOW)
+    back = await session.scalar(select(VoiceRef.person_id).where(VoiceRef.reference == "v-tom"))
+    assert back == tom.id
+    assert await _count(session, VoicePrint) == 1
+
+
 # --- someone heard at another person's page --------------------------------------------------
 
 

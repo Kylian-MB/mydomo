@@ -21,7 +21,12 @@ key, the lower; of two places on the successors' list, the better rank. What sta
 listing with the absorbed record (it is merged), is there again after a split, and goes when the
 trace is emptied. When the kept record is the owner's, nothing that would bind him lands on him:
 the other record's personal rights and spending limits stay with it, and its child mark is not
-his.
+his. Nor does its voice (``voice_refs``, so its prints, and a moment reserved for it): heard as the
+owner's it would act with his rights, sure; left on the merged record it is nobody known to the
+voice (the record is not in the household), is that person's again after a split, and goes with
+the record when the trace is emptied. Between two other records the voice moves like the rest;
+where each has a moment reserved, the absorbed one's stays on it (a person has one at most) and
+runs out.
 
 A split gives back an access the absorbed record had only through ``records.give_access`` (its
 act, the owner's directives): when that door says no, the records are two again and the access
@@ -96,6 +101,14 @@ _RIGHTS: Final = "policy_rights.person_id"
 _LIMITS: Final = "spending_limits.person_id"
 _PLACES: Final = "successors.person_id"
 _DIRECTIVES: Final = "owner_directives.person_id"
+# What of the absorbed record stays with it when the kept record is the owner's: what would bind
+# him, and its voice (the references, so the prints with them, and a moment reserved for it).
+_NOT_ON_THE_OWNER: Final = (
+    _RIGHTS,
+    _LIMITS,
+    "voice_refs.person_id",
+    "voice_moments.person_id",
+)
 # What a spending limit says, exchanged between two limits when the absorbed record's is lower.
 _LIMIT_VALUES: Final = (
     "amount",
@@ -579,9 +592,10 @@ async def merge(
     # The references of a channel that move with everything else (a channel is told of them).
     channel_refs = await _refs_of(session, absorbed.id)
     # Nothing of the other record that would bind the owner lands on him: its personal rights
-    # and spending limits stay with it (as rows that stayed), and its child mark is not his.
+    # and spending limits stay with it (as rows that stayed), and its child mark is not his. Nor
+    # does its voice: heard as his, it would act with his rights, sure.
     for_the_owner = kept.role == "owner"
-    spared = await _rows_on(session, absorbed.id, (_RIGHTS, _LIMITS)) if for_the_owner else {}
+    spared = await _rows_on(session, absorbed.id, _NOT_ON_THE_OWNER) if for_the_owner else {}
     moved, stayed = await _move_everything(session, absorbed, kept, skip=frozenset(spared))
     settled = await _keep_the_stricter(session, moved, stayed, kept.id, now)
     for where, keys in spared.items():
