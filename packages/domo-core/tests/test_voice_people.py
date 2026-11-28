@@ -1,9 +1,10 @@
 """Voice prints follow the record of the person they are of (Task 27).
 
-"Domo crée les personnes" is not merged: ``channels.voice.people`` stands in for its hooks
-(``claim_reference``, ``refs_of``, ``person_of_ref``) over ``voice_refs`` itself, and applies its
-notices (``on_record``: merged, split, erased, forgotten) to the prints. A missed notice is mended
-by ``reconcile``, here given the record's view as that branch would give it."""
+``channels.voice.people`` keeps a stand-in for the records' hooks (``claim_reference``,
+``refs_of``, ``person_of_ref``) over ``voice_refs`` itself, and applies notices (``on_record``:
+merged, split, erased, forgotten) to the prints; nothing in the application calls them (the
+records' own paths move and delete the voice's rows, ``people.merge``, ``people.forget``). A
+missed notice is mended by ``reconcile``, here given a view of the record by hand."""
 
 import uuid
 from datetime import timedelta
@@ -202,6 +203,18 @@ async def test_with_the_stand_in_there_is_nothing_to_mend(session):
     alex = await person(session)
     await learnt_voice(session, alex, ALEX)
     assert await reconcile(session, NOW) == 0
+
+
+async def test_the_records_hooks_know_no_voice_so_they_must_not_feed_the_reconciliation(session):
+    """The voice claims nothing in ``person_channel_refs``: the records' ``person_of_ref`` reads a
+    learnt voice as nobody's, so ``reconcile`` fed with it would erase every voice."""
+    from domo_core.people import hooks
+
+    alex = await person(session)
+    reference = (await learnt_voice(session, alex, ALEX)).reference
+    assert await hooks.person_of_ref(session, channel="voice", reference=reference) is None
+    assert await reconcile(session, NOW) == 0
+    assert await prints_under(session, reference) > 0
 
 
 async def test_an_unknown_reference_claimed_later_keeps_its_prints(session):

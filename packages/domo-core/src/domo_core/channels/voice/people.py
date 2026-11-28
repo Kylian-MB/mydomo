@@ -1,14 +1,23 @@
 """Voice prints follow the record of the person they are of (spec 6.5, 6.10; Task 27).
 
-"Domo crée les personnes" (its Task 24, ``people/hooks.py``) is not merged. Until it is, this
-module stands in for its hooks under the same names, over ``voice_refs`` itself:
-``voice_refs.person_id`` stays the link to the person (``ON DELETE CASCADE`` erases a voice with
-its person), ``claim_reference`` sets it, ``refs_of`` and ``person_of_ref`` read it.
-``RecordEvent``, ``NoSuchRecord`` and ``ReferenceTaken`` are that branch's contract, copied; nothing
-emits a notice yet. At its merge, the three hooks and those names are replaced by that branch's
-(the voice keeps ``on_record``, ``reconcile`` and the upkeep pass, and subscribes ``on_record``).
+The voice keeps its own store: ``voice_refs.person_id`` is the link to the person (``ON DELETE
+CASCADE`` erases a voice with its person), and the voice claims nothing in
+``person_channel_refs`` (``prints`` makes its ``VoiceRef`` rows itself). The records' own paths
+handle the voice's tables directly: a merge moves ``voice_refs`` and ``voice_moments`` with every
+other row that names a record, except onto the owner's record (``people.merge``), a split puts
+back what moved, and forgetting deletes them (``people.forget``); a record that may be erased
+never had an access, so never a voice learnt (prints are learnt for a signed-in person only).
+Nothing here is subscribed to the records' notices (``people.hooks``).
 
-What a notice does to the prints (``on_record``):
+The names below (``claim_reference``, ``refs_of``, ``person_of_ref``, ``on_record``,
+``RecordEvent``, ``NoSuchRecord``, ``ReferenceTaken``) are a stand-in written before the records
+existed, over ``voice_refs`` itself; only tests call them. They must NOT be wired to
+``people.hooks`` as they are: that module reads ``person_channel_refs``, where the voice holds
+nothing, so ``reconcile`` fed with its ``person_of_ref`` would read every voice as nobody's and
+delete it with its prints at the next round. As it is, ``reconcile`` reads ``voice_refs`` against
+itself and changes nothing.
+
+What a notice would do to the prints (``on_record``):
 
 =============  =================================================================================
 ``merged``     the references in ``refs`` now belong to ``into_id`` (the record kept)
@@ -18,8 +27,9 @@ What a notice does to the prints (``on_record``):
                only"); a reference nobody claimed (an unknown voice) named there goes too
 =============  =================================================================================
 
-``reconcile`` mends a notice that was missed (notices leave after the commit, never retried): each
-reference of a person that was here when the pass began is weighed on its own (``person_of_ref``,
+``reconcile`` would mend a notice that was missed (given a ``person_of`` that reads the voice's
+own links truly; see above): each reference of a person that was here when the pass began is
+weighed on its own (``person_of_ref``,
 read for that row): one whose owner is nobody now is erased, one that is someone else's now
 follows them; a reference made while the pass runs is never touched. A voice nobody knows is not
 the record's: it is left to its own end (``prints.sweep``). The upkeep pass (``voice_upkeep_pass``)
