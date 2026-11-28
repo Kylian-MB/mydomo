@@ -18,3 +18,7 @@ test-results/
 # Local agent workspace
 .superpowers/
 .idea/
+
+# Kept in a private place, never in this repository
+docs/superpowers/plans/
+docs/superpowers/audits/

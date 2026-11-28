@@ -610,6 +610,48 @@ def test_the_notes_line_says_to_show_the_card_never_to_quote():
     assert "never quote them from memory" in show and "in this answer" in show
 
 
+def test_the_notes_line_says_to_offer_what_a_note_asks_with_the_persons_rights():
+    """The owner, 2026-11-27: Domo understands a note as a note and understands what it says; when
+    it holds a request he can fulfil, he offers the person to do it, and on their yes it runs
+    with their rights, never the author's. Only where he can act."""
+    notes = (
+        NoteToTell(
+            id=str(uuid.uuid4()),
+            author="Dana",
+            left_at="2026-11-27",
+            words="Dana asks whether the heating can be turned off tomorrow at 8.",
+        ),
+    )
+
+    def line(
+        *, can_act: bool, offered: frozenset[str], told: tuple[NoteToTell, ...] = notes
+    ) -> str:
+        prompt = build_system_prompt(
+            display_name="Alex", role="owner", can_act=can_act, notes_to_tell=told, offered=offered
+        )
+        return " ".join(prompt.split(CONTEXT_MARK)[1].split())
+
+    offer = (
+        "The one thing you may add: when the note itself asks for something a tool of yours can "
+        "do, offer the person to do it, naming plainly what you would do. On their yes it is "
+        "their own request, done with their rights, never the author's. A note that asks for "
+        "nothing, or for what you cannot do, gets no offer of any kind."
+    )
+    for offered in (frozenset({"note_told", "note_show"}), frozenset({"household_list"})):
+        assert offer in line(can_act=True, offered=offered)
+    # Where he cannot act, he offers nothing.
+    assert "offer the person" not in line(can_act=False, offered=frozenset({"note_told"}))
+    assert "offer the person" not in line(can_act=True, offered=frozenset())
+    # A note he left himself has no other author whose request it would be: with only such
+    # notes the sentence is left out; with one of a person's among them it is there.
+    his = NoteToTell(
+        id=str(uuid.uuid4()), author="Domo", left_at="2026-11-27", words="Bins.", yours=True
+    )
+    tools = frozenset({"note_told"})
+    assert "offer the person" not in line(can_act=True, offered=tools, told=(his,))
+    assert offer in line(can_act=True, offered=tools, told=(his, *notes))
+
+
 def test_the_notes_line_says_to_tell_a_note_and_stop_and_that_domo_in_it_is_him():
     """On a real model, told a note, Domo once added "je note qu'il a pensé à moi" (the habit of
     saying he noted it, in another form), and told "Alex has updated Domo." as "il a mis Domo à

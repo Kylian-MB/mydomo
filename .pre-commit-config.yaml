@@ -1,3 +1,7 @@
+# `pre-commit install` enables both the commit hooks and the push hook.
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
+
 repos:
   - repo: https://github.com/gitleaks/gitleaks
     rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e  # frozen: v8.30.1
@@ -20,3 +24,12 @@ repos:
         entry: python scripts/check_personal_data.py
         language: system
         types: [text]
+        stages: [pre-commit, pre-push]
+      - id: check-push
+        name: check what a push publishes
+        description: Refuse another repository's history, and personal data in the commits themselves.
+        entry: python -m scripts.check_push
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [pre-push]
