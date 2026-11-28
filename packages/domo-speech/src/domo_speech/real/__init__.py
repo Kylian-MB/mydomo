@@ -328,11 +328,11 @@ class RealHears:
         self._library = library
 
     async def transcribe(
-        self, pcm: bytes, *, language: str | None, model: str | None
+        self, pcm: bytes, *, language: str | None, model: str | None, hint: str | None = None
     ) -> Transcript:
         async with self._library.serving("hear", model) as slot:
             return await self._library.run(
-                slot, lambda engine: _hearing(engine).transcribe(pcm, language)
+                slot, lambda engine: _hearing(engine).transcribe(pcm, language, hint=hint)
             )
 
 

@@ -13,6 +13,12 @@ before for a short sound) under their reference, or under the reference of an un
 the reading says it resembles nobody known (``prints.reference_for``). Nothing is learnt here:
 learning is the session's, which knows whether the words were a reserved moment's.
 
+The house's speech service is given the known language of the page's person, else the house's,
+as a hint (the owner, 2026-11-28, "donner la langue connue"): it hears in that language when its
+own detection is not clear (a short sound, a low probability), and in the language it detects
+when that is clear, so a sentence plainly said in another language is still heard in it and
+answered in it. A provider outside the house gets no hint and detects as before.
+
 When nothing can hear (no model where it may go, a service still preparing, down, or a firm
 limit), ``CannotHear`` says what the page is told (``protocol.Hearing``): ``preparing``, or
 ``unavailable`` (with ``no_model`` when no model may hear at all).
@@ -26,12 +32,14 @@ from datetime import datetime
 from typing import Final, Literal
 
 import anyio
+from domo_common.text_rules import language_tag
 
 from domo_core.accounts.models import Person
 from domo_core.channels.voice.deps import VoiceDeps
 from domo_core.channels.voice.prints import Reading, read_voice, reference_for
 from domo_core.llm.speech.client import Heard, Print, PrintThresholds, SpeechError
 from domo_core.llm.speech.metered import MeteredSpeech
+from domo_core.policy.settings import load_policy_settings
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +105,8 @@ async def hear(
         # A phrase is only ever heard at home: none there is not "no model may hear at all".
         raise CannotHear("unavailable", no_model=not for_a_proof)
     printing = await deps.speech.open(person, "voice_print", for_a_proof=for_a_proof)
-    words, print_ = await _both(hearing, printing, pcm)
+    language = await _hint(deps, person)
+    words, print_ = await _both(hearing, printing, pcm, language)
     del pcm  # the sound is let go: nothing below needs it
     if not words_in(words.text):
         return None
@@ -138,16 +147,29 @@ class _Got:
     print_: Print | None = None
 
 
+async def _hint(deps: VoiceDeps, person: Person) -> str | None:
+    """The language the hearing is hinted to hear in: the page person's, else the house's,
+    its first part only (``fr`` for ``fr-BE``); ``None`` (the model guesses) when neither is a
+    language tag."""
+    known = person.language
+    if known is None or language_tag(known) is None:
+        async with deps.turn.session_factory() as session:
+            known = (await load_policy_settings(session)).house_language
+    tag = language_tag(known)
+    return None if tag is None else tag.split("-", 1)[0]
+
+
 async def _both(
-    hearing: MeteredSpeech, printing: MeteredSpeech | None, pcm: bytes
+    hearing: MeteredSpeech, printing: MeteredSpeech | None, pcm: bytes, language: str | None
 ) -> tuple[Heard, Print | None]:
-    """The words and the print of ``pcm``, asked at once. ``CannotHear`` when the words cannot be
-    had; a print that fails is no print."""
+    """The words of ``pcm``, with ``language`` as the hint of the language they are in
+    (``None``: none), and its print, asked at once. ``CannotHear`` when the words cannot be had;
+    a print that fails is no print."""
     got = _Got()
 
     async def listen() -> None:
         try:
-            got.words = await hearing.transcribe(pcm)
+            got.words = await hearing.transcribe(pcm, hint=language)
         except SpeechError as error:
             got.failed = error.reason
         except Exception as error:

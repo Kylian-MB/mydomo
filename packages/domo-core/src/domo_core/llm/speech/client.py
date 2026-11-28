@@ -19,6 +19,7 @@ import httpx
 from domo_core.gatekeeper_client import GatekeeperClient
 from domo_core.llm.models import Provider
 from domo_core.llm.router import Route
+from domo_core.llm.speech.home_key import HOME_SPEECH_ID
 
 logger = logging.getLogger(__name__)
 
@@ -194,9 +195,16 @@ class SpeechClient:
             raise SpeechError(reason)
         return cast(dict[str, object], body)
 
-    async def transcribe(self, route: Route, pcm: bytes, *, language: str | None = None) -> Heard:
-        """The words in ``pcm``, as the model of ``route`` hears them."""
+    async def transcribe(
+        self, route: Route, pcm: bytes, *, language: str | None = None, hint: str | None = None
+    ) -> Heard:
+        """The words in ``pcm``, as the model of ``route`` hears them: in ``language`` when
+        given; ``hint`` (the speaker's known language) goes to the house's own speech service
+        only (``language_hint``, heard in when its detection is not clear), never to another
+        provider, which detects as before."""
         data = {"model": route.model_id, **({"language": language} if language else {})}
+        if hint and route.provider.id == HOME_SPEECH_ID:
+            data["language_hint"] = hint
         fields = await self._send(
             route.provider.id,
             "audio/transcriptions",

@@ -897,9 +897,9 @@ personne qu'il connaît n'est pas prise pour un inconnu sur le seul score : il
 juge, d'après ce qui vient d'être dit là, si c'est encore toi (tu es alors « pas
 sûr », et cette phrase n'apprend rien de ta voix). À un autre micro que celui où
 il t'a appris, un gros rhume peut encore te faire passer pour un inconnu. Un
-nouveau micro s'apprend aussi ; changer de langue fait recommencer
-l'apprentissage d'une voix : si tu changes souvent de langue, il te connaît plus
-lentement.
+nouveau micro s'apprend aussi ; une phrase différente des autres (dans une autre langue, par exemple) ne fait plus
+recommencer l'apprentissage d'une voix, mais deux de suite oui, et une voix
+nettement différente le fait recommencer tout de suite.
 S'il a appris la voix de quelqu'un d'autre comme la tienne, dis-le-lui avec tes
 mots (« ce n'était pas moi ») : il oublie ce qu'il a appris depuis.
 

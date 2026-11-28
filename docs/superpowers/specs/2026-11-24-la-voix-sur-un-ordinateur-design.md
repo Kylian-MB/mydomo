@@ -143,7 +143,7 @@ Un petit serveur HTTP, sans état, qui ne garde aucun son et n'écrit aucun text
 
 - **sûr** : un indice sûr du code désigne la personne (la page connectée, une preuve récente) et la voix colle, ou n'est pas encore apprise, ou il n'y a pas de voix (page tapée) ;
 - **pas sûr** : il y a une personne probable, mais rien de sûr ne la confirme. Trois cas : la voix de la personne de la page colle mal (un rhume, un nouveau casque, ou quelqu'un d'autre) — la personne probable reste celle de la page ; la voix désigne nettement une autre personne connue — la personne probable est celle-là ; plus tard, une voix sans page ;
-- **inconnu** : la voix de la personne de la page est apprise, celle-ci en est nettement loin, et elle ne ressemble à personne de connu.
+- **inconnu** : la voix de la personne de la page est apprise, celle-ci en est nettement loin, et elle ne ressemble à personne de connu. Devant sa propre page, Domo juge alors à chaque fois si c'est elle quand même (une question au petit modèle, avec les dernières lignes de la visite), y compris sur un micro où sa voix n'est pas encore apprise (ta décision du 2026-11-28, « Domo juge à chaque fois » ; registre X40).
 
 L'état ne dépend que des indices du code. L'indice de source `domo` (la manière de parler) ne change pas l'état : il est lu par le juge et par le modèle qui discute. Il est écrit par Domo pendant un tour, avec un outil, et vaut pour les phrases suivantes ; aucun appel de modèle n'est ajouté avant la barrière.
 
@@ -179,7 +179,7 @@ La section du juge sur qui parle (`prompts/yes_judge.md`, tenue par « Domo juge
 **Apprendre et suivre les voix** (dans le cœur, `C/channels/voice/`) :
 
 - Une **référence** par voix, à nous, opaque. Une voix inconnue a la sienne dès la première phrase, avant toute fiche. Les empreintes (des vecteurs, jamais du son) sont rangées par référence **et par micro**, plusieurs par personne.
-- Domo apprend la voix de quelqu'un quand il est sûr par un autre moyen (la page connectée, une preuve) et que plusieurs phrases de suite se ressemblent, sur au moins deux visites. Avant cela, l'indice de voix dit « pas encore apprise ».
+- Domo apprend la voix de quelqu'un quand il est sûr par un autre moyen (la page connectée, une preuve) et que plusieurs phrases se ressemblent, sur au moins deux visites ; une phrase différente entre deux phrases qui se ressemblent n'est pas comptée, et il ne recommence qu'après deux phrases différentes de suite, ou tout de suite sur une phrase nettement loin (tes décisions du 2026-11-28, « deux phrases de suite », puis « oui, tout de suite » ; registre X39). Avant cela, l'indice de voix dit « pas encore apprise ».
 - Chaque personne a des empreintes **de fond**, qui bougent lentement, et des empreintes **récentes**, mises à jour un peu à chaque phrase sûre. Ainsi la voix qui change avec le temps est suivie.
 - **Malade** : la voix colle moins, les autres indices tiennent. Domo ne traite pas la personne en inconnue ; ces phrases vont dans une empreinte **passagère** qui s'efface seule et n'abîme pas celles de fond.
 - **Nouveau micro** : pas d'empreinte pour ce micro ; Domo compare à celles des autres micros avec moins de poids, et en apprend une pour celui-ci.
@@ -209,7 +209,7 @@ Ce que Domo n'a pas eu le temps de dire reste écrit dans la discussion. La tabl
 - Un tour de conversation habituel : `Conversation.say` puis `answer`, avec un auditeur du canal voix. Les mots arrivent par morceaux ; l'auditeur les découpe en phrases, les envoie à « dire », et pousse le son à la page. Le texte est aussi dans la discussion, donc visible sur la page.
 - Capacités du canal : pas de boutons, ne montre rien une fois, pas d'écran sûr, entend ce que Domo dit de lui-même, preuve possible : la phrase dite. Le texte du canal dit au modèle que ses mots seront **dits** : phrases courtes, pas de listes ni de mise en forme.
 - Ce que Domo dit de lui-même (un mot laissé, un rappel) est dit à voix haute si la page écoute.
-- Langues : la langue de chaque phrase est détectée ; Domo répond dans celle-là avec une voix de cette langue. Sans indice : la langue de la personne, puis celle de la maison.
+- Langues : le service de parole de la maison reçoit la langue connue de la personne de la page, sinon celle de la maison, comme indice (ta décision du 2026-11-28, « donner la langue connue ») : il entend dans cette langue quand sa propre détection n'est pas nette (phrase courte, peu sûre), sinon dans la langue détectée ; Domo répond dans celle-là avec une voix de cette langue (registre X41).
 
 ### 6.8 Cartes, codes, secrets
 

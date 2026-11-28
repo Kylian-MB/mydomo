@@ -820,8 +820,9 @@ resembles nobody he knows is not made a stranger by the score alone: he judges,
 from what was just said there, whether it is still you (then you are "not sure",
 and that sentence never teaches your voice). At another microphone than the one
 he learnt you on, a heavy cold can still read as a stranger. A new microphone is
-learnt too; a change of language starts the learning of a voice again, so if you
-switch language often he knows you more slowly. If he learnt someone else's voice as yours, tell him
+learnt too; one sentence unlike the others (in another language, for instance) no
+longer starts the learning again, but two in a row do, and a clearly different
+voice restarts it at once. If he learnt someone else's voice as yours, tell him
 so in your own words ("that was not me"): he forgets what he learnt since.
 
 - **Sure** (your page, and the voice fits, is not learnt yet, or you type): as

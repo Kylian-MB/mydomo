@@ -1,6 +1,6 @@
 [project]
 name = "domo-common"
-version = "0.14.1"
+version = "0.14.2"
 description = "Shared models and helpers used by the assistant core and gatekeeper."
 requires-python = ">=3.12"
 license = "MIT"

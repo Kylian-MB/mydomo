@@ -16,7 +16,12 @@ FAKE_PRINT_MODEL = "fake-print"
 
 class FakeHears:
     async def transcribe(
-        self, pcm: bytes, *, language: str | None, model: str | None = None
+        self,
+        pcm: bytes,
+        *,
+        language: str | None,
+        model: str | None = None,
+        hint: str | None = None,
     ) -> Transcript:
         text = ""
         if pcm.startswith(_PREFIX):
@@ -27,7 +32,7 @@ class FakeHears:
         )
         return Transcript(
             text=text,
-            language=language or "en",
+            language=language or hint or "en",
             seconds=len(pcm) / _BYTES_PER_SECOND,
             words=words,
         )

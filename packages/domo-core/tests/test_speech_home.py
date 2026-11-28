@@ -313,7 +313,7 @@ async def test_a_failed_call_of_sound_asks_for_the_list_again(
         def __init__(self, reason: str) -> None:
             self.reason = reason
 
-        async def transcribe(self, route, pcm, *, language=None):
+        async def transcribe(self, route, pcm, *, language=None, hint=None):
             raise SpeechError(self.reason)  # type: ignore[arg-type]
 
     for reason, asks in (("limit_reached", False), ("unreachable", True)):

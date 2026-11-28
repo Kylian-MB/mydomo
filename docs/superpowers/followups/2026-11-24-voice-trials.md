@@ -323,6 +323,19 @@ No language given, so the detected language is the model's. "Heard back" is the 
 words said found in the text (a plain count: "9h" for "neuf heures" counts as two misses). Time is
 the median HTTP round trip.
 
+**Since 2026-11-28 (the owner's decisions, ledger X41).** The trial still gives no language (it
+measures the model). The test compares once hours and numbers are written as words on both sides
+(`tests/e2e/heard_words.py`: "9h00" = "neuf heures", "3 pommes" = "trois pommes"; nothing else is
+forgiven), and each hearing model has its own bound of misheard sentences (a wrong language, or
+under 0.8 heard back): base 10% (its measured misses), small 3%, turbo and any model never measured
+none. On the home server's processor (builds 823, 825 then 830, same set, base only): base mishears 9
+of 77 sentences counted the old way, **6 of 77** once figures are words (the two "9h00"/"9h" and
+"3 pommes" are no longer misses; 6 again in 830); bound 7: the test passes. What stays: base on a processor
+mishears French from the high and child-like voices ("peu tue allumée", "aligner/annumer la
+lumière", "pattes ... promage", Tom's "vers nos sœurs" at 0.38). The core now sends the person's
+known language as a hint (`language_hint`, heard in only when detection is not clear): it does not
+mend those, the language was already right.
+
 | run | model | sounds | lang | n | right language | heard back >= 0.8 | mean heard back | median time (s) |
 |---|---|---|---|---|---|---|---|---|
 | cpu | faster-whisper-base | sentences 3.4-5.2 s | fr | 38 | 38 | 29 | 0.87 | 2.34 |
@@ -411,16 +424,31 @@ Not fixed here (no product code in this task); each goes back to the task that o
    a busy machine (`DOMO_SPEECH_DEVICE=cpu`), read `measure.json`; then
    `python -m scripts.voice_bench.first_call faster-whisper-base [--gpu]`. Suggested: one warm-up
    call not counted, the best (or median) of several, and a re-measure when nothing holds for a use.
-2. **A cold on another microphone reads as a stranger.** `packages/domo-core/src/domo_core/
-   channels/voice/prints.py:159` (`Reading.resembles_nobody`): Alex learnt on mic1, cold Alex
-   heard on mic2: 7 of 8 readings (both print models) are learnt, long, degree under 0.30 and
-   nobody else near, so "resembles nobody" (cosine 0.17-0.29); one same-microphone CAM++ reading
-   too (degree just under 0.30). Spec 6.5 wants "unsure, still
-   Alex". The thresholds cannot fix it without letting strangers in. Reproduce: the `cpu` or `gpu`
-   run of `tests/e2e/test_voice.py`, `test_the_cold_voice_is_unsure_and_still_alex`. Possible
-   direction (for the owner of Task 9/20): no "resembles nobody" on a microphone where the person
-   has no base of their own.
+2. **A cold reads as a voice like nobody known.** On another microphone, the owner decided on
+   2026-11-28 « Domo juge à chaque fois » (ledger X40): such a reading is not a failure of the
+   reading, it is judged: at Alex's own signed-in page the whose-voice question is asked (X21), then
+   the stranger's exchange if the quick model does not say "theirs". (An earlier build, 825, made it
+   always unsure instead; that rule was taken out.) The trial now records who the product takes the
+   speaker for (`voice_speaker`) and has two tests: `test_the_cold_voice_on_another_microphone_is_alex_or_judged`
+   (a cold taken for another known person fails; a cold taken for nobody is counted as judged) and
+   `test_the_cold_voice_is_unsure_and_still_alex` (the microphone Alex was learnt on, strict,
+   unchanged). Home server, build 830: **another microphone: 16 readings, 6 Alex (unsure or for),
+   10 judged, 0 another known person: passes**; **the microphone he was learnt on: 5 of 16 still
+   "resemble nobody" (CAM++: mic1 0.30 at the edge, mic2 0.04, 0.17, 0.24; resnet34 mic2 0.14),
+   the same five as in 823 and 825: STILL FAILS**, on purpose (no threshold moved, no known-defect
+   mark: the trials are not needed green to merge; in the product those five are judged too, by
+   the same question). Why: the synthetic cold (-1.5 semitones, 9 % slower, a nasal filter) moves
+   the print further than a real cold may; a voice that far from the learnt base cannot be told
+   from a stranger by the print alone without letting strangers in. Reproduce: the `cpu` run of
+   `tests/e2e/test_voice.py`.
 3. **A voice may never be learnt on a poor microphone when the person changes language.**
+   FIXED on 2026-11-28 (the owner: « deux phrases de suite », ledger X39): one unlike sentence no
+   longer restarts the candidate, two in a row do, and a clearly far one (under `print_low`) at once
+   (the owner: « oui, tout de suite »). Home server, build 823 then 825 (and 830 the same): CAM++ on mic2,
+   Dana `candidate candidate candidate candidate` then **`candidate candidate candidate learnt`**
+   (her first English sentence is not counted, the second joins); everyone is learnt on both
+   microphones with both print models, and a genuine voice on its own microphone reads "for"
+   everywhere (4 misses, then **0**). Was:
    `prints.py:980` (`_candidate`): the candidate restarts when the next utterance's cosine to it
    is under `same_voice` (0.40). On mic2 with CAM++, Alex's French-to-English step is 0.37 and
    Dana's 0.42/0.49 around it: four sentences on two visits end as `candidate candidate candidate
