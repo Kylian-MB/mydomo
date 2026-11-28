@@ -308,7 +308,7 @@ async def test_the_writer_sees_only_the_owners_words_and_the_catalog(
     owner_chat, adult_member, chat_server
 ):
     owner_chat.use_model(FakeChatModel(["Noted."]))
-    await owner_chat.say("mon code secret est 4242")
+    await owner_chat.say("mon code secret est ZK-4242")
     _, model = await propose(owner_chat, WORDS, alex_invites(adult_member.person.id))
     [call] = model.writer_calls
     assert call.tools == (WRITER_TOOL,)
@@ -317,11 +317,11 @@ async def test_the_writer_sees_only_the_owners_words_and_the_catalog(
     assert WORDS in message.content
     assert str(adult_member.person.id) in message.content
     # Nothing of the conversation: not the earlier message, not Domo's own prompt.
-    assert "4242" not in message.content and "4242" not in call.system
+    assert "ZK-4242" not in message.content and "ZK-4242" not in call.system
     assert "Noted." not in message.content
     [domo_first, *_] = model.domo_calls
     assert call.system != domo_first.system
-    assert not any("4242" in json.dumps(str(item)) for item in call.messages)
+    assert not any("ZK-4242" in json.dumps(str(item)) for item in call.messages)
 
 
 async def test_a_writer_that_answers_badly_stores_nothing(

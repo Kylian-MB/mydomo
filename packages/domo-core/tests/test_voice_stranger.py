@@ -207,13 +207,13 @@ async def test_a_stranger_gets_words_and_no_action(house, voice, session_factory
 async def test_nothing_of_the_page_persons_discussion_is_in_the_context(house, voice, owner):
     h = house(FakeChatModel([ANSWER]))
     page = h.page(MIC)
-    await page.hears("Remind me that Dana's surgery is on Friday, the code is 4321.")
-    assert await h.said() == ["Remind me that Dana's surgery is on Friday, the code is 4321."]
+    await page.hears("Remind me that Dana's surgery is on Friday, the code is ZK-4321.")
+    assert await h.said() == ["Remind me that Dana's surgery is on Friday, the code is ZK-4321."]
     voice.unknown = True
     await page.hears("Who lives here?")
     [call] = stranger_calls(h)
     seen = call.system + json.dumps([dump(m) for m in call.messages])
-    for private in ("Dana", "surgery", "4321", "Alex", "owner"):
+    for private in ("Dana", "surgery", "ZK-4321", "Alex", "owner"):
         assert private not in seen
     assert "Who lives here?" in seen
 
