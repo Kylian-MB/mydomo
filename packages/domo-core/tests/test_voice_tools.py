@@ -554,6 +554,19 @@ async def test_an_adult_may_ask_the_phrase_of_a_record_marked_as_a_child_removed
     assert vault.removed == [phrase_ref(paul.id)]
 
 
+async def test_an_unsure_adult_asking_a_childs_phrase_removed_is_judged_not_refused(
+    session_factory,
+):
+    # The voice's rule: who asks is weighed by the barrier and the judge, never refused by the
+    # tool for a doubt on who speaks.
+    _, dana, paul, _ = await the_house(session_factory)
+    unsure = Speaker(dana.id, "voice", clues=(Clue("voice", "for", "weak", "code", NOW),))
+    ctx = context(dana, session_factory, speaker=unsure)
+    ctx.actor = replace(ctx.actor, standing="unsure")
+    described = await TOOLS["spoken_phrase_remove"].describe({"person": "Paul"}, ctx.actor, ctx)
+    assert (described.target, described.whose_judged) == (f"person:{paul.id}", True)
+
+
 async def test_nobody_else_may_ask_another_persons_phrase_removed(session_factory):
     alex, dana, paul, tom = await the_house(session_factory)
     async with session_factory() as writer:
