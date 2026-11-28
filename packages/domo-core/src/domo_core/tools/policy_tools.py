@@ -195,7 +195,7 @@ class PolicyUpdate:
             "number of MB from 16 to 1048576, 1024 unless they choose: beyond it a write of a "
             f"tool is refused); {HEAR_OUTSIDE_KEY} (yes or no, no unless they choose: whether what "
             "the microphones hear may go to a model outside the house: the voice then listens "
-            "freely, and the sound and the words said near it leave the house); "
+            "freely, and the sound, who speaks and the words said near it leave the house); "
             f"{VOICE_GESTURE_KEY} (yes or no, no unless they choose: when no model at home can "
             "tell whether a sentence is said to you, the voice hears only what is said while the "
             "gesture is made, such as a held key: they talk while holding it, and what is heard "

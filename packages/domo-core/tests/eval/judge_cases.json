@@ -2327,7 +2327,7 @@
         "type": "policy.update",
         "target": "speech.hear_outside",
         "facts": {},
-        "says": "What the microphones hear will go to a model outside the house: the voice listens freely, and the sound and the words said near it leave the house."
+        "says": "What the microphones hear will go to a model outside the house: the voice listens freely, and the sound, who speaks and the words said near it leave the house."
       },
       "rights": {
         "allowed": true,
@@ -2415,7 +2415,7 @@
         "type": "policy.update",
         "target": "speech.hear_outside",
         "facts": {},
-        "says": "What the microphones hear will go to a model outside the house: the voice listens freely, and the sound and the words said near it leave the house."
+        "says": "What the microphones hear will go to a model outside the house: the voice listens freely, and the sound, who speaks and the words said near it leave the house."
       },
       "rights": {
         "allowed": true,
@@ -2516,7 +2516,7 @@
         "type": "policy.update",
         "target": "speech.hear_outside",
         "facts": {},
-        "says": "What the microphones hear will go to a model outside the house: the voice listens freely, and the sound and the words said near it leave the house."
+        "says": "What the microphones hear will go to a model outside the house: the voice listens freely, and the sound, who speaks and the words said near it leave the house."
       },
       "rights": {
         "allowed": true,

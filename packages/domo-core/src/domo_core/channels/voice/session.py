@@ -217,7 +217,7 @@ GESTURE_MEANS: Final = (
 )
 OUTSIDE_MEANS: Final = (
     "the voice listens freely, without a button: what the microphones hear goes to a model "
-    "outside the house, so the sound and the words said near them leave the house"
+    "outside the house, so the sound, who speaks and the words said near them leave the house"
 )
 # The tool that records the owner's choice.
 POLICY_TOOL: Final = "policy_update"

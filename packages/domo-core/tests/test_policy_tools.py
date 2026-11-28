@@ -206,7 +206,7 @@ def _rule_change(key: str) -> DescribedAction:
             "yes",
             "en",
             "What the microphones hear will go to a model outside the house: the voice listens "
-            "freely, and the sound and the words said near it leave the house.",
+            "freely, and the sound, who speaks and the words said near it leave the house.",
         ),
         ("speech.hear_outside", "no", "en", "What the microphones hear will stay at home."),
         ("speech.hear_outside", None, "en", "What the microphones hear will stay at home."),
@@ -250,7 +250,7 @@ def _rule_change(key: str) -> DescribedAction:
             "yes",
             "fr",
             "Ce que les micros entendent ira vers un modèle hors de la maison : la voix écoute "
-            "librement, et le son et les mots dits près d'elle sortent de la maison.",
+            "librement, et le son, qui parle et les mots dits près d'elle sortent de la maison.",
         ),
     ],
 )

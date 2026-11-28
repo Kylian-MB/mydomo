@@ -609,7 +609,7 @@
   "policy.change.writer_seconds.default": "Retour au réglage par défaut : le rédacteur de droits aura {seconds} secondes par appel.",
   "policy.change.time_zone": "Le fuseau horaire du foyer sera {zone}.",
   "policy.change.time_zone.default": "Le foyer n'aura plus de fuseau horaire.",
-  "policy.change.hear_outside.yes": "Ce que les micros entendent ira vers un modèle hors de la maison : la voix écoute librement, et le son et les mots dits près d'elle sortent de la maison.",
+  "policy.change.hear_outside.yes": "Ce que les micros entendent ira vers un modèle hors de la maison : la voix écoute librement, et le son, qui parle et les mots dits près d'elle sortent de la maison.",
   "policy.change.hear_outside.no": "Ce que les micros entendent restera à la maison.",
   "policy.change.voice_gesture.yes": "La voix n'entendra que ce qui est dit pendant un geste, comme une touche tenue ; ce qui est entendu reste à la maison, sauf s'il peut en sortir.",
   "policy.change.voice_gesture.no": "La voix n'attendra pas de geste pour entendre.",
