@@ -9,8 +9,8 @@ paragraph of this docstring when it runs the step: examples of what people say s
 Going back down drops the owner's limits, approvers and asks of the roles; their allow or deny
 stays as an ordinary line of the role.
 
-Revision ID: 0074
-Revises: 0073
+Revision ID: 0075
+Revises: 0074
 Create Date: 2026-11-27
 """
 
@@ -19,8 +19,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0074"
-down_revision: str | None = "0073"
+revision: str = "0075"
+down_revision: str | None = "0074"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

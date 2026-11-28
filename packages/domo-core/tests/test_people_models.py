@@ -77,7 +77,7 @@ async def test_someone_with_access_has_none(add_person):
 
 async def test_upgrade_then_downgrade_leaves_persons_as_before(scratch_database_url):
     config = alembic_config(scratch_database_url)
-    await asyncio.to_thread(command.upgrade, config, "0069")
+    await asyncio.to_thread(command.upgrade, config, "0070")
     before = await schema_of(scratch_database_url)
     assert not NEW_COLUMNS & {row[1] for row in before["columns"] if row[0] == "persons"}
     engine = create_async_engine(scratch_database_url)
@@ -95,7 +95,7 @@ async def test_upgrade_then_downgrade_leaves_persons_as_before(scratch_database_
                     "('Sam', 'guest', now())"
                 )
             )
-        await asyncio.to_thread(command.upgrade, config, "0070")
+        await asyncio.to_thread(command.upgrade, config, "0071")
         async with engine.connect() as connection:
             rows = {
                 row[0]: row[1:]
@@ -111,7 +111,7 @@ async def test_upgrade_then_downgrade_leaves_persons_as_before(scratch_database_
     assert rows["Alex"] == (False, "has_access", "setup", True)
     assert rows["Paul"] == (True, "has_access", "invitation", True)
     assert rows["Sam"] == (False, "gone", "invitation", False)
-    await asyncio.to_thread(command.downgrade, config, "0069")
+    await asyncio.to_thread(command.downgrade, config, "0070")
     assert await schema_of(scratch_database_url) == before
 
 
@@ -131,12 +131,12 @@ async def test_the_people_tables_come_and_go_with_their_migration(
     scratch_database_url, list_tables
 ):
     config = alembic_config(scratch_database_url)
-    await asyncio.to_thread(command.upgrade, config, "0070")
+    await asyncio.to_thread(command.upgrade, config, "0071")
     before = await schema_of(scratch_database_url)
     assert not PEOPLE_TABLES & await list_tables(scratch_database_url)
-    await asyncio.to_thread(command.upgrade, config, "0071")
+    await asyncio.to_thread(command.upgrade, config, "0072")
     assert await list_tables(scratch_database_url) >= PEOPLE_TABLES
-    await asyncio.to_thread(command.downgrade, config, "0070")
+    await asyncio.to_thread(command.downgrade, config, "0071")
     assert not PEOPLE_TABLES & await list_tables(scratch_database_url)
     assert await schema_of(scratch_database_url) == before
 

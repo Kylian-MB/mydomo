@@ -6,8 +6,8 @@ Going back down cancels the invitations that still wait with a stay above 365 da
 stay above 365 days back to 365 (the rows that were used or ended keep their history otherwise),
 and puts the old ceiling back.
 
-Revision ID: 0073
-Revises: 0072
+Revision ID: 0074
+Revises: 0073
 Create Date: 2026-11-27
 """
 
@@ -15,8 +15,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0073"
-down_revision: str | None = "0072"
+revision: str = "0074"
+down_revision: str | None = "0073"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
