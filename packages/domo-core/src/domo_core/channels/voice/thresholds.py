@@ -34,8 +34,9 @@ JOIN_WITHIN_S: Final = 30
 LEARN_UTTERANCES: Final = 3
 LEARN_VISITS: Final = 2
 VISIT_GAP: Final = timedelta(hours=1)
-# A candidate starts again from a new voice only after this many unlike utterances in a row (the
-# owner, 2026-11-28: one unlike sentence between like ones is not counted, nothing is thrown away).
+# A candidate starts again from a new voice after this many unlike utterances in a row (the
+# owner, 2026-11-28: one unlike sentence between like ones is not counted, nothing is thrown away),
+# or at once on a clearly far one (under the print model's ``print_low``: "oui, tout de suite").
 RESTART_AFTER_UNLIKE: Final = 2
 
 # How far a print moves toward a voice it recognises: the recent one fast, the base slowly.

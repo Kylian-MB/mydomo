@@ -60,7 +60,8 @@ class VoicePrint(Base):
     it back). On a base print, ``heard_at`` is when the person was last heard on its microphone
     (whatever was learnt) and ``moved_in_visit`` whether the base already moved in the visit that
     time belongs to: a base moves at most once a visit. On a candidate, ``misses`` counts the
-    utterances in a row that did not resemble it (it starts again at ``RESTART_AFTER_UNLIKE``)."""
+    utterances in a row that did not resemble it (it starts again at ``RESTART_AFTER_UNLIKE``, or
+    at once on a clearly far one)."""
 
     __tablename__ = "voice_prints"
     __table_args__ = (
