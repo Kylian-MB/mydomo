@@ -103,6 +103,21 @@ LINE_FACTS: Final[Mapping[str, Mapping[str, tuple[str, FactKind]]]] = {
     "household.stay_changed": {"name": ("name", "text")},
     "household.removed": {"name": ("name", "text")},
     "household.ownership_transferred": {"name": ("to_name", "text")},
+    # The acts on the people of the household (``people.acts``): whom, by their id; the reason
+    # of an act stays in its row (``person_acts``), never in a line. A record erased or forgotten is
+    # not named.
+    "people.opened": {"name": ("person_id", "person")},
+    "people.completed": {"name": ("person_id", "person")},
+    "people.linked": {"name": ("person_id", "person")},
+    "people.unlinked": {"name": ("person_id", "person")},
+    "people.merged": {"name": ("person_id", "person")},
+    "people.split": {"name": ("person_id", "person")},
+    "people.access_given": {"name": ("person_id", "person")},
+    "people.access_removed": {"name": ("person_id", "person")},
+    "people.access_mistake": {"name": ("person_id", "person")},
+    "people.promise_kept": {"name": ("person_id", "person")},
+    "people.invited": {"name": ("person_id", "person")},
+    "people.link_sent": {"name": ("person_id", "person")},
     "successors.death_noted": {"name": ("name", "text")},
     "successors.death_undone": {"name": ("name", "text")},
     "note.left": {"name": ("recipient", "person")},

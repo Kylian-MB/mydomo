@@ -237,8 +237,11 @@ async def test_the_requesters_words_never_decide_such_a_request(
     assert await display_name_of(child_chat.person) == "Sam"
 
 
-async def test_the_zone_orders_nudged_requests_first(session, add_person, add_conversation, clock):
+async def test_the_zone_orders_nudged_requests_first(
+    session, add_person, add_account, add_conversation, clock
+):
     adult = await add_person("Alex", "adult")
+    await add_account(adult, "alex")  # whoever is asked has an account
     child = await add_person("Sam", "child")
     conversation = await add_conversation(child)
     made: list[Confirmation] = []
@@ -246,7 +249,7 @@ async def test_the_zone_orders_nudged_requests_first(session, add_person, add_co
         made.append(
             await create_confirmation(
                 session,
-                requester=Actor(child.id, "child"),
+                requester=Actor(child.id, "child", child=True),
                 tool_name="profile_rename",
                 arguments={"name": f"Sam {index}"},
                 action=DescribedAction(
@@ -285,7 +288,7 @@ async def test_only_the_requests_of_the_one_who_asked_that_wait_for_someone_else
     ) -> Confirmation:
         return await create_confirmation(
             session,
-            requester=Actor(child.id, "child"),
+            requester=Actor(child.id, "child", child=True),
             tool_name="profile_rename",
             arguments={"name": name},
             action=DescribedAction(

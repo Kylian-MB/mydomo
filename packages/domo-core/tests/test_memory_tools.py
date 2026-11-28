@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 from api_support import ApiPilot
 from chat_support import ChatPilot, ChatServer
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.audit.models import AuditEntry
 from domo_core.confirmations.case import gather
@@ -27,7 +28,6 @@ from domo_core.memory.models import Memory
 from domo_core.memory.service import keep
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.catalog import DEFAULT_POLICY
-from domo_core.policy.roles import Actor
 from domo_core.policy.subjects import Subject
 from domo_core.tools.context import InvalidArguments, ToolContext
 from domo_core.tools.memory_tools import SECRET_REFUSED, origin_for
@@ -148,7 +148,7 @@ def context(
     unless ``answers`` is false (a turn Domo started)."""
     return ToolContext(
         session_factory=session_factory,
-        actor=Actor(person.id, person.role),  # type: ignore[arg-type]
+        actor=actor_of(person),  # type: ignore[arg-type]
         person=person,
         conversation_id=uuid.uuid4(),
         origin="",

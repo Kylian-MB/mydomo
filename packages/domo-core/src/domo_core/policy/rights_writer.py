@@ -36,11 +36,11 @@ and the code checks the draft on examples whose outcome it works out itself.
    by one), and the outcome of each example, which the code works out from the barrier's
    decision and what is asked (``example_outcome``: what will hold once the yes-judge decides),
    not the one the writer announces. A limit that replaces the default limit of its action type
-   (spec 5.11, Ruling R10) must come with an example that the default limit refuses: its outcome
-   shows the owner whether the default still holds. An example is about a person of the
-   household, or, for a role nobody has yet (Ruling R15), about a made-up person of that role
-   (``MADE_UP_PERSON``), or about Domo acting on his own (``roles.domo_actor``, ``who``:
-   ``domo``). What the owner reads
+   (spec 5.11, Ruling R10) must come with an example that the default limit stops (it refuses it,
+   or sends it to the owner): its outcome shows the owner whether the default still holds. An
+   example is about a person of the household, or, for a role nobody has yet (Ruling R15), about
+   a made-up person of that role (``MADE_UP_PERSON``), or about Domo acting on his own
+   (``roles.domo_actor``, ``who``: ``domo``). What the owner reads
    must be what applies: an example that a tool always refuses, whatever the rights (a person
    who changes their own role, the owner's role given...: ``WriterContext.fixed_refusals``,
    Ruling R19), is sent back rather than worked out; and a limit may not read the action's target
@@ -78,7 +78,6 @@ from typing import Final, cast
 
 import anyio
 
-from domo_core.household.service import GUEST_DAYS_CEILING
 from domo_core.llm.types import (
     AssistantToolCalls,
     ChatChunk,
@@ -101,7 +100,7 @@ from domo_core.policy.catalog import (
     ADULT_AGREES_FOR_A_CHILD,
     CHANGES_NOTHING,
     CLOSED_TO_DOMO,
-    GUEST_DAYS_RULE,
+    JUDGED_FACTS,
     JUDGED_WITHIN,
     MADE_FACTS,
     OWNER_ONLY_ACTIONS,
@@ -299,6 +298,10 @@ class WriterContext:
     facts_for: Callable[[Actor, DescribedAction], Awaitable[Mapping[str, object]]]
     fixed_refusals: Mapping[str, FixedRefusal]
     former: tuple[tuple[uuid.UUID, str, Role, str], ...] = ()
+    # The people whose record carries the child mark, and those who are visiting: the marks of
+    # their actor, which the barrier reads (a built-in child is a child whatever this says).
+    child_ids: frozenset[uuid.UUID] = frozenset()
+    visiting_ids: frozenset[uuid.UUID] = frozenset()
 
     def person(self, person_id: uuid.UUID) -> tuple[str, Role] | None:
         """The name and the role of ``person_id``, if they are in the household or left it (the
@@ -356,12 +359,10 @@ class WriterAsks(Exception):
 
 @cache
 def writer_prompt() -> str:
-    """The writer's system prompt (``prompts/rights_writer.md``), read once, with the household's
-    rule of a guest's stay and the technical ceiling of one put in (``{guest_days_rule}``,
-    ``{guest_days_ceiling}``), as the tools' descriptions say them."""
+    """The writer's system prompt (``prompts/rights_writer.md``), read once. It names no length of
+    stay: none is limited by the code (audit POL-5)."""
     path = resources.files("domo_core.prompts").joinpath("rights_writer.md")
-    text = path.read_text(encoding="utf-8").strip()
-    return text.format(guest_days_rule=GUEST_DAYS_RULE, guest_days_ceiling=GUEST_DAYS_CEILING)
+    return path.read_text(encoding="utf-8").strip()
 
 
 def _right_json(right: Right, names: Mapping[uuid.UUID, str]) -> JsonObject:
@@ -396,7 +397,7 @@ def writer_context_json(context: WriterContext) -> JsonObject:
         entry: JsonObject = {
             "action_type": action_type,
             "allowed_roles": [r for r in ROLES if action_type in policy.allowed.get(r, ())],
-            "facts": dict(declared_facts(action_type, policy) or {}),
+            "facts": dict(_facts_of_a_right(action_type, policy)),
         }
         kind = policy.kinds.get(action_type)
         if kind is not None:
@@ -714,7 +715,7 @@ def _example_problems(n: int, example: Example, context: WriterContext) -> list[
         # Nobody else does them: an example of them is the owner asking (F4).
         problems.append(Problem(f"{where}: {_OWNERS_EXAMPLE}"))
         return problems
-    declared = declared_facts(action_type, context.policy) or {}
+    declared = _facts_of_a_right(action_type, context.policy)
     if set(example.facts) != set(declared):
         problems.append(Problem(f"{where}: facts are exactly the facts of its action type"))
         return problems
@@ -722,6 +723,9 @@ def _example_problems(n: int, example: Example, context: WriterContext) -> list[
         value = example.facts[name]
         if is_made(action_type) and name in MADE_FACTS and value is None:
             # The yes of a launch of one of Domo's tools: none here (``MADE_FACTS``).
+            continue
+        if name == "made_role" and value is None:
+            # A built-in role alone: no role made for the household (``catalog._ON_A_RECORD``).
             continue
         if not _fits(kind, value):
             problems.append(Problem(f"{where}: the fact {name} is not {_KIND_WORDS[kind]}"))
@@ -734,6 +738,14 @@ def _example_problems(n: int, example: Example, context: WriterContext) -> list[
             # The tool would refuse it whatever the rights: no outcome of the barrier says so.
             problems.append(Problem(f"{where}: {_ALWAYS_REFUSED}"))
     return problems
+
+
+def _facts_of_a_right(action_type: str, policy: PolicyTables) -> dict[str, FactType]:
+    """The facts an example of ``action_type`` states: those the type declares, but the ones that
+    are the assistant's and his judge's to weigh (``catalog.JUDGED_FACTS``: the exception of a
+    directive, whether it serves the person who speaks), which no right is about."""
+    declared = declared_facts(action_type, policy) or {}
+    return {name: kind for name, kind in declared.items() if name not in JUDGED_FACTS}
 
 
 def _draft_problems(draft: Draft) -> list[Problem]:
@@ -808,7 +820,7 @@ def _laid_over(rights: RightsTable, draft: Draft) -> RightsTable:
         for change in draft.changes
         if not change.remove
     ]
-    return RightsTable((*kept, *added))
+    return RightsTable((*kept, *added), rights.made)
 
 
 def _asker(example: Example, context: WriterContext) -> Actor:
@@ -824,9 +836,19 @@ def _asker(example: Example, context: WriterContext) -> Actor:
         known = context.person(example.person_id)
         if known is None or not context.is_here(example.person_id):
             raise ValueError("the person of the example is not in the household")
-        return Actor(example.person_id, known[1])
+        return Actor(
+            example.person_id,
+            known[1],
+            child=known[1] == "child" or example.person_id in context.child_ids,
+            visiting=known[1] == "guest" or example.person_id in context.visiting_ids,
+        )
     if example.person_id is None and example.role is not None:
-        return Actor(MADE_UP_PERSON, example.role)
+        return Actor(
+            MADE_UP_PERSON,
+            example.role,
+            child=example.role == "child",
+            visiting=example.role == "guest",
+        )
     raise ValueError("an example names a person or a role, exactly one")
 
 
@@ -1003,9 +1025,11 @@ async def example_outcome(example: Example, draft: Draft, context: WriterContext
     return _outcome_of(decision, resolved, example.action_type)
 
 
-def _refused_by_default(limit: Limit, facts: Mapping[str, object]) -> bool:
+def _stopped_by_default(limit: Limit, facts: Mapping[str, object]) -> bool:
+    """Whether the default ``limit`` stops an action of ``facts``: it refuses it, or sends it to the
+    owner (the catalog's limit of inviting refuses nothing)."""
     try:
-        return evaluate_limit(compile_limit(limit.expression), facts) == "refuse"
+        return evaluate_limit(compile_limit(limit.expression), facts) in ("refuse", "ask_owner")
     except (InvalidLimit, LimitError):
         return False
 
@@ -1060,13 +1084,14 @@ async def _checked(draft: Draft, context: WriterContext) -> tuple[list[Problem],
             continue
         if not any(
             draft.examples[i - 1].action_type == change.action_type
-            and _refused_by_default(default, facts)
+            and _stopped_by_default(default, facts)
             for i, facts in facts_of_example.items()
         ):
             problems.append(
                 Problem(
                     f"change {n}: its limit replaces the default limit of its action type: an "
-                    "example must show a case the default limit refuses"
+                    "example must show a case the default limit stops (refuses, or sends to the "
+                    "owner)"
                 )
             )
     examples = tuple(

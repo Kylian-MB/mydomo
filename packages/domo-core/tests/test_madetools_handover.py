@@ -862,7 +862,7 @@ async def test_a_wake_for_someone_who_left_runs_no_turn(
         await writer.execute(
             update(Person)
             .where(Person.id == adult_chat.person.id)
-            .values(disabled_at=chat_server.clock() - timedelta(minutes=1))
+            .values(disabled_at=chat_server.clock() - timedelta(minutes=1), state="gone")
         )
         await writer.commit()
     model = adult_chat.use_model(FakeChatModel(["never said"]))
@@ -933,7 +933,7 @@ async def test_a_house_wake_with_no_owner_to_tell_is_dropped_and_audited(
         await writer.execute(
             update(Person)
             .where(Person.id == dana.id)
-            .values(disabled_at=live_clock() - timedelta(minutes=1))
+            .values(disabled_at=live_clock() - timedelta(minutes=1), state="gone")
         )
         await writer.commit()
     woken: Woken = []

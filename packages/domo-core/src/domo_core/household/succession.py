@@ -67,7 +67,7 @@ from uuid import UUID
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from domo_core.accounts.models import Person
+from domo_core.accounts.models import Account, Person
 from domo_core.accounts.sessions import is_active
 from domo_core.household.models import Successor
 from domo_core.household.service import SUCCESSORS_LOCK_KEY, left_on, resolve_person
@@ -138,8 +138,15 @@ class SuccessorShown:
 
 async def _rows(session: AsyncSession, *, lock: bool = False) -> list[Successor]:
     """The places of the list in their order, as the database holds them now (locked, with
-    ``lock``)."""
-    query = select(Successor).order_by(Successor.rank).execution_options(populate_existing=True)
+    ``lock``). A place of a record merged into another is not one (``people.merge``: the kept
+    record holds the better of the two places); it is back if they are split."""
+    merged = select(Person.id).where(Person.merged_into_id.is_not(None))
+    query = (
+        select(Successor)
+        .where(Successor.person_id.is_(None) | Successor.person_id.not_in(merged))
+        .order_by(Successor.rank)
+        .execution_options(populate_existing=True)
+    )
     result = await session.execute(query.with_for_update() if lock else query)
     return list(result.scalars())
 
@@ -451,6 +458,13 @@ async def _entry_from(session: AsyncSession, item: object, now: datetime) -> Suc
         if not isinstance(named, str) or not named.strip():
             raise InvalidArguments("invalid", "person is a name, as a text")
         person = await _person_named(session, named, now)
+        if not await session.scalar(select(Account.id).where(Account.person_id == person.id)):
+            # Someone with no account is named as someone outside the household: by name and
+            # relation.
+            raise InvalidArguments(
+                "not_possible",
+                "this person has no account: name them as someone outside the household",
+            )
         return SuccessorEntry(person.id, None, relation, access)
     try:
         name = display_name_value(given["name"])
@@ -500,7 +514,7 @@ def _details(place: SuccessorShown, texts: Texts) -> list[str]:
 
 def successors_in_words(shown: Sequence[SuccessorShown], texts: Texts) -> str:
     """The list in one line of ``texts`` for a card: ``1. Alex (adult) ; 2. Paul (my brother, paper
-    code) ; Kim (deceased 2030-01-01)`` (the living are numbered, in order), or ``successors.none``
+    code) ; Tom (deceased 2030-01-01)`` (the living are numbered, in order), or ``successors.none``
     when it is empty."""
     if not shown:
         return texts("successors.none")

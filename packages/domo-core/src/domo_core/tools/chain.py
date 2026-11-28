@@ -200,7 +200,14 @@ from domo_core.conversation.execution import (
     rights_say,
     timed_out_outcome,
 )
-from domo_core.household.service import resolve_invitation, resolve_person, whole_names
+from domo_core.household.models import Invitation
+from domo_core.household.service import (
+    is_open,
+    names_among,
+    resolve_invitation,
+    resolve_person,
+    whole_names,
+)
 from domo_core.llm.types import JsonObject, ToolDefinition
 from domo_core.madetools.models import OFFERED_PREFIX
 from domo_core.policy.actions import DescribedAction, Destination, Effect
@@ -214,7 +221,13 @@ from domo_core.policy.barrier import (
     record_decision,
     stricter,
 )
-from domo_core.policy.catalog import ACTION_FACTS, is_made, is_silent
+from domo_core.policy.catalog import (
+    ACTION_FACTS,
+    PERMISSION_TYPES,
+    SECRET_TYPES,
+    is_made,
+    is_silent,
+)
 from domo_core.policy.decision import ChainBasis, decide_in_chain, decide_now, judged_actor
 from domo_core.policy.rights import Approver, RightsTable, load_rights
 from domo_core.policy.roles import Actor, domo_actor
@@ -259,7 +272,10 @@ _ARGUMENTS: Final = frozenset({"steps"})
 # Whose agreement a chain needs, from the least demanding to the most.
 _APPROVERS: Final[tuple[Approver, ...]] = ("self", "adult", "owner")
 # The types of action whose effect on a chain with no step described is ``permissions``: those
-# that change the household, the successors, the rights, the rules or the model's key.
+# that change the household, the successors, the rights, the rules or the model's key, and the
+# types of the catalog that change who may do what (``PERMISSION_TYPES``: roles, promises of access,
+# merges, the owner's directives), except the keys' types (``SECRET_TYPES``), which are no more
+# than they were: ``permissions`` by their prefix (``model.rekey``), else ``message``.
 _PERMISSION_TYPES: Final = ("household.", "successors.", "rights.", "policy.", "model.")
 # The end of a list of steps, as it is read (a step may be any JSON value, ``None`` included).
 _END: Final = object()
@@ -540,6 +556,7 @@ async def _with_whole_names(
                     speaker=speaker,
                     leave=frozenset(leave),
                     exact_only=opened,
+                    among=names_among(step.tool),
                 )
                 if others_words:
                     try:
@@ -571,7 +588,12 @@ async def _theirs(
         value = arguments.get(argument)
         if isinstance(value, str) and name_key(value) not in leave:
             await resolve_person(
-                session, value, now=ctx.clock(), speaker=speaker, exact_only=exact_only
+                session,
+                value,
+                now=ctx.clock(),
+                speaker=speaker,
+                exact_only=exact_only,
+                among=names_among(tool),
             )
 
 
@@ -610,7 +632,11 @@ def _chain_action(
     if not effects:
         effect: Effect = (
             "permissions"
-            if any(action_type.startswith(_PERMISSION_TYPES) for action_type in planned_types)
+            if any(
+                action_type.startswith(_PERMISSION_TYPES)
+                or (action_type in PERMISSION_TYPES and action_type not in SECRET_TYPES)
+                for action_type in planned_types
+            )
             else "message"
         )
     else:
@@ -656,10 +682,7 @@ def _basis_of(actor: Actor, rights: RightsTable) -> ChainBasis:
 def _shown_to(actor: Actor, ctx: ToolContext, rights: RightsTable) -> frozenset[str]:
     """The names of the tools ``actor`` is shown, under ``rights`` (``tools_for``)."""
     return frozenset(
-        definition.name
-        for definition in tools_for(
-            actor.role, ctx.registry, ctx.policy, person_id=actor.person_id, rights=rights
-        )
+        definition.name for definition in tools_for(actor, ctx.registry, ctx.policy, rights=rights)
     )
 
 
@@ -1166,7 +1189,7 @@ async def _person(session: AsyncSession, person_id: uuid.UUID) -> Person | None:
 
 # --- continuing a chain that stopped --------------------------------------------------------------
 
-_CONTINUE_ARGUMENTS: Final = frozenset({"request_id", "steps"})
+_CONTINUE_ARGUMENTS: Final = frozenset({"request_id", "steps", "invitation"})
 # What Domo is told when an id names no chain of the person that stopped in this conversation
 # and may be taken up again (it never learns whether the id exists).
 _NO_STOPPED_CHAIN: Final = (
@@ -1499,7 +1522,12 @@ async def _the_rest_planned(
         )
     decider = await the_one_who_said_yes(session, c, ctx.person, now)
     covered = isinstance(decision, Allow) or covers(
-        c.approver_kind, decision.approver, decider, c.requester_id
+        c.approver_kind,
+        decision.approver,
+        decider,
+        c.requester_id,
+        rights=await load_rights(session),
+        policy=ctx.policy,
     )
     asked = ask_after_a_change(
         judgement,
@@ -1571,6 +1599,23 @@ async def _the_rest_planned(
     )
 
 
+async def _waits_for(session: AsyncSession, c: Confirmation, given: object, now: datetime) -> None:
+    """The invitation the assistant names (``invitation``) is the one the chain waits for from
+    now (the arrival step reads it first, by its name): his judgement that it is the same person
+    and the same request; ``not_found`` for one that does not wait."""
+    if given is None:
+        return
+    try:
+        invitation_id = uuid.UUID(str(given))
+    except ValueError:
+        raise InvalidArguments("invalid", "invitation is the id of an invitation") from None
+    invitation = await session.get(Invitation, invitation_id)
+    if invitation is None or invitation.kind == "return" or not is_open(invitation, now):
+        raise InvalidArguments("not_found", "no invitation that waits has this id")
+    c.waiting_for_invitation_id = invitation.id
+    await session.flush()
+
+
 class ChainContinue:
     """Take up a chain that stopped, from the step that failed (see the module docstring)."""
 
@@ -1588,7 +1633,11 @@ class ChainContinue:
             "or its tool failed), check first with your reading tools, and say so: if it was "
             "done, give the steps left without it. Use it only when "
             "doing the rest still makes sense; otherwise drop it, or undo what was done with new "
-            "actions. Possible only while the request has not expired."
+            "actions. Possible only while the request has not expired. When the chain stopped "
+            "because the invitation it waited for ended and its result names one made again "
+            "(invited_again: someone new invited again by name, which the code cannot tell is "
+            "the same person), give that invitation's id (invitation) only when you are sure it "
+            "is the same person and the same request; when in doubt, ask."
         ),
         parameters={
             "type": "object",
@@ -1607,6 +1656,13 @@ class ChainContinue:
                     "minItems": MIN_STEPS,
                     "maxItems": MAX_STEPS,
                     "items": _STEP_SCHEMA,
+                },
+                "invitation": {
+                    "type": "string",
+                    "description": (
+                        "Only after a stop on an ended invitation: the id of the invitation made "
+                        "again (invited_again) that the chain now waits for."
+                    ),
                 },
             },
             "required": ["request_id"],
@@ -1644,6 +1700,7 @@ class ChainContinue:
             over = c is not None and is_past_lifetime(c, settings, now)
             if c is None or not _may_continue(c, rows, ctx, over):
                 raise InvalidArguments("not_found", _NO_STOPPED_CHAIN)
+            await _waits_for(session, c, arguments.get("invitation"), now)
             failed = next((row for row in rows if row.status == "failed"), None)
             taken = await _the_rest_planned(
                 session, c, rows, failed, changed, ctx, now, raised=raised

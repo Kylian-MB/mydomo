@@ -9,6 +9,7 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import SESSION_COOKIE, resolve_session
 from domo_core.config import CoreSettings
@@ -23,7 +24,6 @@ from domo_core.llm.types import ChatModel
 from domo_core.policy.catalog import DEFAULT_POLICY, PolicyTables
 from domo_core.policy.open_catalog import load_policy
 from domo_core.policy.rights import load_rights
-from domo_core.policy.roles import Actor, as_role
 from domo_core.sandbox_client import NO_SANDBOX, Sandbox
 from domo_core.tools.registry import TOOLS, InternalTool
 from domo_core.toolsdb.store import ToolsBase
@@ -236,7 +236,7 @@ def require_action(action_type: str) -> Callable[..., Awaitable[Person]]:
         policy: Annotated[PolicyTables, Depends(get_policy)],
     ) -> Person:
         rights = await load_rights(session)
-        actor = Actor(person_id=person.id, role=as_role(person.role))
+        actor = actor_of(person)
         if not rights.resolve(actor, action_type, policy).allowed:
             raise HTTPException(status_code=403)
         return person

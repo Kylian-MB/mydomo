@@ -21,9 +21,11 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domo_core.accounts.actors import is_child
 from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import active_at, is_active
 from domo_core.llm.types import JsonObject
+from domo_core.people import reach
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.catalog import MADE_PREFIX, an_adult_agrees_for, is_made
 
@@ -50,11 +52,13 @@ class SubjectRule:
     the second argument is the tool's ``model_result`` once it ran (``None`` before), for what has
     no id before it exists. ``owner`` says whom the thing belongs to: the house, the person of the
     turn, or the person a fact names (``person_fact``; a fact ``for_house`` set makes it the
-    house's)."""
+    house's). ``the_turn_person`` makes the person of the turn the thing itself (its key
+    ``person:<id>``), for what a person asks about themselves."""
 
     keys: Keys
     owner: Literal["house", "turn_person", "person_fact"]
     person_fact: str | None = None
+    the_turn_person: bool = False
 
 
 # --- the keys ------------------------------------------------------------------------------------
@@ -95,15 +99,65 @@ def _invitee(action: DescribedAction, result: JsonObject | None) -> tuple[str, .
     return () if name is None else (f"invitee:{name.casefold()}",)
 
 
+def _invitee_or_record(action: DescribedAction, result: JsonObject | None) -> tuple[str, ...]:
+    """The invitee's name, then, when the invitation is for a record that exists already (its
+    target, ``person:<id>``), that record too."""
+    record = (
+        () if action.target is None or not action.target.startswith(_PERSON) else (action.target,)
+    )
+    return (*_invitee(action, result), *record)
+
+
 def _target(action: DescribedAction, result: JsonObject | None) -> tuple[str, ...]:
     return () if action.target is None else (action.target,)
+
+
+_PERSON: Final = "person:"
+
+
+def _id_in(action: DescribedAction, name: str) -> str | None:
+    """The id a fact ``name`` holds, written ``person:<id>`` or bare."""
+    value = _text(action, name)
+    return None if value is None else value.removeprefix(_PERSON) or None
+
+
+def _link(action: DescribedAction, result: JsonObject | None) -> tuple[str, ...]:
+    """A link between two records (facts ``from`` and ``to``), then the record it starts from."""
+    start, end = _id_in(action, "from"), _id_in(action, "to")
+    if start is None or end is None:
+        return ()
+    return (f"link:{start}:{end}", f"{_PERSON}{start}")
+
+
+def _merge(action: DescribedAction, result: JsonObject | None) -> tuple[str, ...]:
+    """Two records made one (facts ``kept`` and ``absorbed``), or split again: the kept one, then
+    the absorbed one."""
+    kept, absorbed = _id_in(action, "kept"), _id_in(action, "absorbed")
+    return tuple(f"{_PERSON}{named}" for named in (kept, absorbed) if named is not None)
+
+
+def _promise_kept(action: DescribedAction, result: JsonObject | None) -> tuple[str, ...]:
+    """A promise kept for a record: the record (the target), then the promise (fact
+    ``promise``)."""
+    promise = _text(action, "promise")
+    kept = () if promise is None else (f"promise:{promise.removeprefix('promise:')}",)
+    return (*_target(action, result), *kept)
+
+
+def _directive(action: DescribedAction, result: JsonObject | None) -> tuple[str, ...]:
+    """An owner's directive: about the record it names (the target), else about its kind (fact
+    ``kind``)."""
+    if action.target is not None:
+        return (action.target,)
+    kind = _text(action, "kind")
+    return () if kind is None else (f"directive:{kind}",)
 
 
 def _target_or_invitee(named: str) -> Keys:
     """The target, then, once the tool ran, the invitee its result names (``named``, their
     display name): the person someone invited is known by the name they were invited with
     (``household.invite``: ``invitee:<name>``), so that removing them or cancelling their
-    invitation is about what the invitation was about (a change of role is not, R55)."""
+    invitation is about what the invitation was about, and so is a change of their role."""
 
     def keys(action: DescribedAction, result: JsonObject | None) -> tuple[str, ...]:
         name = None if result is None else result.get(named)
@@ -148,10 +202,12 @@ SUBJECT_RULES: Final[Mapping[str, SubjectRule]] = MappingProxyType(
         },
         "account.ask": SubjectRule(_account, "person_fact", "giver"),
         "account.remove": SubjectRule(_account, "person_fact", "of"),
-        "household.invite": SubjectRule(_invitee, "house"),
+        "household.invite": SubjectRule(_invitee_or_record, "house"),
         "household.invite_again": SubjectRule(_invitee, "house"),
         "household.cancel_invitation": SubjectRule(_target_or_invitee("cancelled"), "house"),
-        "household.change_role": SubjectRule(_target, "house"),
+        # The invitee its result names (``person``) too, so that a role given at the invitation
+        # and changed later is known to be undone (R55's cost, ``UNDOES``).
+        "household.change_role": SubjectRule(_target_or_invitee("person"), "house"),
         "household.remove": SubjectRule(_target_or_invitee("removed"), "house"),
         "household.bring_back": SubjectRule(_target, "house"),
         "device.entrust": SubjectRule(_device, "person_fact", "person"),
@@ -165,6 +221,38 @@ SUBJECT_RULES: Final[Mapping[str, SubjectRule]] = MappingProxyType(
         "note.leave": SubjectRule(_note_left, "turn_person"),
         "note.withdraw": SubjectRule(_target, "turn_person"),
         "note.keep": SubjectRule(_target, "turn_person"),
+        # The people of the house: everything of the house is the owner's to answer, never the
+        # person a doubted idea is about.
+        "people.open": SubjectRule(_result_of("person"), "house"),
+        **{
+            kind: SubjectRule(_target, "house")
+            for kind in (
+                "people.complete",
+                "people.erase",
+                "people.forget",
+                "people.look",
+                "people.mistake",
+                "household.send_link",
+                "household.show_link",
+                "role.change",
+                "role.delete",
+                "role.look",
+                "access.promise_drop",
+                "access.promises_look",
+            )
+        },
+        "people.forget_me": SubjectRule(_target, "turn_person", the_turn_person=True),
+        "people.link": SubjectRule(_link, "house"),
+        "people.unlink": SubjectRule(_link, "house"),
+        "people.merge": SubjectRule(_merge, "house"),
+        "people.split": SubjectRule(_merge, "house"),
+        "role.create": SubjectRule(_result_of("role"), "house"),
+        "access.promise": SubjectRule(_result_of("promise"), "house"),
+        "access.promise_keep": SubjectRule(_promise_kept, "house"),
+        **{
+            kind: SubjectRule(_directive, "house")
+            for kind in ("people.directive_set", "people.directive_lift", "people.directives_look")
+        },
         **{
             kind: SubjectRule(_target, "turn_person")
             for kind in (
@@ -213,12 +301,39 @@ UNDOES: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
         "net.close": frozenset({"net.open", "net.open_host"}),
         "account.remove": frozenset({"account.ask"}),
         "household.cancel_invitation": frozenset({"household.invite", "household.invite_again"}),
-        # A role changed takes back only a role given before: a promotion of someone invited
-        # confirms the invitation rather than undoing it (R55).
-        "household.change_role": frozenset({"household.change_role"}),
-        "household.remove": frozenset({"household.invite", "household.bring_back"}),
+        # A role changed takes back a role given before: at the invitation, at a return, by a
+        # promise kept, or by another change (R55 left the invitation out: a role given at the
+        # invitation and changed later was not noted; the rule above now knows the invitee).
+        "household.change_role": frozenset(
+            {
+                "household.change_role",
+                "household.invite",
+                "household.bring_back",
+                "access.promise_keep",
+            }
+        ),
+        "household.remove": frozenset(
+            {"household.invite", "household.bring_back", "access.promise_keep"}
+        ),
         "memory.forget": frozenset({"memory.keep", "memory.change"}),
         "note.withdraw": frozenset({"note.leave"}),
+        "people.erase": frozenset({"people.open"}),
+        "people.split": frozenset({"people.merge"}),
+        "people.unlink": frozenset({"people.link"}),
+        "role.delete": frozenset({"role.create"}),
+        "access.promise_drop": frozenset({"access.promise"}),
+        # An access given by mistake, or one the owner's directive withdraws: what gave it.
+        **{
+            kind: frozenset(
+                {
+                    "household.invite",
+                    "household.change_role",
+                    "household.bring_back",
+                    "access.promise_keep",
+                }
+            )
+            for kind in ("people.mistake", "people.directive_set")
+        },
     }
 )
 
@@ -256,13 +371,19 @@ def _rule_of(action: DescribedAction) -> SubjectRule | None:
     return rule
 
 
-def keys_of(action: DescribedAction, result: JsonObject | None) -> tuple[str, ...]:
+def keys_of(
+    action: DescribedAction, result: JsonObject | None, turn_person_id: UUID | None = None
+) -> tuple[str, ...]:
     """Every key ``action`` is about, the canonical one first (``subject_of``'s), then its
     aliases; ``result`` is the tool's ``model_result`` once it ran. A type with no rule is about
-    its target. Pure; never raises (nothing known gives ``()``)."""
+    its target; one whose rule makes the person of the turn the thing itself is about
+    ``turn_person_id`` (``person:<id>``), when it is given. Pure; never raises (nothing known gives
+    ``()``)."""
     rule = _rule_of(action)
     if rule is None:
         return () if action.target is None else (action.target,)
+    if rule.the_turn_person and turn_person_id is not None:
+        return (f"{_PERSON}{turn_person_id}",)
     return rule.keys(action, result)
 
 
@@ -273,6 +394,8 @@ def subject_of(action: DescribedAction, result: JsonObject | None, turn_person_i
     rule = _rule_of(action)
     if rule is None:
         return Subject(action.target, turn_person_id)
+    if rule.the_turn_person:
+        return Subject(f"{_PERSON}{turn_person_id}", turn_person_id)
     keys = rule.keys(action, result)
     return Subject(keys[0] if keys else None, _belongs_to(rule, action, turn_person_id))
 
@@ -295,17 +418,25 @@ async def concerned_of(
     session: AsyncSession, subject: Subject, action: DescribedAction, now: datetime
 ) -> UUID:
     """The person who answers for the thing ``subject`` stands for: whom it belongs to when that
-    is a person who is in the household now, is not the one ``action`` removes
-    (``household.remove``, fact ``person``) and is not someone for whom an adult agrees on this
-    type (``catalog.an_adult_agrees_for``, the rule the barrier reads); the owner of now
-    otherwise, and for the house. Reads only."""
+    is a person who is in the household now and can answer (has an account), is not the one
+    ``action`` removes (``household.remove``, fact ``person``) and is not someone for whom an
+    adult agrees on this type (``catalog.an_adult_agrees_for``, the rule the barrier reads); the
+    owner of now otherwise, and for the house. Reads only."""
     belongs_to = subject.belongs_to
     if belongs_to != HOUSE:
         person = await session.get(Person, belongs_to)
         removed = action.action_type == "household.remove" and _text(action, "person") == str(
             belongs_to
         )
-        adult_agrees = person is not None and an_adult_agrees_for(person.role, action.action_type)
-        if person is not None and is_active(person, now) and not removed and not adult_agrees:
+        adult_agrees = person is not None and an_adult_agrees_for(
+            is_child(person), action.action_type
+        )
+        if (
+            person is not None
+            and is_active(person, now)
+            and not removed
+            and not adult_agrees
+            and await reach.can_answer(session, person.id, now)
+        ):
             return person.id
     return await owner_of_now(session, now)

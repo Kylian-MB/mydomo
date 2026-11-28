@@ -75,6 +75,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import JSONResponse, Response
 
 from domo_core.accounts.account_routes import get_password_check_throttle
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Account, Person
 from domo_core.accounts.passkey_routes import get_passkey_options_throttle
 from domo_core.accounts.passkeys import PasskeyRejected, PasskeySite, passkey_availability_of
@@ -131,7 +132,8 @@ from domo_core.llm.listing import ModelLister
 from domo_core.naming import name_shown
 from domo_core.policy.asks import Ask
 from domo_core.policy.catalog import PolicyTables
-from domo_core.policy.roles import Actor, as_role
+from domo_core.policy.open_catalog import load_policy
+from domo_core.policy.rights import RightsTable, load_rights
 from domo_core.policy.settings import PolicySettings, load_policy_settings
 from domo_core.proofs.kinds import PROOF_KINDS
 from domo_core.proofs.service import ProofHeldBack, prove
@@ -420,7 +422,15 @@ def _hint(c: Confirmation, viewer: Person, ask: Ask | None, texts: Texts) -> str
     return texts("confirmation.hint.approver")
 
 
-def _asked(c: Confirmation, viewer: Person, texts: Texts, *, holed: bool = False) -> str | None:
+def _asked(
+    c: Confirmation,
+    viewer: Person,
+    texts: Texts,
+    *,
+    rights: RightsTable,
+    policy: PolicyTables,
+    holed: bool = False,
+) -> str | None:
     """Who asks what of the request ``c``, in one sentence for ``viewer``: Domo (or his judge),
     with his reason when he gave one; a rule of the owner; someone's agreement the rights ask
     for. Each reader reads what fits them (spec 5.7.3): to the
@@ -469,7 +479,8 @@ def _asked(c: Confirmation, viewer: Person, texts: Texts, *, holed: bool = False
     if to_whom is not None and key in _FOR_THE_ONE_WHO_ASKED:
         return texts(f"{key}.others", to_whom=to_whom)
     speaks_to_them = (viewer.role == "owner" and key in _FOR_THE_OWNER) or (
-        key == _AN_ADULT_AGREES and approves("adult", viewer, requester_of(c))
+        key == _AN_ADULT_AGREES
+        and approves("adult", viewer, requester_of(c), rights=rights, policy=policy)
     )
     if speaks_to_them:
         key = f"{key}.yours"
@@ -483,6 +494,8 @@ def confirmation_card(
     settings: PolicySettings,
     texts: Texts,
     now: datetime,
+    rights: RightsTable,
+    policy: PolicyTables,
     outcome: DecideOutcome | None = None,
     record: ActionRecord | None = None,
     note: str | None = None,
@@ -507,7 +520,8 @@ def confirmation_card(
     that person joined says so to whoever may give it, in its note (spec 4.3b). ``changed_by`` is
     who changed it, if someone did (``changers_of``): the card tells whoever else reads it by whom
     (an approver's change, spec 5.1). ``proof`` is the proof it offers ``viewer``
-    (``channels.page.proof.proof_offers_of``), shown only while they may answer it.
+    (``channels.page.proof.proof_offers_of``), shown only while they may answer it. ``rights``
+    and ``policy`` are those in force: who may answer it reads them (``may_decide``).
 
     ``head`` is the head kept for ``viewer`` (``texts.cards.head_of``), shown while the request
     waits, and only while it still says what this card says to them in their language (its
@@ -516,7 +530,7 @@ def confirmation_card(
     ``texts`` (the reference texts), someone else's words left as holes (``{reason}``,
     ``{question}``, ``{words}``, ``{words_before}``), with its ``source``."""
     status = "expired" if c.status == "pending" and is_past_lifetime(c, settings, now) else c.status
-    can_decide = status == "pending" and may_decide(c, viewer, now)
+    can_decide = status == "pending" and may_decide(c, viewer, now, rights=rights, policy=policy)
     awaited, arrived = (None, False) if waiting_for is None else waiting_for
     ask = ask_of(c)
     if note is None and outcome in _OUTCOME_NOTES:
@@ -549,6 +563,8 @@ def confirmation_card(
             settings=settings,
             texts=REFERENCE,
             now=now,
+            rights=rights,
+            policy=policy,
             replaced=replaced,
             waiting_for=waiting_for,
             changed_by=changed_by,
@@ -579,7 +595,11 @@ def confirmation_card(
             None if before is None else texts(_changed_key(changed_by, viewer), before=before)
         ),
         ask=ask,
-        asked=_asked(c, viewer, texts, holed=holed) if status == "pending" else None,
+        asked=(
+            _asked(c, viewer, texts, rights=rights, policy=policy, holed=holed)
+            if status == "pending"
+            else None
+        ),
         can_decide=can_decide,
         hint=_hint(c, viewer, ask, texts) if can_decide else None,
         question=(
@@ -669,7 +689,8 @@ async def card_now(
         found = await confirmations_by_id(session, [confirmation_id])
         if confirmation_id not in found:
             return None
-        if not may_see(found[confirmation_id], viewer, now):
+        rights, policy = await load_rights(session), await load_policy(session)
+        if not may_see(found[confirmation_id], viewer, now, rights=rights, policy=policy):
             return not_yours_card(confirmation_id, texts)
         settings = await load_policy_settings(session)
         replaced = await predecessors_of(session, [confirmation_id])
@@ -693,6 +714,8 @@ async def card_now(
         settings=settings,
         texts=texts,
         now=now,
+        rights=rights,
+        policy=policy,
         record=record,
         replaced=replaced.get(confirmation_id),
         draft=drafts.get(confirmation_id),
@@ -735,6 +758,7 @@ async def card_after_decision(
     async with session_factory() as session:
         c = (await confirmations_by_id(session, [confirmation_id]))[confirmation_id]
         settings = await load_policy_settings(session)
+        rights, policy = await load_rights(session), await load_policy(session)
         replaced = await predecessors_of(session, [confirmation_id])
         drafts = await draft_lines_of(
             session, [c], texts, name_shown(viewer.calls_domo, settings.house_domo_name)
@@ -759,6 +783,8 @@ async def card_after_decision(
         settings=settings,
         texts=texts,
         now=now,
+        rights=rights,
+        policy=policy,
         outcome=outcome,
         record=record,
         note=note,
@@ -871,10 +897,11 @@ def _deciders_context(
     from domo_core.channels.turns import app_made_tool_finder, app_turn_deps
     from domo_core.conversation.prepare import made_tool_deps
 
+    deps = app_turn_deps(request.app)
     return requester_context(
         ToolContext(
             session_factory=session_factory,
-            actor=Actor(person_id=person.id, role=as_role(person.role)),
+            actor=actor_of(person),
             person=person,
             conversation_id=confirmation_id,  # replaced by the request's own conversation
             origin=str(request.base_url),
@@ -889,7 +916,8 @@ def _deciders_context(
             abilities=PAGE,
             made_tool_named=app_made_tool_finder(request.app),
             # A stored program run by hand runs as a turn runs it (``tools.program_run``).
-            launch_deps=made_tool_deps(app_turn_deps(request.app)),
+            launch_deps=made_tool_deps(deps),
+            record_listeners=deps.record_listeners,
         )
     )
 
@@ -1190,6 +1218,7 @@ async def approvals(
     texts = request_texts(request)
     now = clock()
     settings = await load_policy_settings(session)
+    rights, policy = await load_rights(session), await load_policy(session)
     waiting, total = await awaiting_approval(
         session, person, settings, now, limit=MAX_APPROVALS_SHOWN
     )
@@ -1218,6 +1247,8 @@ async def approvals(
                 settings=settings,
                 texts=texts,
                 now=now,
+                rights=rights,
+                policy=policy,
                 draft=drafts.get(c.id),
                 successors=successors.get(c.id),
                 steps=steps.get(c.id, ()),

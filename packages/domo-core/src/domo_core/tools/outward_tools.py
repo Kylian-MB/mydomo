@@ -69,6 +69,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domo_core.accounts.actors import is_child, is_visiting
 from domo_core.accounts.models import Person
 from domo_core.audit.log import append_audit
 from domo_core.confirmations.models import Confirmation
@@ -833,9 +834,11 @@ async def _giver(session: AsyncSession, ctx: ToolContext, given: _Ask) -> Person
         if given.giver_name is not None or given.note is not None:
             raise InvalidArguments("invalid", _GIVER_IS_THEM)
         giver = ctx.person
+    # A guest gives none; someone of another role only passing by is the judge's to weigh (the
+    # owner's answer of 2026-11-27, "Domo juge": the case says where they stand).
     if giver.role == "guest":
         raise InvalidArguments("not_possible", _GUEST_GIVES_NONE)
-    if given.for_ == "house" and giver.role not in ("owner", "adult"):
+    if given.for_ == "house" and (giver.role not in ("owner", "adult") or is_child(giver)):
         raise InvalidArguments("not_possible", _HOUSE_ACCOUNT)
     return giver
 
@@ -990,6 +993,10 @@ class AccountAsk:
             # The owner's removal, for whoever weighs asking it again (the judge, a rule of his).
             "removed_by_owner": removed_at is not None,
             "removed_on": _day_of(removed_at),
+            # The instant of that removal: what the yes is held against, so a removal asked
+            # again and removed again the same day is not taken as the one that was weighed.
+            # (Empty when it was not removed: a fact of text is always a text.)
+            "removed_at": "" if removed_at is None else removed_at.astimezone(UTC).isoformat(),
         }
         return DescribedAction(
             connector="core",
@@ -1036,7 +1043,7 @@ class AccountAsk:
             weighed = removed_at is None or (
                 described is not None
                 and described.facts.get("removed_by_owner") is True
-                and described.facts.get("removed_on") == _day_of(removed_at)
+                and described.facts.get("removed_at") == removed_at.astimezone(UTC).isoformat()
             )
             try:
                 asked = await ask_account(
@@ -1167,7 +1174,7 @@ async def _removable(session: AsyncSession, ctx: ToolContext, given: _Whose) -> 
         return account
     account, owner = await _account_named(session, ctx, given)
     theirs = account.given_by == ctx.person.id or (owner is not None and owner.id == ctx.person.id)
-    if ctx.person.role == "child" and account.person_id != ctx.person.id:
+    if is_child(ctx.person) and account.person_id != ctx.person.id:
         raise InvalidArguments("not_possible", _NOT_THEIR_OWN)
     if not theirs and ctx.person.role != "owner":
         raise InvalidArguments("not_possible", _NOT_THEIRS)
@@ -1397,7 +1404,7 @@ class AccountsLook:
                 query = query.where(ServiceAccount.person_id.is_(None))
             elif ctx.person.role != "owner":
                 house = ServiceAccount.person_id.is_(None)
-                if ctx.person.role == "guest":
+                if is_visiting(ctx.person):
                     house = house & ServiceAccount.for_guests.is_(True)
                 query = query.where(house | (ServiceAccount.person_id == ctx.person.id))
             found = (await session.execute(query.order_by(ServiceAccount.name))).all()

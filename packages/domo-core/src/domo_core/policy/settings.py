@@ -34,6 +34,20 @@ Whether an action is confirmed, and how, is no setting: the yes-judge decides it
   (``tools.text_tools``);
 * ``tools.base_mb``: how big the tools' own database may grow (``toolsdb``), a whole number of MB
   from 16 to 1048576. Without it, 1024 (1 GB): beyond, a program's write is refused;
+* ``people.adult_age``: the age from which the assistant may lift the child mark of a record on a
+  date of birth he knows (``people.records.complete``), any whole number of years the owner gives.
+  Without it, 18. The owner lifts the mark whatever the age;
+* ``people.tell_access``: whether the owner is told each time the assistant gives access, on his
+  own, to someone new (``people.records.give_access``), ``true`` or ``false``. Set to ``true``,
+  it is the owner's own rule: a message always leaves (the act is owed to him,
+  ``people.acts.owed``). Without it, the assistant judges (and may propose it once);
+* ``keys.guests_bring_own``: the owner's rule "guests come with their own key", ``true`` or
+  ``false``: read at each turn (``llm.router.usable_keys``), set, someone visiting uses no general
+  key but one they gave themself or one the owner let them use by a line for them, whoever invited
+  them; someone who lives here is never touched, and nothing is written. Without it,
+  an account the assistant gave on his own uses the house's general key, within the limits
+  (ruling 19). The owner's alone, through ``policy_update`` (not one of ``KEYS_SETTINGS``, which
+  a right can give);
 * ``house.domo_name``: the name the whole house calls the assistant, one plain line of 1 to 40
   characters (``naming.is_domo_name``); without it, "Domo". The owner alone changes it, in a turn
   of their own, and never ``policy_update`` (``NAME_SETTINGS``);
@@ -77,6 +91,10 @@ INVITEE_GENERAL_KEY: Final = "keys.invitee_general"
 UPKEEP_KEY: Final = "keys.upkeep"
 HOUSE_LANGUAGE: Final = "house.language"
 TOOLS_BASE_KEY: Final = "tools.base_mb"
+ADULT_AGE_KEY: Final = "people.adult_age"
+TELL_ACCESS_KEY: Final = "people.tell_access"
+# The owner's rule that guests come with their own key: his alone (``policy_update``).
+GUESTS_OWN_KEY: Final = "keys.guests_bring_own"
 # The rules of the house on the keys: ``keys_house``'s to write.
 KEYS_SETTINGS: Final = frozenset({INVITEE_DEFAULT_KEY, INVITEE_GENERAL_KEY, UPKEEP_KEY})
 # The house's name for the assistant, and the one it had before: the owner's alone to change.
@@ -100,6 +118,10 @@ _WRITER_SECONDS_RANGE = range(30, 241)
 # The tools' database holds 1 GB unless the owner says otherwise: from 16 MB to 1 TB, in MB.
 DEFAULT_TOOLS_BASE_MB: Final = 1024
 _TOOLS_BASE_MB_RANGE = range(16, 1_048_577)
+# The age of a grown-up, in years, unless the owner says otherwise: any whole number of years he
+# gives (the owner's answer of 2026-11-27).
+DEFAULT_ADULT_AGE: Final = 18
+_ADULT_AGE_RANGE = range(1, 2**31)
 
 SETTING_DEFAULTS: Mapping[str, SettingValue] = MappingProxyType(
     {LIFETIME_KEY: _DEFAULT_LIFETIME_HOURS, WRITER_SECONDS_KEY: _DEFAULT_WRITER_SECONDS}
@@ -121,12 +143,21 @@ def _kind_of(
     "upkeep",
     "house_language",
     "tools_base",
+    "adult_age",
+    "tell_access",
+    "guests_bring_own",
     "domo_name",
 ]:
     """What the key holds; ``InvalidSetting`` if it is not a setting (the styles of before
     included: Domo judges the yes)."""
     if key == TOOLS_BASE_KEY:
         return "tools_base"
+    if key == ADULT_AGE_KEY:
+        return "adult_age"
+    if key == TELL_ACCESS_KEY:
+        return "tell_access"
+    if key == GUESTS_OWN_KEY:
+        return "guests_bring_own"
     if key == LIFETIME_KEY:
         return "lifetime"
     if key == TIME_ZONE_KEY:
@@ -185,6 +216,18 @@ def _check(key: str, value: object) -> None:
             raise InvalidSetting(
                 "the size of the tools' database is a whole number of MB, from 16 to 1048576"
             )
+        return
+    if kind == "adult_age":
+        if not _is_whole_number_in(value, _ADULT_AGE_RANGE):
+            raise InvalidSetting("the age of a grown-up is a whole number of years")
+        return
+    if kind == "tell_access":
+        if not isinstance(value, bool):
+            raise InvalidSetting("whether the owner is told of each access given is true or false")
+        return
+    if kind == "guests_bring_own":
+        if not isinstance(value, bool):
+            raise InvalidSetting("whether guests come with their own key is true or false")
         return
     if kind == "house_language":
         # A tag in its usual case, never a name: it reaches the writer and the gatekeeper.
@@ -318,6 +361,26 @@ class PolicySettings:
         megabytes = DEFAULT_TOOLS_BASE_MB if chosen is None else cast(int, chosen)
         return megabytes * 1024 * 1024
 
+    @property
+    def adult_age(self) -> int:
+        """The age, in years, from which the assistant may lift the child mark of a record on a
+        date of birth he knows (18 when nobody said)."""
+        chosen = self._chosen(ADULT_AGE_KEY)
+        return DEFAULT_ADULT_AGE if chosen is None else cast(int, chosen)
+
+    @property
+    def tell_access(self) -> bool | None:
+        """Whether the owner asked to be told each time the assistant gives access to someone new
+        (``True``), asked not to be (``False``), or said nothing (``None``: he judges)."""
+        chosen = self._chosen(TELL_ACCESS_KEY)
+        return None if chosen is None else bool(chosen)
+
+    @property
+    def guests_bring_own(self) -> bool:
+        """Whether the owner's rule is that guests come with their own key (``False`` when
+        nobody said)."""
+        return self._chosen(GUESTS_OWN_KEY) is True
+
     def rows(self) -> list[dict[str, SettingValue]]:
         """What applies now, one row ``{"key", "value", "source"}`` per setting (the lifetime of
         a request, then the writer's time), then the household's time zone and the rules of the
@@ -339,6 +402,9 @@ class PolicySettings:
             UPKEEP_KEY,
             HOUSE_LANGUAGE,
             TOOLS_BASE_KEY,
+            ADULT_AGE_KEY,
+            TELL_ACCESS_KEY,
+            GUESTS_OWN_KEY,
             HOUSE_DOMO_NAME,
         ):
             chosen = self._chosen(key)

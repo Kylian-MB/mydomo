@@ -4,6 +4,9 @@ core starts and every ``UPKEEP_SECONDS`` after (the scheduler the architecture p
 A pass (``UpkeepPass``) is a function of the time of the pass that does its own work in sessions of
 its own and commits it: erasing the notes of the guests who left (``notes.upkeep.notes_pass``),
 pausing the rights of the people who left (``household.upkeep.departures_pass``, spec 5.7),
+deleting the roles made for the household that nobody carries
+(``household.upkeep.unused_roles_pass``), emptying the traces of the merges of two records
+once they can no longer be split (``household.upkeep.merge_traces_pass``),
 resuming or stopping the chains paused until someone's arrival
 (``confirmations.arrivals.arrivals_pass``, spec 4.3b), expiring the requests past their
 lifetime and waking Domo once for those about to lapse

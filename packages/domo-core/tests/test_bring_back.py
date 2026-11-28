@@ -19,7 +19,7 @@ import uuid
 from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
-from chat_support import GUEST_STAY, Card, dump, live_http_client, log_in_live, status_of
+from chat_support import GUEST_STAY, Card, an_actor, dump, live_http_client, log_in_live, status_of
 from domo_common.i18n import t
 from domo_core.accounts.models import Account, Person, WebSession
 from domo_core.accounts.passkey_models import PasskeyCredential
@@ -29,6 +29,7 @@ from domo_core.accounts.throttle import MAX_FAILED_ATTEMPTS, WINDOW
 from domo_core.confirmations.describe import describe_for_people
 from domo_core.household.models import Invitation
 from domo_core.household.service import (
+    GUEST_DAYS_DEFAULT,
     INVITATION_TTL,
     InvitationUnavailable,
     WeakPassword,
@@ -68,6 +69,17 @@ async def remove(owner_chat, name: str) -> Card:
     return await owner_chat.confirm_last(
         await owner_chat.say_with_tool("household_remove", {"person": name})
     )
+
+
+async def gone_without_a_directive(owner_chat, person: Person) -> None:
+    """``person`` left the household with no directive of the owner's on them (as when they leave,
+    or the assistant removes them): what the owner removes is a withdrawal (spec 6.9), which only
+    the owner gives back."""
+    async with owner_chat.server.session_factory() as writer:
+        await disable(
+            writer, await writer.get_one(Person, person.id), owner_chat.clock(), by="domo"
+        )
+        await writer.commit()
 
 
 async def bring_back(owner_chat, **arguments) -> Card:
@@ -232,12 +244,12 @@ async def test_someone_still_in_the_household_cannot_be_brought_back(owner_chat,
     [
         ({"person": "Nobody", "role": "adult"}, "not_found"),
         ({"person": "Owner", "role": "adult"}, "not_found"),  # the owner never left
-        ({"person": "Robin"}, "invalid"),
+        ({"person": "Robin", "role": ""}, "invalid"),
         ({"role": "adult"}, "invalid"),
         ({"person": "Robin", "role": "owner"}, "invalid"),
         ({"person": "Robin", "role": "adult", "guest_days": 3}, "invalid"),
         ({"person": "Robin", "role": "guest", "guest_days": 0}, "invalid"),
-        ({"person": "Robin", "role": "guest", "guest_days": 366}, "invalid"),
+        ({"person": "Robin", "role": "guest", "guest_days": 5, "no_end": True}, "invalid"),
         ({"person": "Robin", "role": "guest", "left_on": "yesterday"}, "invalid"),
         ({"person": "Robin", "role": "guest", "left_on": "20261031"}, "invalid"),
         ({"person": "Robin", "role": "guest", "display_name": "  "}, "invalid"),
@@ -521,7 +533,7 @@ async def test_a_name_that_means_someone_else_by_the_yes_brings_nobody_back(
             update(Person).where(Person.id == guest_member.person.id).values(display_name="Robin Z")
         )
         await writer.execute(
-            update(Person).where(Person.id == other.id).values(disabled_at=clock())
+            update(Person).where(Person.id == other.id).values(disabled_at=clock(), state="gone")
         )
         await writer.commit()
     card = await owner_chat.confirm_last(reply)
@@ -572,7 +584,9 @@ async def test_a_return_link_for_someone_who_is_back_already_cannot_be_used(
     # Meanwhile they are put back some other way (here: straight in the database).
     async with chat_server.session_factory() as writer:
         await writer.execute(
-            update(Person).where(Person.id == adult_member.person.id).values(disabled_at=None)
+            update(Person)
+            .where(Person.id == adult_member.person.id)
+            .values(disabled_at=None, state="has_access")
         )
         await writer.commit()
     assert (await _open(owner_chat, card)).status_code == 410
@@ -830,7 +844,7 @@ async def test_a_return_link_someone_else_said_yes_to_shows_its_link_to_the_one_
     await grant(
         "household.invite", person=child_member.person, access="allow", summary="Sam may invite"
     )
-    await remove(owner_chat, "Sam")
+    await gone_without_a_directive(owner_chat, child_member.person)
     reply = await adult_chat.say_with_tool(
         "household_bring_back", {"person": "Sam", "role": "child"}
     )
@@ -869,7 +883,7 @@ async def test_a_return_link_someone_else_said_yes_to_shows_its_link_to_the_one_
 async def test_the_model_is_told_the_return_link_is_on_the_card_of_the_one_who_asked(
     owner_chat, adult_chat, child_member, session_factory
 ):
-    await remove(owner_chat, "Sam")
+    await gone_without_a_directive(owner_chat, child_member.person)
     ctx = ToolContext(
         session_factory=session_factory,
         actor=Actor(adult_chat.person.id, "adult"),
@@ -947,7 +961,7 @@ async def test_the_owner_who_says_yes_to_someone_elses_bring_back_reads_the_paus
     await grant(
         "household.invite", person=child_member.person, access="allow", summary="Sam may invite"
     )
-    await remove(owner_chat, "Sam")
+    await gone_without_a_directive(owner_chat, child_member.person)
     reply = await adult_chat.say_with_tool(
         "household_bring_back", {"person": "Sam", "role": "child"}
     )
@@ -1024,20 +1038,24 @@ def test_bring_back_is_the_owners_and_judged_every_time():
     ("role", "has_it"), [("owner", True), ("adult", False), ("child", False), ("guest", False)]
 )
 def test_only_the_owner_is_offered_the_tool(role, has_it):
-    offered = {d.name for d in tools_for(role, TOOLS, DEFAULT_POLICY)}
+    offered = {d.name for d in tools_for(an_actor(role), TOOLS, DEFAULT_POLICY)}
     assert ("household_bring_back" in offered) is has_it
 
 
 def test_the_tool_does_its_action_of_the_catalog():
     tool = TOOLS["household_bring_back"]
     assert tool.action_type == "household.bring_back"
-    assert tool.definition.parameters["required"] == ["person", "role"]
+    # The role is the one they had when the call does not give one.
+    assert tool.definition.parameters["required"] == ["person"]
     assert set(tool.definition.parameters["properties"]) == {
         "person",
         "role",
         "guest_days",
+        "no_end",
         "display_name",
         "left_on",
+        "reason",
+        "exception_of",
     }
 
 
@@ -1068,9 +1086,15 @@ async def test_an_adult_who_calls_the_tool_anyway_is_refused(adult_chat, guest_m
             ),
         ),
         (
+            # Without the described facts, the stay is the record's (no end without an account).
             {"person": "Robin", "role": "guest"},
             "en",
-            ("action.describe.household.bring_back.guest", {"name": "Robin", "duration": "2 days"}),
+            ("action.describe.household.bring_back", {"name": "Robin", "role": "guest"}),
+        ),
+        (
+            {"person": "Robin", "role": "guest", "no_end": True},
+            "en",
+            ("action.describe.household.bring_back.guest.no_end", {"name": "Robin"}),
         ),
     ],
 )
@@ -1096,7 +1120,10 @@ def test_a_new_display_name_is_part_of_the_sentence():
 
 def test_left_on_is_the_day_of_the_removal_or_else_of_the_end_of_the_stay():
     removed = Person(
-        display_name="A", role="adult", disabled_at=datetime(2030, 1, 3, 23, 59, tzinfo=UTC)
+        display_name="A",
+        role="adult",
+        disabled_at=datetime(2030, 1, 3, 23, 59, tzinfo=UTC),
+        state="gone",
     )
     assert left_on(removed) == date(2030, 1, 3)
     over = Person(display_name="B", role="guest", expires_at=datetime(2030, 1, 2, 0, 0, tzinfo=UTC))
@@ -1104,7 +1131,10 @@ def test_left_on_is_the_day_of_the_removal_or_else_of_the_end_of_the_stay():
     # The day is the UTC one, whatever the zone the moment is written in.
     paris = timezone(timedelta(hours=2))
     late = Person(
-        display_name="C", role="adult", disabled_at=datetime(2030, 1, 3, 1, 0, tzinfo=paris)
+        display_name="C",
+        role="adult",
+        disabled_at=datetime(2030, 1, 3, 1, 0, tzinfo=paris),
+        state="gone",
     )
     assert left_on(late) == date(2030, 1, 2)
     # Removed after the stay was over: the removal is when they left the household for good.
@@ -1113,6 +1143,7 @@ def test_left_on_is_the_day_of_the_removal_or_else_of_the_end_of_the_stay():
         role="guest",
         expires_at=datetime(2030, 1, 2, tzinfo=UTC),
         disabled_at=datetime(2030, 1, 5, tzinfo=UTC),
+        state="gone",
     )
     assert left_on(both) == date(2030, 1, 5)
     with pytest.raises(ValueError):
@@ -1124,6 +1155,7 @@ async def test_a_former_member_is_found_by_how_their_name_reads(
 ):
     removed = await add_person("Zoé  Q", "adult")
     removed.disabled_at = clock() - timedelta(days=3)
+    removed.state = "gone"
     gone = await add_person("Yan", "guest")
     gone.expires_at = clock() - timedelta(hours=1)
     here = await add_person("Here", "guest")
@@ -1169,13 +1201,13 @@ async def test_a_return_link_is_made_only_for_someone_who_left(
     for not_away in (here, owner):
         with pytest.raises(ValueError):
             await a_return_link(session, not_away, owner_id, clock)
-    # As for any invitation: a role of the household, and days for a guest only, from 1 to the
-    # technical ceiling (the household's rule of 30 days is a limit the barrier applies).
-    for role, days in (("owner", None), ("adult", 2), ("guest", 366), ("guest", 0)):
+    # As for any invitation: a role of the household, and days for a guest only, from 1 with no
+    # ceiling (audit POL-5), 30 when nothing is said.
+    for role, days in (("owner", None), ("adult", 2), ("guest", 0)):
         with pytest.raises(ValueError):
             await a_return_link(session, gone, owner_id, clock, role=role, days=days)
     invitation, token = await a_return_link(session, gone, owner_id, clock, role="guest")
-    assert invitation.person_id == gone.id and invitation.guest_days == 2
+    assert invitation.person_id == gone.id and invitation.guest_days == GUEST_DAYS_DEFAULT == 30
     assert invitation.expires_at == clock() + INVITATION_TTL
     assert invitation.token_hash == hashlib.sha256(token.encode()).hexdigest()
 
@@ -1195,10 +1227,12 @@ async def test_accepting_a_return_checks_again_that_the_person_is_still_away(
         await check_return(session, token=token, password="short", now=clock())
     # Back already, some other way, between the check and the answer.
     gone.disabled_at = None
+    gone.state = "has_access"
     await session.flush()
     with pytest.raises(InvitationUnavailable):
         await accept_return(session, returning, hash_password(NEW_PASSWORD), now=clock())
     gone.disabled_at = clock()
+    gone.state = "gone"
     await session.flush()
     person = await accept_return(session, returning, hash_password(NEW_PASSWORD), now=clock())
     assert person.id == gone.id and person.disabled_at is None

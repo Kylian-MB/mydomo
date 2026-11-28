@@ -25,6 +25,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from chat_support import Reply, confirmation_cards, status_of
 from domo_common.i18n import t
+from domo_core.accounts.actors import actor_of
 from domo_core.chat.models import Conversation, Message
 from domo_core.chat.store import ConversationStore
 from domo_core.confirmations import service as confirmations_service
@@ -1784,7 +1785,7 @@ def agreeing(
     of the turn, one by one)."""
     return ToolContext(
         session_factory=lambda: nullcontext(session),
-        actor=Actor(person.id, person.role),
+        actor=actor_of(person),
         person=person,
         conversation_id=uuid.uuid4(),
         origin="",

@@ -1,20 +1,41 @@
 """People, their login accounts and their web sessions."""
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
+from typing import Literal
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, func, text
+from sqlalchemy import CheckConstraint, ForeignKey, Index, event, func, text
+from sqlalchemy.engine.default import DefaultExecutionContext
 from sqlalchemy.orm import Mapped, mapped_column
 
 from domo_core.db import Base
 
+# Where a person stands towards the house, how their record stands, and who opened it.
+Standing = Literal["lives_here", "visiting", "elsewhere"]
+State = Literal["known", "has_access", "withdrawn", "refused", "gone"]
+Origin = Literal["setup", "invitation", "domo"]
+
+
+def _child_by_role(context: DefaultExecutionContext) -> bool:
+    """The mark of a record made with the built-in child role, when nothing else is said."""
+    parameters = context.get_current_parameters()
+    return parameters["role"] == "child"
+
 
 class Person(Base):
-    """Someone Domo talks to: the owner, or a member of the household they invited.
+    """Someone the assistant knows: the owner, someone of the household, or a record he keeps
+    without an access or a login, which he opens and keeps himself.
 
-    ``role`` is ``owner``, ``adult``, ``child`` or ``guest``. A person who is removed is not
-    deleted (their history and the audit trail keep pointing at them): ``disabled_at`` records
-    when they were removed. ``expires_at`` is the end of a guest's stay.
+    ``role`` is the built-in base: ``owner``, ``adult``, ``child`` or ``guest``; a role the
+    assistant made for the household is ``made_role_id``, on that base. A person who is removed
+    is not deleted (their history and the audit trail keep pointing at them): ``disabled_at``
+    records when they were removed. ``expires_at`` is the end of a stay, when it has one.
+
+    A record is a person, with or without a login: ``standing`` says where they stand towards the
+    house, ``is_child`` is the mark that keeps the protections of a child (the built-in child role
+    always carries it), ``state`` where their record stands (``disabled_at`` is the leaving date
+    of a ``gone`` or ``withdrawn`` one) and ``origin`` who opened it (the assistant always keeps
+    his reason). ``role`` is the base their rights start from.
     """
 
     __tablename__ = "persons"
@@ -23,6 +44,28 @@ class Person(Base):
         CheckConstraint(
             "calls_domo IS NULL OR char_length(calls_domo) BETWEEN 1 AND 40",
             name="calls_domo_length",
+        ),
+        CheckConstraint(
+            "standing IN ('lives_here', 'visiting', 'elsewhere')", name="standing_values"
+        ),
+        CheckConstraint("role <> 'child' OR is_child", name="child_role_is_marked"),
+        CheckConstraint(
+            "state IN ('known', 'has_access', 'withdrawn', 'refused', 'gone')",
+            name="state_values",
+        ),
+        CheckConstraint(
+            "state NOT IN ('gone', 'withdrawn') OR disabled_at IS NOT NULL",
+            name="left_has_a_date",
+        ),
+        CheckConstraint(
+            "state <> 'has_access' OR disabled_at IS NULL", name="access_is_not_disabled"
+        ),
+        CheckConstraint("origin IN ('setup', 'invitation', 'domo')", name="origin_values"),
+        CheckConstraint(
+            "char_length(origin_reason) BETWEEN 1 AND 300", name="origin_reason_length"
+        ),
+        CheckConstraint(
+            "origin <> 'domo' OR origin_reason IS NOT NULL", name="domo_keeps_his_reason"
         ),
         # At most one owner, whatever the code does (two concurrent setups, a bug): the unique
         # index only covers the rows whose role is "owner", so other roles are not limited.
@@ -59,6 +102,32 @@ class Person(Base):
     # alone, where the code writes "Domo" itself. ``None``: they see the house's name for him
     # (``policy.settings``), else "Domo" (``naming.name_shown``).
     calls_domo: Mapped[str | None]
+    standing: Mapped[Standing] = mapped_column(server_default=text("'lives_here'"))
+    # A record made as a child carries the mark, unless it says otherwise.
+    is_child: Mapped[bool] = mapped_column(
+        default=_child_by_role,
+        server_default=text("false"),
+    )
+    # What lifts the child mark by age.
+    born_on: Mapped[date | None]
+    state: Mapped[State] = mapped_column(default="has_access", server_default=text("'has_access'"))
+    origin: Mapped[Origin] = mapped_column(server_default=text("'invitation'"))
+    origin_reason: Mapped[str | None]
+    # Set the first time access is given.
+    first_access_at: Mapped[datetime | None]
+    # Whether a guest's access wakes at the next visit.
+    access_returns: Mapped[bool] = mapped_column(server_default=text("false"))
+    merged_into_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("persons.id"))
+    forgotten_at: Mapped[datetime | None]
+    # The role the assistant made that the record carries (``people.models.MadeRole``).
+    made_role_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("roles.id"))
+
+
+@event.listens_for(Person, "init")
+def _has_access_unless_said(target: Person, args: object, kwargs: dict[str, object]) -> None:
+    """A record made in memory has access unless it says otherwise, as its column does once
+    stored: ``is_active`` reads ``state`` before any flush."""
+    kwargs.setdefault("state", "has_access")
 
 
 class Account(Base):

@@ -72,6 +72,14 @@ ALL_TABLES = {
     "open_addresses",
     "went_wrong",
     "service_accounts",
+    "roles",
+    "role_accesses",
+    "person_links",
+    "access_promises",
+    "owner_directives",
+    "record_merges",
+    "person_acts",
+    "person_channel_refs",
 }
 # The tables of iteration 1a: what the database holds one revision before the household.
 TABLES_OF_1A = {
@@ -240,19 +248,21 @@ async def test_going_back_down_cancels_the_return_links_that_wait(scratch_databa
         async with engine.begin() as connection:
             await connection.execute(
                 text(
-                    "INSERT INTO persons (id, display_name, role, disabled_at) VALUES "
-                    "('00000000-0000-0000-0000-000000000001', 'Owner', 'owner', NULL), "
-                    "('00000000-0000-0000-0000-000000000002', 'Away', 'adult', now())"
+                    "INSERT INTO persons (id, display_name, role, disabled_at, state) VALUES "
+                    "('00000000-0000-0000-0000-000000000001', 'Owner', 'owner', NULL, "
+                    "'has_access'), "
+                    "('00000000-0000-0000-0000-000000000002', 'Away', 'adult', now(), 'gone')"
                 )
             )
             await connection.execute(
                 text(
                     "INSERT INTO invitations (token_hash, display_name, role, created_by, "
-                    "expires_at, person_id) VALUES "
+                    "expires_at, person_id, kind) VALUES "
                     "('h1', 'Away', 'adult', '00000000-0000-0000-0000-000000000001', "
-                    "now() + interval '7 days', '00000000-0000-0000-0000-000000000002'), "
+                    "now() + interval '7 days', '00000000-0000-0000-0000-000000000002', "
+                    "'return'), "
                     "('h2', 'New', 'adult', '00000000-0000-0000-0000-000000000001', "
-                    "now() + interval '7 days', NULL)"
+                    "now() + interval '7 days', NULL, 'new')"
                 )
             )
         await asyncio.to_thread(command.downgrade, config, "0011")
@@ -353,14 +363,14 @@ async def test_going_back_down_drops_the_requests_that_wait_for_the_owner(scratc
 async def test_the_limits_keep_what_domo_could_not_tell_and_stays_up_to_a_year(
     scratch_database_url,
 ):
-    """A request keeps the question Domo could not answer, and a guest's stay goes up to the
-    technical ceiling (the household's rule of 30 days is a limit of the catalog). Going back
-    down brings a longer stay back to 30 days: shorter than allowed, never longer."""
+    """A request keeps the question Domo could not answer, and a guest's stay goes up to a year
+    (until ``0061`` takes the ceiling away: ``test_people_stays.py``). Going back down brings a
+    longer stay back to 30 days: shorter than allowed, never longer."""
     config = alembic_config(scratch_database_url)
     await asyncio.to_thread(command.upgrade, config, "0013")
     before = await schema_of(scratch_database_url)
     assert "ask_reason" not in {row[1] for row in before["columns"] if row[0] == "confirmations"}
-    await asyncio.to_thread(command.upgrade, config, "head")
+    await asyncio.to_thread(command.upgrade, config, "0060")
     after = await schema_of(scratch_database_url)
     added = [row for row in after["columns"] if row[:2] == ("confirmations", "ask_reason")]
     assert added == [("confirmations", "ask_reason", "text", "YES", None)]

@@ -84,8 +84,12 @@ from domo_core.chat.models import Message
 from domo_core.chat.store import ConversationStore
 from domo_core.confirmations.models import Confirmation
 from domo_core.db import SessionFactory
+from domo_core.household.service import links_shown_to_the_owner
 from domo_core.llm.choices import load_choices
 from domo_core.llm.newcomers import untold_newcomers
+from domo_core.people.acts import owed as acts_owed
+from domo_core.people.acts import told as mark_acts_told
+from domo_core.people.news import news_for as news_for
 from domo_core.prompts import MAX_UNANSWERED, UnansweredMoment
 from domo_core.tools.notes import notes_to_tell
 
@@ -228,20 +232,6 @@ async def arrival_is_due(
     return True, away
 
 
-async def news_for(session: AsyncSession, person_id: uuid.UUID, *, now: datetime) -> None:
-    """Something new came at ``now`` for ``person_id`` that no turn of Domo said yet: a note left
-    for them, a request of theirs someone else decided, a newcomer on a key they gave
-    (``persons.news_at``, see the module docstring). In the transaction that makes it: flushed, the
-    caller commits, then tells the core (``Conversation.notify``): a news turn may be due.
-    Never back in time: a decision passes when it was made, which may be before news already
-    marked."""
-    await session.execute(
-        update(Person)
-        .where(Person.id == person_id)
-        .values(news_at=func.greatest(Person.news_at, now))
-    )
-
-
 async def untold_decision(
     session: AsyncSession,
     person_id: uuid.UUID,
@@ -274,18 +264,26 @@ async def untold_decision(
 
 
 async def clear_news(
-    session_factory: SessionFactory, person_id: uuid.UUID, *, seen: datetime
+    session_factory: SessionFactory,
+    person_id: uuid.UUID,
+    *,
+    seen: datetime | None,
+    told_acts: Collection[uuid.UUID] = (),
+    now: datetime,
 ) -> None:
-    """A turn of ``person_id`` that read their news as of ``seen`` (``persons.news_at`` then) spoke:
-    those news were told; newer ones stay. Committed; a failure is logged (its kind only), and the
-    news then stay for the next turn."""
+    """A turn of ``person_id`` that read their news as of ``seen`` (``persons.news_at`` then; none
+    if it read none) spoke: those news were told; newer ones stay. So were the acts the owner is
+    owed (``told_acts``, ``people.acts.owed``): marked told at ``now``. Committed; a failure is
+    logged (its kind only), and the news then stay for the next turn."""
     try:
         async with session_factory() as session:
-            await session.execute(
-                update(Person)
-                .where(Person.id == person_id, Person.news_at <= seen)
-                .values(news_at=None)
-            )
+            if seen is not None:
+                await session.execute(
+                    update(Person)
+                    .where(Person.id == person_id, Person.news_at <= seen)
+                    .values(news_at=None)
+                )
+            await mark_acts_told(session, told_acts, now)
             await session.commit()
     except Exception as error:
         logger.error("The news told could not be cleared (%s)", type(error).__name__)
@@ -309,7 +307,9 @@ async def what_is_new(
     else, or nobody, decided after ``since`` (their last visit; none for a first one), the people
     who began using a key they gave and whom they were not told of
     (``llm.newcomers.untold_newcomers``), and the moments he could not answer them since his last
-    complete reply (``unanswered_in``). Reads only."""
+    complete reply (``unanswered_in``); only when there are some, the links that waited for them
+    and that the owner was shown since (``links_shown_to_the_owner``), and for the owner how many
+    acts he is owed the telling of (``owed``, ``people.acts.owed``). Reads only."""
     notes = len(await notes_to_tell(session, person.id))
     decided = 0
     if since is not None:
@@ -328,12 +328,20 @@ async def what_is_new(
     moments = (
         () if conversation is None else unanswered_in(await store.recent_messages(conversation.id))
     )
-    return {
+    news = {
         "notes": notes,
         "decided": decided,
         "newcomers": await untold_newcomers(session, giver_id=person.id),
         "unanswered": len(moments),
     }
+    # The links that waited for them and that the owner was shown instead (the owner's answer
+    # of 2026-11-27): only when there are some.
+    if shown := await links_shown_to_the_owner(session, person.id, since):
+        news["links_shown_to_the_owner"] = shown
+    if person.role == "owner" and (owed := len(await acts_owed(session))):
+        # What the owner is owed the telling of (the context lists each: ``people.acts``).
+        news["owed"] = owed
+    return news
 
 
 def unanswered_in(messages: Sequence[Message]) -> tuple[UnansweredMoment, ...]:

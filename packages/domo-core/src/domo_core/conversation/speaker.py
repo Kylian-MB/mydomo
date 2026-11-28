@@ -5,8 +5,10 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
+from domo_core.accounts.actors import actor_of as accounts_actor_of
+from domo_core.accounts.models import Person
 from domo_core.llm.types import JsonObject
-from domo_core.policy.roles import Actor, Role
+from domo_core.policy.roles import Actor
 
 
 @dataclass(frozen=True)
@@ -15,6 +17,11 @@ class Clue:
 
     ``kind`` is ``session``, ``device`` or ``proof`` here; ``means`` is the kind of proof for a
     proof. ``with_person`` and ``place`` are for clues that rest on someone else or a place.
+    ``source`` is ``code`` with ``strength`` ``strong`` only for what the code itself checked (a
+    session, a device, a proof). A channel's own "it is probably this record" (a voice it
+    recognised, later) is a ``weak`` clue: it never establishes anyone (``established``), and a
+    turn it alone ties to a person gets none of the clues kept for them (an earlier proof:
+    ``conversation.prepare._speaking``).
     """
 
     kind: str
@@ -30,6 +37,8 @@ class Clue:
 @dataclass(frozen=True)
 class Speaker:
     """Who speaks. ``channel`` is data for the judge and the audit, never branched on.
+    ``person_id`` is a record of ``persons``, with or without an account: the one who speaks gives
+    the rights and the discussion, by their id alone.
 
     ``nobody_spoke`` is set for a turn the assistant started, that answers no words (a wake, an
     arrival, a plan): who it is for stays as the clues say, but nobody is said to speak.
@@ -80,8 +89,11 @@ def established(speaker: Speaker) -> bool:
     )
 
 
-def actor_of(speaker: Speaker, role: Role) -> Actor:
-    """The speaker as the barrier sees them; trusted only when established."""
+def actor_of(speaker: Speaker, person: Person) -> Actor:
+    """The speaker as the barrier sees them, with the marks of their record (their role, made
+    role, child mark and where they stand, account or not); trusted only when established. An
+    actor that is not trusted is refused all but ``barrier.UNTRUSTED_MAY`` (rule 1 of
+    ``barrier.decide``)."""
     if speaker.person_id is None:
         raise ValueError("Nobody is known to speak")
-    return Actor(speaker.person_id, role, trusted=established(speaker))
+    return accounts_actor_of(person, trusted=established(speaker))

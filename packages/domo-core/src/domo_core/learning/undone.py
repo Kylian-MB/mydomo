@@ -176,6 +176,54 @@ async def note_undoing(
         return None
 
 
+async def note_his_mistake(
+    session: AsyncSession,
+    *,
+    wrong_types: frozenset[str],
+    wrong_type: str,
+    subject_key: str,
+    now: datetime,
+    reason: str | None,
+) -> None:
+    """The assistant corrects a mistake of his own (``undoes_his`` notes nothing then: his own
+    undoing is not a mistake there): a fact ``wrong_verdict`` of his, under ``subject_key``, tied
+    to the latest action done there among ``wrong_types`` (its type, else ``wrong_type``) and
+    about the person of its conversation, with his reason. Flushed, never in the way
+    (``note_went_wrong``)."""
+    ran = or_(
+        MessageAction.status == "done",
+        and_(MessageAction.status == "waiting", Confirmation.status == "executed"),
+    )
+    found = (
+        await session.execute(
+            select(MessageAction, Conversation.person_id)
+            .join(Message, Message.id == MessageAction.message_id)
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .outerjoin(Confirmation, Confirmation.id == MessageAction.confirmation_id)
+            .where(
+                ran,
+                MessageAction.subject_key == subject_key,
+                MessageAction.action_type.in_(wrong_types),
+            )
+            .order_by(MessageAction.created_at.desc(), MessageAction.id.desc())
+            .limit(1)
+        )
+    ).first()
+    action, about = (None, None) if found is None else found
+    await note_went_wrong(
+        session,
+        kind="wrong_verdict",
+        action_type=wrong_type if action is None else action.action_type,
+        now=now,
+        subject_key=subject_key,
+        action_id=None if action is None else action.id,
+        by="domo",
+        of_domo=True,
+        about=about,
+        reason=reason,
+    )
+
+
 async def let_through_for(
     session: AsyncSession, *, person_id: UUID, action_type: str, subject_key: str
 ) -> MessageAction | None:

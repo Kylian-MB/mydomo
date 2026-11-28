@@ -616,7 +616,7 @@ async def test_an_invitation_writes_the_invitees_language_on_the_inviters_keys(
         await writer_session.execute(
             update(Person)
             .where(Person.id == dana.id)
-            .values(disabled_at=chat_server.clock() - timedelta(days=1))
+            .values(disabled_at=chat_server.clock() - timedelta(days=1), state="gone")
         )
         left = await writer_session.get(Person, dana.id)
         assert left is not None

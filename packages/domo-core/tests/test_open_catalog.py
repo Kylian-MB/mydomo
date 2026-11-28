@@ -17,7 +17,7 @@ from domo_common.i18n import t
 from domo_core.confirmations.describe import describe_example, describe_type
 from domo_core.madetools.models import ActionKind
 from domo_core.policy.actions import DescribedAction
-from domo_core.policy.barrier import Allow, Refuse, decide
+from domo_core.policy.barrier import Allow, NeedsApproval, Refuse, decide
 from domo_core.policy.catalog import (
     DEFAULT_POLICY,
     KNOWN_ACTIONS,
@@ -111,7 +111,7 @@ async def test_a_kind_is_known_and_allowed_to_its_default_roles(session):
 async def test_the_barrier_judges_a_kind_like_any_type(session):
     await add_kind(session, kind(), now=NOW)
     policy = await load_policy(session)
-    adult, child = Actor(uuid4(), "adult"), Actor(uuid4(), "child")
+    adult, child = Actor(uuid4(), "adult"), Actor(uuid4(), "child", child=True)
     assert isinstance(decide(adult, split_action(), policy), Allow)
     assert decide(child, split_action(), policy) == Refuse("not_allowed")
     # Unknown without the open catalog, as any type the code does not know.
@@ -125,10 +125,14 @@ def test_an_owner_s_right_on_a_kind_is_read_as_any_right():
     rights = RightsTable((denied,))
     assert decide(alex, split_action(), policy, rights) == Refuse("not_allowed")
     assert isinstance(decide(dana, split_action(), policy, rights), Allow)
-    # And one that opens it to a child.
-    sam = Actor(uuid4(), "child")
+    # And one that opens it to a child: reserved to adults (ruling 16), an adult still agrees
+    # first, unless the owner's right says the child agrees for themselves.
+    sam = Actor(uuid4(), "child", child=True)
     opened = Right(uuid4(), sam.person_id, None, SPLIT, "allow", None, None, None, None, "Yes.")
-    assert isinstance(decide(sam, split_action(), policy, RightsTable((opened,))), Allow)
+    asked = decide(sam, split_action(), policy, RightsTable((opened,)))
+    assert isinstance(asked, NeedsApproval) and asked.approver == "adult"
+    alone = Right(uuid4(), sam.person_id, None, SPLIT, "allow", "self", None, None, None, "Yes.")
+    assert isinstance(decide(sam, split_action(), policy, RightsTable((alone,))), Allow)
     assert decide(sam, split_action(), policy, NO_RIGHTS) == Refuse("not_allowed")
 
 
@@ -308,10 +312,10 @@ async def test_a_right_on_a_kind_takes_the_owners_rules_but_no_judge():
         return Draft((change(**said),), (Example(ALEX, SPLIT, {}, expected),))
 
     assert await check_draft(denies(), writer_context()) == []
-    # Opened to a child, who does not have it by default.
+    # Opened to a child, who does not have it by default: an adult still agrees first (ruling 16).
     opens = Draft(
         (change(person_id=SAM, action_type=SPLIT, limit_expression=None),),
-        (Example(SAM, SPLIT, {}, "domo_judges"),),
+        (Example(SAM, SPLIT, {}, "asks_an_adult"),),
     )
     assert await check_draft(opens, writer_context()) == []
     # The owner's "always ask" and an approver (final review I2, spec 5.8).

@@ -3,9 +3,10 @@
 A pass of the upkeep (``review_pass``) starts a review for each conversation that is quiet, or
 whose messages not yet reviewed no longer fit the window of history, and for each person who left
 and is owed a last one. A review (``review``) calls a small model with the messages since the last
-review and the four tools of the memory alone, in a tool loop of its own: it writes no message and
-reaches no channel. Where it stopped moves only once its call is over. The reviews run on the
-live server of the chat pilots, whose turns write the messages.
+review, the four tools of the memory and the gestures on people (``test_review_people``), in a
+tool loop of its own: it writes no message and reaches no channel. Where it stopped moves only
+once its call is over. The reviews run on the live server of the chat pilots, whose turns write
+the messages.
 """
 
 import asyncio
@@ -25,7 +26,7 @@ from domo_core.confirmations.models import Confirmation
 from domo_core.conversation.channel import Abilities
 from domo_core.conversation.events import Event
 from domo_core.conversation.prepare import TurnDeps
-from domo_core.household.service import GUEST_DAYS_DEFAULT, disable, set_role
+from domo_core.household.service import GUEST_DAYS_DEFAULT, disable
 from domo_core.learning.models import WentWrong
 from domo_core.llm.models import ModelChoices, Provider
 from domo_core.llm.types import (
@@ -40,8 +41,9 @@ from domo_core.llm.types import (
     ToolResult,
 )
 from domo_core.memory.models import Memory, Origin
-from domo_core.memory.review import review, review_pass
+from domo_core.memory.review import PEOPLE_REVIEW_TOOLS, review, review_pass
 from domo_core.memory.service import SAID_BY_YOU, keep
+from domo_core.people import records
 from domo_core.prompts import REVIEW_LEFT_LINE, memory_review_prompt
 from fakes import FakeCall, FakeChatModel
 from sqlalchemy import func, select, update
@@ -357,7 +359,7 @@ async def test_a_review_writes_no_message_and_reaches_no_channel(owner_chat: Cha
     assert entry.actor == f"person:{person.id}"
 
 
-async def test_a_review_only_has_the_memory_tools(owner_chat: ChatPilot):
+async def test_a_review_has_the_memory_tools_and_the_gestures_on_people(owner_chat: ChatPilot):
     server = owner_chat.server
     await owner_chat.say("Hello there.")
     other = ToolCall("review-other", "household_list", "{}")
@@ -371,12 +373,10 @@ async def test_a_review_only_has_the_memory_tools(owner_chat: ChatPilot):
     assert await review(deps_of(server), owner_chat.person.id, owner_chat.clock()) == "done"
 
     made = review_calls(server, calls)
-    assert [tool.name for tool in made[0].tools] == [
-        "memory_keep",
-        "memory_change",
-        "memory_forget",
-        "memory_search",
-    ]
+    offered = [tool.name for tool in made[0].tools]
+    assert offered[:4] == ["memory_keep", "memory_change", "memory_forget", "memory_search"]
+    # Then the gestures on people (``test_review_people``).
+    assert set(offered[4:]) == PEOPLE_REVIEW_TOOLS
     # Any other tool is no tool of a review: nothing is done.
     (result,) = [item for item in made[1].messages if isinstance(item, ToolResult)]
     assert json.loads(result.content) == {"status": "invalid", "reason": "unknown_tool"}
@@ -639,7 +639,19 @@ async def test_a_guest_who_left_gets_one_last_review_and_nothing_is_deleted_by_t
     async with server.session_factory() as session:
         guest = await session.get(Person, alex.id)
         assert guest is not None
-        await set_role(session, guest, "guest", now=owner_chat.clock())
+        await records.give_access(
+            session,
+            guest,
+            role="guest",
+            made_role=None,
+            standing=None,
+            guest_days=GUEST_DAYS_DEFAULT,
+            by=f"person:{owner_chat.person.id}",
+            by_owner=False,
+            reason=None,
+            turn_of=None,
+            now=owner_chat.clock(),
+        )
         child = await session.get(Person, sam.id)
         assert child is not None
         await disable(session, child, owner_chat.clock(), by=owner_chat.person.id)
@@ -1030,3 +1042,12 @@ async def test_a_lesson_kept_with_outside_text_in_the_slice_is_not_the_assistant
     )
     (lesson,) = (await memories(server)).values()
     assert (lesson.kind, lesson.by_domo) == ("lesson", False)
+
+
+def test_the_review_prompt_stays_under_4000():
+    """The review's instructions stay short and name nobody: nobody reads what the assistant
+    writes there (``memory.review``), so they hold no sentence for a person."""
+    prompt = memory_review_prompt()
+    assert len(prompt) < 4000
+    assert not [name for name in ("Alex", "Dana", "Paul", "Sam", "Tom") if name in prompt]
+    assert "you write no message to anyone" in prompt

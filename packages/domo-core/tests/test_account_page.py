@@ -20,6 +20,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from domo_common.i18n import t
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Account, Person, WebSession
 from domo_core.accounts.passwords import MIN_PASSWORD_LENGTH, verify_password
 from domo_core.accounts.sessions import (
@@ -37,7 +38,6 @@ from domo_core.household.service import (
     resolve_person,
 )
 from domo_core.policy.catalog import DEFAULT_POLICY
-from domo_core.policy.roles import Actor
 from domo_core.tools import household_admin
 from domo_core.tools.context import InvalidArguments, ToolContext
 from domo_core.tools.registry import TOOLS
@@ -329,6 +329,7 @@ async def test_a_name_whose_invitation_ended_is_free(
 async def test_the_name_of_someone_who_left_is_free(adult_client, add_person, session, moving_time):
     gone = await add_person("Sam", "child")
     gone.disabled_at = moving_time()
+    gone.state = "gone"
     over = await add_person("Robin", "guest")
     over.expires_at = moving_time() - timedelta(hours=1)
     await session.flush()
@@ -672,7 +673,7 @@ def context(person: Person, session_factory) -> ToolContext:
     """The context of a call made by ``person`` (what the tools do not use is left empty)."""
     return ToolContext(
         session_factory=session_factory,
-        actor=Actor(person.id, person.role),  # type: ignore[arg-type]
+        actor=actor_of(person),  # type: ignore[arg-type]
         person=person,
         conversation_id=uuid.uuid4(),
         origin="https://domo.local/",
@@ -811,6 +812,7 @@ async def test_a_look_alike_is_in_use_unless_it_is_the_persons_own_name(
     # Someone may write their own name another way: that is not a second person.
     assert not await name_in_use(session, look_alike, now=clock(), excluding=person.id)
     person.disabled_at = clock()
+    person.state = "gone"
     await session.flush()
     assert not await name_in_use(session, look_alike, now=clock())
     await create_invitation_for_test(name, "adult")

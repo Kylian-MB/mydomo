@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 from chat_support import ChatPilot, ChatServer
 from conftest import FakeClock
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.chat.models import Conversation, Message
 from domo_core.confirmations.judge import Judgement
@@ -27,7 +28,6 @@ from domo_core.llm.types import ToolCall
 from domo_core.madetools.models import DeclaredSpending, LaunchStop, StandingAgreement
 from domo_core.madetools.offered import offer_named
 from domo_core.madetools.yes import spent_like
-from domo_core.policy.roles import Actor, as_role
 from domo_core.tools.context import ToolContext
 from domo_core.tools.registry import TOOLS
 from fakes import FakeRefused, FakeSandbox, is_judge_call
@@ -370,7 +370,7 @@ async def test_in_a_turn_he_started_a_silent_judge_asks_them(
     ctx = replace(
         tool_context,
         person=dana,
-        actor=Actor(dana.id, as_role(dana.role)),
+        actor=actor_of(dana),
         conversation_id=conversation_id,
         reply_message_id=None,
         turn_reason="the pizzas of the week are due",

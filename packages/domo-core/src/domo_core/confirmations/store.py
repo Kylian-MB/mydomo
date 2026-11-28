@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Final
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import active_at, is_active
 from domo_core.chat.models import Conversation, Message
@@ -53,10 +54,13 @@ from domo_core.confirmations.models import Confirmation
 from domo_core.confirmations.who_agrees import agrees_for_children, may_agree_for_a_child
 from domo_core.llm.types import JsonObject
 from domo_core.naming import name_shown
+from domo_core.people import reach
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.asks import Ask, Asked, AskedBy, as_ask, as_asked_by
+from domo_core.policy.catalog import PolicyTables
 from domo_core.policy.decision import ChainBasis
-from domo_core.policy.rights import Approver
+from domo_core.policy.open_catalog import load_policy
+from domo_core.policy.rights import Approver, RightsTable, load_rights
 from domo_core.policy.roles import DOMO_SUBJECT_ID, Actor
 from domo_core.policy.settings import PolicySettings, load_policy_settings
 from domo_core.tools.context import InvalidArguments
@@ -308,15 +312,22 @@ async def conversation_made_in(session: AsyncSession, c: Confirmation) -> uuid.U
     it. It is the one it waits in (``conversation_id``) when that one is theirs; else (it waits
     for the person it concerns, in their own conversation) the conversation of the reply that
     made it (``message_id``, which every request born of a change of it keeps), when that one is
-    theirs. ``None`` when that cannot be known: nothing is then run or woken anywhere, never in
-    someone else's conversation as theirs. Reads only."""
+    theirs. A request made where no reply was written (a review of what was said:
+    ``memory.review``, ``message_id`` ``None``) was made in the requester's conversation: their
+    latest one. ``None`` when that cannot be known: nothing is then run or woken anywhere, never
+    in someone else's conversation as theirs. Reads only."""
     whose = await session.scalar(
         select(Conversation.person_id).where(Conversation.id == c.conversation_id)
     )
     if whose == c.requester_id:
         return c.conversation_id
     if c.message_id is None:
-        return None
+        return await session.scalar(
+            select(Conversation.id)
+            .where(Conversation.person_id == c.requester_id)
+            .order_by(Conversation.created_at.desc(), Conversation.id)
+            .limit(1)
+        )
     found = (
         await session.execute(
             select(Conversation.id, Conversation.person_id)
@@ -342,16 +353,26 @@ def decided_for_him(c: Confirmation) -> bool:
     )
 
 
-def approves(approver_kind: str, person: Person, requester_id: uuid.UUID) -> bool:
-    """Whether ``person`` is an approver of that kind for a request of ``requester_id``: the
-    requester for ``self``; an adult or the owner other than the requester for ``adult``; the
-    owner, not the requester, for ``owner``. Any other kind has no approver."""
+def approves(
+    approver_kind: str,
+    person: Person,
+    requester_id: uuid.UUID,
+    *,
+    rights: RightsTable,
+    policy: PolicyTables,
+) -> bool:
+    """Whether ``person`` is an approver of that kind for a request of ``requester_id``, under
+    the ``rights`` in force and the catalog ``policy``: the requester for ``self``; someone who
+    may agree for them (``who_agrees.may_agree_for_a_child``) for ``adult``; the owner, not the
+    requester, for ``owner``. Any other kind has no approver."""
     match approver_kind:
         case "self":
             return person.id == requester_id
         case "adult":
             # The single rule of who may agree for a child (the judge's case marks by it too).
-            return may_agree_for_a_child(person.role, person.id, requester_id)
+            return may_agree_for_a_child(
+                actor_of(person), requester_id, rights=rights, policy=policy
+            )
         case "owner":
             return person.role == "owner" and person.id != requester_id
         case _:
@@ -362,7 +383,15 @@ def approves(approver_kind: str, person: Person, requester_id: uuid.UUID) -> boo
 _APPROVERS: Final[tuple[Approver, ...]] = ("self", "adult", "owner")
 
 
-def covers(given: str, needed: Approver, person: Person, requester_id: uuid.UUID) -> bool:
+def covers(
+    given: str,
+    needed: Approver,
+    person: Person,
+    requester_id: uuid.UUID,
+    *,
+    rights: RightsTable,
+    policy: PolicyTables,
+) -> bool:
     """Whether the yes ``person`` gave to a chain of ``requester_id``, as an approver of the kind
     ``given`` (the one the request waited for), covers a step for which the barrier now asks for
     the agreement of the kind ``needed``. The yes of a chain covers each of its steps: only a more
@@ -370,13 +399,13 @@ def covers(given: str, needed: Approver, person: Person, requester_id: uuid.UUID
     ``person`` is an approver of the kind ``needed``, or when ``needed`` is less demanding than
     ``given`` and
     ``person`` is still an approver of that kind (a yes is not covered by someone who no longer
-    could give it)."""
-    if approves(needed, person, requester_id):
+    could give it). ``rights`` and ``policy`` are those in force (``approves``)."""
+    if approves(needed, person, requester_id, rights=rights, policy=policy):
         return True
     if given not in _APPROVERS:
         return False
     return _APPROVERS.index(needed) < _APPROVERS.index(given) and approves(
-        given, person, requester_id
+        given, person, requester_id, rights=rights, policy=policy
     )
 
 
@@ -583,12 +612,20 @@ async def awaiting_approval(
     (``nudged_at``, spec 5.2), then the oldest first. The first ``limit`` of them, each with the
     requester's display name, and how many there are in all.
 
-    Only an adult or the owner has any (they are the ones who may answer such a request), and
+    Only who may agree for a child has any (``who_agrees.agrees_for_children``), and
     only the owner has the owner's; the approver's own requests are never among them (nobody
     approves their own), but a request Domo made on his own is never the approver's own, even
     in their conversation: its name is Domo's, as the approver reads it. A child or a guest gets an
     empty list."""
-    if not is_active(approver, now) or not agrees_for_children(approver.role):
+    if (
+        not is_active(approver, now)
+        or not agrees_for_children(
+            actor_of(approver),
+            rights=await load_rights(session),
+            policy=await load_policy(session),
+        )
+        or not await reach.can_answer(session, approver.id, now)
+    ):
         return [], 0
     kinds = ("adult", "owner") if approver.role == "owner" else ("adult",)
     waiting = (
@@ -669,7 +706,14 @@ async def pending_to_approve(
         or c.approver_kind == "self"
         or c.status != "pending"
         or not is_active(approver, now)
-        or not approves(c.approver_kind, approver, requester_of(c))
+        or not await reach.can_answer(session, approver.id, now)
+        or not approves(
+            c.approver_kind,
+            approver,
+            requester_of(c),
+            rights=await load_rights(session),
+            policy=await load_policy(session),
+        )
         or is_past_lifetime(c, await load_policy_settings(session), now)
     ):
         raise InvalidArguments("not_found", _NOT_TO_APPROVE)

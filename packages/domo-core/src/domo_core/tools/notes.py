@@ -119,6 +119,7 @@ from typing import Final
 from sqlalchemy import ColumnElement, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domo_core.accounts.actors import VISITING
 from domo_core.accounts.models import Person
 from domo_core.audit.log import append_audit
 from domo_core.db import SessionFactory
@@ -127,6 +128,7 @@ from domo_core.llm.router import usable_keys
 from domo_core.llm.types import JsonObject, ToolDefinition
 from domo_core.naming import name_shown
 from domo_core.notes.models import Note
+from domo_core.people import reach
 from domo_core.policy.actions import DescribedAction, FactValue
 from domo_core.policy.roles import Actor, actor_label, domo_actor
 from domo_core.policy.settings import load_policy_settings
@@ -339,6 +341,13 @@ def _note_from(arguments: JsonObject) -> tuple[str, str, str | None]:
 # What ``note_leave`` tells Domo of the exact words of the note: kept, not kept, or not kept
 # because there was no message of the person to check them against (a yes given later, a turn
 # without their message).
+async def _must_be_able_to_answer(session: AsyncSession, recipient: Person, now: datetime) -> None:
+    """A note is for someone who can answer (access now, and an account): ``not_possible``
+    otherwise, whatever the reason."""
+    if not await reach.can_answer(session, recipient.id, now):
+        raise InvalidArguments("not_possible", "this person cannot be left a note")
+
+
 _EXACT_KEPT: Final = "kept: the recipient can be shown them as the person wrote them"
 _EXACT_NOT_KEPT: Final = (
     "not kept: exact was not given, or is not a passage of the person's own message in this "
@@ -482,6 +491,7 @@ class NoteLeave:
         name, text, _ = _note_from(arguments)
         async with ctx.session_factory() as session:
             recipient = await resolve_person(session, name, now=ctx.clock(), speaker=ctx.person.id)
+            await _must_be_able_to_answer(session, recipient, ctx.clock())
         facts = self._facts(recipient, text)
         # The words are an argument of the call: they are not in the action, which is audited as
         # the decision, only how long they are; the audit entry of the note says who it was left
@@ -507,6 +517,7 @@ class NoteLeave:
         now = ctx.clock()
         async with ctx.session_factory() as session:
             recipient = await resolve_person(session, name, now=now, speaker=ctx.person.id)
+            await _must_be_able_to_answer(session, recipient, now)
             described = ctx.described_action
             if described is not None and described.target != f"person:{recipient.id}":
                 raise InvalidArguments(
@@ -853,7 +864,7 @@ class NoteKeep:
         note_id, day = _keep_from(arguments, now)
         async with ctx.session_factory() as session:
             found = await session.execute(
-                select(Note.recipient_id, Note.withdrawn_at, Person.role)
+                select(Note.recipient_id, Note.withdrawn_at, VISITING.label("visiting"))
                 .join(Person, Person.id == Note.recipient_id)
                 .where(Note.id == note_id, _left_by(actor))
             )
@@ -862,7 +873,7 @@ class NoteKeep:
             raise InvalidArguments("not_found", "you left no note with this id")
         if row.withdrawn_at is not None:
             raise InvalidArguments("invalid", _NOT_KEPT)
-        if row.role != "guest":
+        if not row.visiting:
             raise InvalidArguments("invalid", _NOT_FOR_A_GUEST)
         return DescribedAction(
             connector="core",
@@ -889,10 +900,12 @@ class NoteKeep:
                 raise InvalidArguments("invalid", _NOT_KEPT)
             recipient = (
                 await session.execute(
-                    select(Person.display_name, Person.role).where(Person.id == note.recipient_id)
+                    select(Person.display_name, VISITING.label("visiting")).where(
+                        Person.id == note.recipient_id
+                    )
                 )
             ).one()
-            if recipient.role != "guest":
+            if not recipient.visiting:
                 raise InvalidArguments("invalid", _NOT_FOR_A_GUEST)
             note.keep_until = datetime(day.year, day.month, day.day, 23, 59, 59, tzinfo=UTC)
             # Last, just before the commit. Never the words.

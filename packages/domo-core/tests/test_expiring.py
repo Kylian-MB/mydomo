@@ -191,6 +191,7 @@ async def test_a_request_decided_or_of_someone_who_left_wakes_nobody(session_fac
         left = await writer.get(Person, dana.id)
         assert left is not None
         left.disabled_at = NOW - HOUR
+        left.state = "gone"
         await writer.commit()
     woken: list[uuid.UUID] = []
     await a_pass_over(session_factory, woken, monkeypatch)(NOW)

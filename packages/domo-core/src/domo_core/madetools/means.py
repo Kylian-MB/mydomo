@@ -73,7 +73,9 @@ given the open addresses, the account's reference (never its name), ``out_second
 request, ``most_bytes`` the smaller of ``out_bytes`` and ``ANSWER_CEILING_BYTES``, and
 ``session_idle_minutes`` in seconds; the frame of the answer the program reads is the larger of
 ``out_bytes`` and ``result_bytes`` (ruling R21), so that an answer of ``out_bytes`` reaches it
-(the run is told so: ``launch``). What the program reads is
+(the run is told so: ``launch``). A link sealed for the launch (``LaunchScope.sealed``,
+``people.sealed``) opens there, in the body alone, under the tool and the operation it is for; what
+comes back, and the second audit line, are scrubbed of it. What the program reads is
 ``{"status", "headers", "body"}``, the body as text when it is UTF-8, else ``body_b64``; a refusal
 of the gatekeeper is its code alone (``too_big`` and ``too_slow`` naming the setting that caused
 them), never a word of what it said. Each ``out`` of a real launch past its form gets a second
@@ -159,6 +161,7 @@ from pydantic import JsonValue
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domo_core.accounts.actors import is_visiting
 from domo_core.audit.log import append_audit
 from domo_core.gatekeeper_client import OutRefused
 from domo_core.madetools.asks import (
@@ -199,6 +202,7 @@ from domo_core.madetools.yes import (
 )
 from domo_core.outward.literal import is_a_host, is_an_address, literal_zone
 from domo_core.outward.service import account_for, open_for, was_removed
+from domo_core.people.sealed import SealedLinks
 from domo_core.policy.actions import DescribedAction, FactValue
 from domo_core.policy.barrier import Refuse, record_decision
 from domo_core.policy.catalog import (
@@ -391,6 +395,9 @@ class LaunchScope:
     parameters: JsonObject | None = None
     # The bounds of this launch (``madetools.settings``), read once when it starts.
     settings: Mapping[str, int] = field(default_factory=starts)
+    # The links sealed for this launch and its chain (``people.sealed``): opened in the body of a
+    # request out of the tool and operation they are for, scrubbed from what comes back.
+    sealed: SealedLinks | None = None
 
     def bound(self, key: str) -> int:
         """The value of the setting ``key`` for this launch."""
@@ -706,8 +713,13 @@ class Means:
         return isinstance(judged, NeedsYes) and not self._scope.dry_run
 
     async def _stop_kept(self, session: AsyncSession, judged: Judged) -> None:
-        """When ``judged`` stops the run, the stop kept (``yes.stop``), in ``session``."""
+        """When ``judged`` stops the run, the stop kept (``yes.stop``), in ``session``. Never in a
+        chain that holds a sealed link: its arguments hold a marker no relaunch could open, so a
+        yes for it could only send the marker (the launch says it needs a yes, and keeps nothing
+        to run again)."""
         if not isinstance(judged, NeedsYes) or not self._stops(judged):
+            return
+        if self._scope.sealed is not None:
             return
         begun = self._begun
         self._stop_id = await stop(
@@ -762,7 +774,7 @@ class Means:
         name, tool_id = self._scope.tool_name, self._scope.tool_id
         begun = self._begun
         told: JsonObject = {
-            "stop": str(self._stop_id),
+            "stop": None if self._stop_id is None else str(self._stop_id),
             "says": None if begun is None else begun.says,
             "amount_cents": self._amount,
             "why": judged.why,
@@ -770,7 +782,9 @@ class Means:
         }
         self.stop_told = told
         turn_reads_it = self._scope.depth == 0 and self._scope.chain.turn_waits
-        if name is not None and tool_id is not None and not turn_reads_it:
+        # Nobody is asked a yes in a chain that holds a sealed link: none is kept (``_stop_kept``).
+        sealed = self._scope.sealed is not None
+        if name is not None and tool_id is not None and not turn_reads_it and not sealed:
             person = self._scope.for_whom.person
             whom: WakeFor = None if person is None else person.id
             wake: JsonObject = {"needs_yes": told}
@@ -1410,11 +1424,25 @@ class Means:
             if not isinstance(found, str):
                 return found
             ref = found
+        body, opened = self._opened(ask.body)
+        sealed = scope.sealed
+        if opened and len(body or b"") > most:
+            # The link made the body heavier than a request out may weigh: nothing is sent, and
+            # the seal stays closed for a lighter one.
+            return trace.refuse("too_big", told("out_bytes", scope.bound("out_bytes")))
+        trace.bytes_out = len(body or b"")
+        if opened and sealed is not None:
+            # Opened once per launch, whatever comes of it (``people.sealed``); and only towards
+            # the address it names: a redirect never takes the link to another address.
+            sealed.opened_once()
+            open_now = [
+                o for o in open_now if o.host.strip("[]") == trace.host and o.port == trace.port
+            ]
         sent = OutRequest(
             method=cast(OutMethod, ask.method),
             url=ask.url,
             headers=ask.headers,
-            body_b64=None if ask.body is None else base64.b64encode(ask.body).decode("ascii"),
+            body_b64=None if body is None else base64.b64encode(body).decode("ascii"),
             account=ref,
             open=open_now,
             seconds=max(1, math.ceil(ends - time.monotonic())),
@@ -1426,7 +1454,25 @@ class Means:
             response = await gatekeeper.out(sent)
         except OutRefused as refusal:
             return self._out_refused(refusal, trace, most)
-        return self._read_back(response, trace)
+        answer = self._read_back(response, trace)
+        if opened and sealed is not None:
+            # Sent when the address took it (a 2xx); what the program reads of the request that
+            # carried the link is its status alone, never what the address said back.
+            if 200 <= response.status < 300:
+                sealed.sent(opened)
+            return {"ok": {"status": response.status}}
+        return answer
+
+    def _opened(self, body: bytes | None) -> tuple[bytes | None, int]:
+        """``body`` with the launch's sealed links opened in it (``people.sealed``), and how many:
+        only in the body (never in the URL nor a header, which reach logs), only in a launch of
+        the tool and under the operation the seal is for, and only here, just before the
+        gatekeeper is called (a dry run never comes here)."""
+        sealed = self._scope.sealed
+        begun = None if self._begun is None else self._begun.name
+        if body is None or sealed is None or not sealed.opens_in(self._scope.tool_name, begun):
+            return body, 0
+        return sealed.open_in(body)
 
     async def _open_now(self, trace: _OutTrace) -> list[OpenAddress] | JsonObject:
         """The addresses open for the launch's tool (``None``: a program run by hand), when the
@@ -1449,7 +1495,7 @@ class Means:
                 name=name,
                 for_person=for_person,
                 on_his_own=person is None,
-                is_guest=person is not None and person.role == "guest",
+                is_guest=person is not None and is_visiting(person),
             )
             if found is not None:
                 return found.ref
@@ -1478,30 +1524,42 @@ class Means:
         body = base64.b64decode(response.body_b64)
         trace.status, trace.bytes_in, trace.hops = response.status, len(body), response.hops
         trace.zone = response.zone
-        answer: JsonObject = {
-            "status": response.status,
-            "headers": cast(JsonObject, dict(response.headers)),
-        }
+        headers = dict(response.headers)
+        encoded = response.body_b64
+        sealed = self._scope.sealed
+        if sealed is not None:
+            # A sealed link never comes back to a program, even echoed by the address.
+            body = sealed.scrub_bytes(body)
+            headers = {sealed.scrub(name): sealed.scrub(value) for name, value in headers.items()}
+            encoded = base64.b64encode(body).decode("ascii")
+        answer: JsonObject = {"status": response.status, "headers": cast(JsonObject, headers)}
         try:
             answer["body"] = body.decode("utf-8")
         except UnicodeDecodeError:
-            answer["body_b64"] = response.body_b64
+            answer["body_b64"] = encoded
         return {"ok": answer}
 
     async def _out_audited(self, trace: _OutTrace) -> None:
         """The second audit line of a request out (``OUT_DONE``)."""
         person = self._scope.for_whom.person
         begun = self._begun
+        details: dict[str, JsonValue] = {
+            "tool": self._scope.tool_name,
+            "operation": None if begun is None else begun.name,
+            "for_person": None if person is None else str(person.id),
+            **trace.details(),
+        }
+        sealed = self._scope.sealed
+        if sealed is not None:
+            details = {
+                key: sealed.scrub(value) if isinstance(value, str) else value
+                for key, value in details.items()
+            }
         async with self._deps.session_factory() as session:
             await append_audit(
                 session,
                 actor=actor_label(self._scope.actor),
                 action=OUT_DONE,
-                details={
-                    "tool": self._scope.tool_name,
-                    "operation": None if begun is None else begun.name,
-                    "for_person": None if person is None else str(person.id),
-                    **trace.details(),
-                },
+                details=details,
             )
             await session.commit()

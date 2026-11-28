@@ -61,7 +61,8 @@ from domo_core.accounts.models import Person
 from domo_core.audit.log import append_audit
 from domo_core.confirmations.store import approves
 from domo_core.db import SessionFactory
-from domo_core.policy.catalog import ACTION_FACTS
+from domo_core.policy.catalog import ACTION_FACTS, PolicyTables
+from domo_core.policy.rights import RightsTable
 from domo_core.texts.checks import numbers_in
 from domo_core.texts.models import CardText
 from domo_core.texts.view import fill_holes
@@ -179,9 +180,15 @@ class _HasHead(Protocol):
     def head_parts(self) -> tuple[str | None, ...]: ...
 
 
-def _people_of(source: HeadSource, people: Mapping[UUID, Person]) -> list[UUID]:
-    """The people the card is about, by id: who asked, who may say yes, and the people of its
-    target and facts."""
+def _people_of(
+    source: HeadSource,
+    people: Mapping[UUID, Person],
+    *,
+    rights: RightsTable,
+    policy: PolicyTables,
+) -> list[UUID]:
+    """The people the card is about, by id: who asked, who may say yes (under ``rights`` and
+    ``policy``), and the people of its target and facts."""
     found: list[UUID] = []
     if source.asked_by is not None:
         found.append(source.asked_by)
@@ -189,7 +196,9 @@ def _people_of(source: HeadSource, people: Mapping[UUID, Person]) -> list[UUID]:
             found.extend(
                 person.id
                 for person in people.values()
-                if approves(source.approver_kind, person, source.asked_by)
+                if approves(
+                    source.approver_kind, person, source.asked_by, rights=rights, policy=policy
+                )
             )
     for value in (source.target, *source.facts.values()):
         if isinstance(value, str):
@@ -231,7 +240,12 @@ def _amount_forms(value: object) -> list[str]:
 
 
 def card_facts(
-    card: "ConfirmationCard | ActionCard", *, reader: Person, people: Mapping[UUID, Person]
+    card: "ConfirmationCard | ActionCard",
+    *,
+    reader: Person,
+    people: Mapping[UUID, Person],
+    rights: RightsTable,
+    policy: PolicyTables,
 ) -> CardFacts:
     """What the head of ``card`` is written from, for ``reader``: ``card`` is the card as
     ``reader`` sees it, built in the reference texts with its holes (``confirmation_card`` and
@@ -240,13 +254,16 @@ def card_facts(
     of someone the card is about, or a name its facts give (``_people_of``, ``_given_names``); an
     amount a number of its arguments and its facts, in digits (``_amount_forms``). Of them, only
     those the reference shows are asked of the head: the writer is asked to say what the card
-    says, and no more. ``ValueError`` for a card built without its source."""
+    says, and no more. ``rights`` and ``policy`` are those in force (who may say yes).
+    ``ValueError`` for a card built without its source."""
     reference, holes, source = _reference_of(card)
     # What the reference shows of the facts, someone else's words left out.
     shown = HOLE.sub(" ", reference)
     folded = shown.casefold()
     candidates = [
-        people[person].display_name for person in _people_of(source, people) if person in people
+        people[person].display_name
+        for person in _people_of(source, people, rights=rights, policy=policy)
+        if person in people
     ]
     candidates.extend(_given_names(source))
     names = tuple(

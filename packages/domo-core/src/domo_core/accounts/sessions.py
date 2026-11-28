@@ -92,15 +92,21 @@ async def create_session(session: AsyncSession, account_id: UUID, *, ttl: timede
 
 
 def is_active(person: Person, now: datetime) -> bool:
-    """Whether the person is in the household at ``now``: not removed, and not a guest whose stay
-    has ended."""
-    return person.disabled_at is None and (person.expires_at is None or person.expires_at > now)
+    """Whether the person is in the household at ``now``: they have access (``state``), are not
+    removed, and are not a guest whose stay has ended. With or without an account."""
+    return (
+        person.state == "has_access"
+        and person.disabled_at is None
+        and (person.expires_at is None or person.expires_at > now)
+    )
 
 
 def active_at(now: datetime) -> ColumnElement[bool]:
     """``is_active`` as a condition on ``persons``, for a query."""
     return and_(
-        Person.disabled_at.is_(None), or_(Person.expires_at.is_(None), Person.expires_at > now)
+        Person.state == "has_access",
+        Person.disabled_at.is_(None),
+        or_(Person.expires_at.is_(None), Person.expires_at > now),
     )
 
 

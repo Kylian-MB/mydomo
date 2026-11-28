@@ -19,6 +19,7 @@ from typing import Any, cast
 import pytest
 from domo_common.gatekeeper_api import OutRequest, OutResponse
 from domo_common.sandbox_api import JsonObject, RunRequest
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.gatekeeper_client import GatekeeperClient, OutRefused
 from domo_core.madetools import means as means_module
@@ -36,7 +37,6 @@ from domo_core.madetools.settings import set_for_tool
 from domo_core.outward.models import ServiceAccount, account_ref
 from domo_core.outward.service import open_address
 from domo_core.policy.catalog import DEFAULT_POLICY, Risks
-from domo_core.policy.roles import Actor, as_role
 from fakes import FakeAsk, FakeRefused
 from llm_support import CORE_TOKEN
 from test_madetools_handover import add_tool, all_audit, audit_of, by_program, deps_of
@@ -454,7 +454,7 @@ async def test_a_program_run_by_hand_reaches_the_addresses_open_without_a_tool(
             tool_name=None,
             tool_id=None,
             for_whom=ForWhom(dana),
-            actor=Actor(dana.id, as_role(dana.role)),
+            actor=actor_of(dana),
             depth=0,
             chain=Chain(),
             waited=False,
@@ -847,7 +847,7 @@ async def test_a_dry_run_lets_a_host_machine_port_through_but_not_the_internet(
         tool_name="lights",
         tool_id=tool.id,
         for_whom=ForWhom(dana),
-        actor=Actor(dana.id, as_role(dana.role)),
+        actor=actor_of(dana),
         depth=0,
         chain=Chain(),
         waited=False,
@@ -874,7 +874,7 @@ async def test_a_dry_run_sends_nothing_checks_no_address_nor_account_and_answers
         tool_name="lights",
         tool_id=tool.id,
         for_whom=ForWhom(dana),
-        actor=Actor(dana.id, as_role(dana.role)),
+        actor=actor_of(dana),
         depth=0,
         chain=Chain(),
         waited=False,

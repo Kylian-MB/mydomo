@@ -15,6 +15,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from chat_support import an_actor
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.audit.models import AuditEntry
 from domo_core.confirmations.judge import Judgement
@@ -84,7 +86,7 @@ def context(
 ) -> ToolContext:
     return ToolContext(
         session_factory=session_factory,
-        actor=Actor(person.id, person.role),  # type: ignore[arg-type]
+        actor=actor_of(person),  # type: ignore[arg-type]
         person=person,
         conversation_id=uuid.uuid4(),
         origin=origin,
@@ -426,6 +428,7 @@ async def test_an_account_is_asked_for_good_and_its_form_shown_once_to_whoever_g
         "outward": False,
         "removed_by_owner": False,
         "removed_on": None,
+        "removed_at": "",
     }
     done = await tool.execute(ACCOUNT, ctx)
     assert done.model_result == {"status": "done", "name": "lights", "form": "shown"}
@@ -538,6 +541,21 @@ async def test_who_gives_an_account(session_factory: SessionFactory):
     noted = await refused("account_ask", context(sam, session_factory), **ACCOUNT, note=WORDS)
     assert noted.code == "invalid"
     del alex
+
+
+async def test_an_adult_only_passing_by_may_give_an_account_of_their_own(
+    session_factory: SessionFactory,
+):
+    """Dana's mother has the adult role and is noted as passing: "keep my music account". The
+    code no longer refuses it for her standing: it is the judge's to weigh."""
+    _, sam, _, _ = await household(session_factory)
+    async with session_factory() as writer:
+        found = await writer.get(Person, sam.id)
+        assert found is not None and found.role == "adult"
+        found.standing = "visiting"
+        await writer.commit()
+        await writer.refresh(found)
+    await run("account_ask", context(found, session_factory), **{**ACCOUNT, "for": "me"})
 
 
 async def test_on_his_own_domo_names_who_gives_it_and_a_note_of_his_tells_them(
@@ -655,7 +673,7 @@ async def test_a_child_removes_an_account_of_their_own_and_no_other(
 ):
     # Spec 13.4: whoever gave it removes it; a child, their own only.
     alex, _, dana, _ = await household(session_factory)
-    assert "account_remove" in {d.name for d in tools_for("child", TOOLS, DEFAULT_POLICY)}
+    assert "account_remove" in {d.name for d in tools_for(an_actor("child"), TOOLS, DEFAULT_POLICY)}
     await run("account_ask", context(alex, session_factory), **ACCOUNT)
     await run("account_ask", context(dana, session_factory), **{**ACCOUNT, "for": "me"})
     house = {"name": "lights", "for": "house"}
@@ -719,7 +737,9 @@ async def test_who_leaves_has_their_timed_launches_and_accounts_wait_and_get_the
     assert await hers() == (0, False)
     async with session_factory() as writer:
         # She comes back (``household.service.accept_return`` empties ``disabled_at``).
-        await writer.execute(update(Person).where(Person.id == dana.id).values(disabled_at=None))
+        await writer.execute(
+            update(Person).where(Person.id == dana.id).values(disabled_at=None, state="has_access")
+        )
         await writer.commit()
     assert await hers() == (1, True)
     # Deleted, her accounts and what was timed for her go with her row.
@@ -1086,11 +1106,38 @@ async def test_a_stored_request_runs_only_on_the_removal_it_was_judged_with(
     with pytest.raises(InvalidArguments) as refused:
         await tool.execute(ACCOUNT, replace(ctx, described_action=unweighed))
     assert str(refused.value.detail).startswith("removed_by_owner")
-    other_day = replace(weighed, facts={**weighed.facts, "removed_on": "2000-01-01"})
+    other_day = replace(weighed, facts={**weighed.facts, "removed_at": "2000-01-01T00:00:00+00:00"})
     with pytest.raises(InvalidArguments):
         await tool.execute(ACCOUNT, replace(ctx, described_action=other_day))
     assert await _live_accounts(session_factory) == []
     await tool.execute(ACCOUNT, replace(ctx, described_action=weighed))
+    assert len(await _live_accounts(session_factory)) == 1
+
+
+async def test_an_account_removed_again_the_same_day_is_not_taken_as_weighed(
+    session_factory: SessionFactory,
+):
+    # Removed, asked again, removed again the same day: the yes given on the first removal does
+    # not stand for the second (the instant is compared, not the day).
+    people = await _house(session_factory)
+    alex, dana = people["Alex"], people["Dana"]
+    gatekeeper = FakeGatekeeper()
+    owners, _ = await _in_turn(session_factory, alex, gatekeeper)
+    await run("account_ask", later(owners, 0), **ACCOUNT)
+    await run("account_remove", later(owners, 1), name="lights", **{"for": "house"})
+    ctx, _ = await _in_turn(session_factory, dana, gatekeeper)
+    tool = TOOLS["account_ask"]
+    first = await tool.describe(ACCOUNT, ctx.actor, later(ctx, 2))
+    assert first.facts["removed_at"] != ""
+    await run_weighed("account_ask", later(owners, 3), **ACCOUNT)
+    await run("account_remove", later(owners, 4), name="lights", **{"for": "house"})
+    second = await tool.describe(ACCOUNT, ctx.actor, later(ctx, 5))
+    assert second.facts["removed_on"] == first.facts["removed_on"]
+    assert second.facts["removed_at"] != first.facts["removed_at"]
+    with pytest.raises(InvalidArguments):
+        await tool.execute(ACCOUNT, replace(later(ctx, 5), described_action=first))
+    assert await _live_accounts(session_factory) == []
+    await tool.execute(ACCOUNT, replace(later(ctx, 5), described_action=second))
     assert len(await _live_accounts(session_factory)) == 1
 
 

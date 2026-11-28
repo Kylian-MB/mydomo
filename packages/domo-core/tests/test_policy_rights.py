@@ -21,6 +21,7 @@ from uuid import uuid4
 import pytest
 from chat_support import Member, live_http_client, log_in_live, status_of
 from domo_common.i18n import t
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.audit.models import AuditEntry
 from domo_core.confirmations.store import ANSWER_BY_THE_OWNER
@@ -50,7 +51,7 @@ from domo_core.policy.rights import (
     paused_rights,
     personal_right_summaries,
 )
-from domo_core.policy.roles import ROLES, Actor, as_role, domo_actor
+from domo_core.policy.roles import ROLES, Actor, domo_actor
 from fakes import FakeChatModel
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -348,7 +349,7 @@ async def test_the_barrier_reads_the_rights_of_the_moment(session, add_person):
     owner = await add_person("Owner", "owner")
     # A child (an adult invites by default since 0.9.1).
     sam = await add_person("Sam", "child")
-    actor = Actor(sam.id, "child")
+    actor = Actor(sam.id, "child", child=True)
     assert await decide_now(session, actor, INVITE, DEFAULT_POLICY, NOW) == Refuse("not_allowed")
     session.add(
         _row(
@@ -622,7 +623,7 @@ async def test_pausing_the_rights_of_a_person_audits_how_many_and_only_when_ther
 
 
 def _actor(member: Member) -> Actor:
-    return Actor(member.person.id, as_role(member.person.role))
+    return actor_of(member.person)
 
 
 async def _resolved(session_factory, actor: Actor, action_type: str) -> Resolved:
@@ -933,7 +934,7 @@ async def test_the_owner_is_told_the_rights_kept_after_a_role_change(
     async with session_factory() as reader:
         rights = await load_rights(reader)
     assert rights.resolve(
-        Actor(adult_member.person.id, "child"), "household.invite", DEFAULT_POLICY
+        Actor(adult_member.person.id, "child", child=True), "household.invite", DEFAULT_POLICY
     ).allowed
     # Someone who has none: nothing is said of them.
     reply = await owner_chat.say_with_tool(

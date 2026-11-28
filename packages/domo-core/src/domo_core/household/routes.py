@@ -67,20 +67,26 @@ cancelled or expired).
 The household page
 ------------------
 
-``GET /household`` is the owner's (403 for anyone else) and reads only: each person, their role
-(``data-person-role``) and where they stand (``data-person-state``: ``active``, ``guest`` until a
-date, ``stay_over``, or ``removed``), then the invitations that wait (never their links, which
-are not kept). Changes go through Domo, whose actions are confirmed.
+``GET /household`` is the owner's (403 for anyone else) and reads only: every record, with an
+account or not (never one merged into another, nor one forgotten), its role (``data-person-role``,
+the base; a made role's name and the types it gives or denies beyond that base, by their names in
+the catalog), where the person stands, the child mark, and where the record stands
+(``data-person-state``: ``known``, ``has_access``, ``asleep`` for a stay that is over,
+``withdrawn``, ``refused`` or ``gone``); then the promises that wait, the owner's directives in
+force (his own words: what he said of it and the exception), and the invitations that wait, with
+the assistant's own marked so. Never a link (not kept), the assistant's reason for anything, nor
+what he remembers. The page has no control: changes go through the assistant.
 """
 
 import math
 import re
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Final
 
+from domo_common.meanings import has_meaning, holes
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -119,10 +125,19 @@ from domo_core.household.service import (
     check_return,
     hash_token,
     invitation_of,
+    nobody_new_since,
     open_invitations,
+    record_unavailable,
     returning_account,
     reveal_link,
+    shown_to_the_owner,
+    tell_the_owner_nobody_new_came,
 )
+from domo_core.people import directives, made_roles, promises
+from domo_core.people.models import Access, MadeRole
+from domo_core.policy.catalog import OpenKind
+from domo_core.policy.open_catalog import open_kinds
+from domo_core.policy.roles import DOMO_LABEL
 from domo_core.policy.settings import load_policy_settings
 from domo_core.texts.languages import (
     VISITOR_LANGUAGE_SECONDS,
@@ -185,7 +200,16 @@ async def _usable_link(session: AsyncSession, token: str, now: datetime) -> _Lin
     invitation = await invitation_of(session, token, now)
     if invitation is None:
         return None
-    if invitation.person_id is None:
+    if invitation.kind == "record" and await record_unavailable(session, invitation, now):
+        # The record could not have an account now: the page says so at once, as the form would.
+        return None
+    if await nobody_new_since(session, invitation, now):
+        # The owner said since that nobody new is wanted: the page of a link that cannot be used,
+        # and he is told once that it stopped someone (his news are kept for his next visit).
+        await tell_the_owner_nobody_new_came(session, invitation, now)
+        await session.commit()
+        return None
+    if invitation.kind != "return":
         return _Link(invitation, None)
     account = await returning_account(session, invitation, now)
     return None if account is None else _Link(invitation, account.username)
@@ -234,7 +258,8 @@ def _form_of(
     """The form of ``link``, of the token ``token``, in the texts of ``request``.
 
     A return link gets the form of someone coming back: it shows their username (it does not
-    change, and is not asked) and asks for a new password only."""
+    change, and is not asked) and asks for a new password only. Any other link proposes the
+    username the assistant chose for them (``proposed_username``) until they typed one."""
     invitation = link.invitation
     texts = request_texts(request)
     stay = (
@@ -253,7 +278,7 @@ def _form_of(
         stay=stay,
         error_key=error_key,
         error_params=error_params or {},
-        username=username,
+        username=username or invitation.proposed_username or "",
         returning_username=link.returning_username,
         min_password_length=MIN_PASSWORD_LENGTH,
     )
@@ -288,6 +313,7 @@ async def _in_a_new_language(
     # The page only read: nothing is held while the writer writes.
     await session.commit()
     writing: TextWriting = request.app.state.text_writing
+    # The one who invited pays; the assistant's own invitation has nobody (the house does).
     host = invitation.created_by
     # The texts of the page, then the rest of the version: all asked before the page waits.
     if not await writing.begin_language(language, groups, host=host):
@@ -383,7 +409,7 @@ async def join_household(
     # A return link brings someone back (their username stays, only a password is asked); any
     # other link makes a new person. The service checks each against the other.
     invitation = await invitation_of(session, token, now)
-    coming_back = invitation is not None and invitation.person_id is not None
+    coming_back = invitation is not None and invitation.kind == "return"
     checked: Joining | Returning
     try:
         if coming_back:
@@ -464,7 +490,7 @@ async def show_link(
     wanted = uuid.UUID(invitation_id)
     # The one the link waits for: the one who made the invitation, or who asked for it again.
     found = await session.execute(
-        select(Invitation.display_name, Invitation.person_id).where(
+        select(Invitation.display_name, Invitation.kind).where(
             Invitation.id == wanted,
             func.coalesce(Invitation.link_for_id, Invitation.created_by) == person.id,
         )
@@ -472,13 +498,22 @@ async def show_link(
     row = found.first()
     if row is None:
         raise HTTPException(status_code=404)
-    name, person_id = row
+    name, link_kind = row
     try:
         token = await reveal_link(session, wanted, person.id, clock())
     except InvitationUnavailable:
+        asker = person.id
         await session.rollback()
+        # The owner was shown it in their place: they are told so, by his name.
+        owner = await shown_to_the_owner(session, wanted, asker)
+        owner_row = None if owner is None else await session.get(Person, owner)
         return render(
-            request, "fragments/invitation_link.html", status_code=410, link=None, once=None
+            request,
+            "fragments/invitation_link.html",
+            status_code=410,
+            link=None,
+            once=None,
+            shown_to=None if owner_row is None else owner_row.display_name,
         )
     # Last, just before the commit. The invitation, never the link.
     await append_audit(
@@ -488,7 +523,7 @@ async def show_link(
         details={"invitation_id": str(wanted)},
     )
     await session.commit()
-    kind = "bring_back" if person_id is not None else "invite"
+    kind = "bring_back" if link_kind == "return" else "invite"
     return render(
         request,
         "fragments/invitation_link.html",
@@ -502,39 +537,219 @@ async def show_link(
 
 @dataclass(frozen=True)
 class PersonRow:
-    """A person as the household page shows them."""
+    """A record as the household page shows it: its base ``role``, the made role's name
+    (``role_name``) and the types that role gives (``adds``) or denies (``removes``) beyond its
+    base, each in the catalog's own words (``_label``), where the person stands, the child mark,
+    whether they have an account, where the record stands (``state``: ``known``, ``has_access``,
+    ``asleep`` for a stay that is over, ``withdrawn``, ``refused`` or ``gone``) and whether the
+    assistant opened it."""
 
     id: str
     name: str
     role: str
-    state: str  # active, guest, stay_over, removed
+    role_name: str | None
+    adds: tuple[str, ...]
+    removes: tuple[str, ...]
+    standing: str
+    is_child: bool
+    has_account: bool
+    state: str
     state_text: str
+    opened_by_domo: bool
 
 
 @dataclass(frozen=True)
 class InvitationRow:
-    """An invitation that waits, as the household page shows it (never its link)."""
+    """An invitation that waits, as the household page shows it (never its link, nor the
+    assistant's reason for it)."""
 
     name: str
     role: str
     stay: str | None
     expires: str
+    by_domo: bool
 
 
-def _person_row(person: Person, now: datetime, texts: Texts) -> PersonRow:
-    if person.disabled_at is not None:
-        state = "removed"
-        text = texts("household.state.removed", date=texts.date(person.disabled_at))
-    elif person.expires_at is not None and person.expires_at <= now:
-        state = "stay_over"
-        text = texts("household.state.stay_over", date=texts.date(person.expires_at))
-    elif person.expires_at is not None:
-        state = "guest"
-        text = texts("household.state.guest", date=texts.date(person.expires_at))
-    else:
-        state = "active"
-        text = texts("household.state.active")
-    return PersonRow(str(person.id), person.display_name, person.role, state, text)
+@dataclass(frozen=True)
+class PromiseRow:
+    """A promise that waits: what is promised, the role, and who asked, in words (never the
+    assistant's reason)."""
+
+    description: str
+    role: str
+    asked_by: str
+
+
+@dataclass(frozen=True)
+class DirectiveRow:
+    """One of the owner's directives in force: its kind, the record it is about (``name``), what
+    he said of it, the words that let some through, and until when."""
+
+    kind: str
+    name: str | None
+    description: str | None
+    except_words: str | None
+    until: str | None
+
+
+def _state(person: Person, now: datetime, texts: Texts) -> tuple[str, str]:
+    """Where ``person``'s record stands at ``now``, and the words that say it."""
+    match person.state:
+        case "has_access" if person.expires_at is not None and person.expires_at <= now:
+            # A stay that is over: the access sleeps (``people.records.returns_now``).
+            return "asleep", texts("household.state.asleep", date=texts.date(person.expires_at))
+        case "has_access" if person.expires_at is not None:
+            return "has_access", texts("household.state.guest", date=texts.date(person.expires_at))
+        case "has_access":
+            return "has_access", texts("household.state.active")
+        case "withdrawn" | "gone":
+            # The state is the record's; its leaving date (the database asks for one) only dates it.
+            key = "withdrawn" if person.state == "withdrawn" else "removed"
+            if person.disabled_at is None:
+                return person.state, texts(f"household.state.{key}_undated")
+            return person.state, texts(
+                f"household.state.{key}", date=texts.date(person.disabled_at)
+            )
+        case "refused":
+            return "refused", texts("household.state.refused")
+        case _:
+            return "known", texts("household.state.known")
+
+
+def label_key(action_type: str) -> str | None:
+    """The key of the words that say what a right on ``action_type`` lets someone do, said of
+    someone else (``household.right.<type>``; never ``action.describe``, written for the one who
+    acts); ``None`` when it has none (a test holds every type of the catalog to one)."""
+    key = f"household.right.{action_type}"
+    return key if has_meaning(key) and not holes(key) else None
+
+
+def _label(action_type: str, texts: Texts, kinds: Mapping[str, OpenKind]) -> str:
+    """An action type in plain words: the description of one of the assistant's own kinds (the
+    open catalog), else its words (``label_key``). A type of neither (a row left by a type the
+    code no longer has) is said as a right with no name, never by the type's name."""
+    kind = kinds.get(action_type)
+    if kind is not None:
+        return kind.description
+    key = label_key(action_type)
+    return texts("household.right.unknown" if key is None else key)
+
+
+def _types(
+    accesses: Mapping[str, Access], access: Access, texts: Texts, kinds: Mapping[str, OpenKind]
+) -> tuple[str, ...]:
+    found = (action_type for action_type, given in accesses.items() if given == access)
+    return tuple(sorted(_label(action_type, texts, kinds) for action_type in found))
+
+
+def _person_row(
+    person: Person,
+    now: datetime,
+    texts: Texts,
+    *,
+    has_account: bool,
+    made: MadeRole | None,
+    accesses: Mapping[str, Access],
+    kinds: Mapping[str, OpenKind],
+) -> PersonRow:
+    state, text = _state(person, now, texts)
+    return PersonRow(
+        id=str(person.id),
+        name=person.display_name,
+        role=person.role,
+        role_name=None if made is None else made.name,
+        adds=_types(accesses, "allow", texts, kinds),
+        removes=_types(accesses, "deny", texts, kinds),
+        standing=person.standing,
+        is_child=person.is_child,
+        has_account=has_account,
+        state=state,
+        state_text=text,
+        opened_by_domo=person.origin == "domo",
+    )
+
+
+async def _people(session: AsyncSession, now: datetime, texts: Texts) -> list[PersonRow]:
+    """Every record, oldest first, but those merged into another or forgotten."""
+    everyone = await session.scalars(
+        select(Person)
+        .where(Person.merged_into_id.is_(None), Person.forgotten_at.is_(None))
+        .order_by(Person.created_at, Person.id)
+    )
+    with_account = set(await session.scalars(select(Account.person_id)))
+    kinds = await open_kinds(session)
+    made: dict[uuid.UUID, MadeRole | None] = {}
+    accesses: dict[uuid.UUID, Mapping[str, Access]] = {}
+    rows: list[PersonRow] = []
+    for someone in everyone:
+        role_id = someone.made_role_id
+        if role_id is not None and role_id not in made:
+            made[role_id] = await made_roles.by_id(session, role_id)
+            accesses[role_id] = await made_roles.accesses_of(session, role_id)
+        rows.append(
+            _person_row(
+                someone,
+                now,
+                texts,
+                has_account=someone.id in with_account,
+                made=None if role_id is None else made[role_id],
+                accesses={} if role_id is None else accesses[role_id],
+                kinds=kinds,
+            )
+        )
+    return rows
+
+
+async def _name_of(session: AsyncSession, person_id: uuid.UUID | None) -> str | None:
+    if person_id is None:
+        return None
+    return await session.scalar(select(Person.display_name).where(Person.id == person_id))
+
+
+async def _asker(session: AsyncSession, label: str, texts: Texts) -> str:
+    """Who asked for a promise, in words: the assistant, someone by their name, or someone the
+    assistant no longer knows (forgotten, or erased), never taken for the assistant."""
+    if label == DOMO_LABEL:
+        return texts("household.promises.asked_by_domo")
+    try:
+        asker_id = uuid.UUID(label.removeprefix("person:")) if label.startswith("person:") else None
+    except ValueError:
+        asker_id = None
+    asker = None if asker_id is None else await session.get(Person, asker_id)
+    if asker is None or asker.forgotten_at is not None or not asker.display_name:
+        return texts("household.promises.asked_by_someone_gone")
+    return texts("household.promises.asked_by", name=asker.display_name)
+
+
+async def _promises(session: AsyncSession, texts: Texts) -> list[PromiseRow]:
+    rows: list[PromiseRow] = []
+    for promised in await promises.waiting(session):
+        made = (
+            None
+            if promised.made_role_id is None
+            else await made_roles.by_id(session, promised.made_role_id)
+        )
+        rows.append(
+            PromiseRow(
+                description=promised.description,
+                role=texts(f"household.role.{promised.role}") if made is None else made.name,
+                asked_by=await _asker(session, promised.asked_by, texts),
+            )
+        )
+    return rows
+
+
+async def _directives(session: AsyncSession, now: datetime, texts: Texts) -> list[DirectiveRow]:
+    return [
+        DirectiveRow(
+            kind=directive.kind,
+            name=await _name_of(session, directive.person_id),
+            description=directive.description or None,
+            except_words=directive.except_words or None,
+            until=None if directive.until is None else texts.date(directive.until),
+        )
+        for directive in await directives.directives_now(session, now)
+    ]
 
 
 @router.get(HOUSEHOLD_PATH)
@@ -546,15 +761,22 @@ async def household_page(
 ) -> Response:
     now = clock()
     texts = request_texts(request)
-    everyone = await session.execute(select(Person).order_by(Person.created_at, Person.id))
-    people = [_person_row(someone, now, texts) for someone in everyone.scalars()]
     invitations = [
         InvitationRow(
             name=invitation.display_name,
             role=invitation.role,
             stay=None if invitation.guest_days is None else _days(invitation.guest_days, texts),
             expires=texts.date(invitation.expires_at),
+            by_domo=invitation.by_domo,
         )
         for invitation in await open_invitations(session, now)
     ]
-    return render(request, "household.html", person=person, people=people, invitations=invitations)
+    return render(
+        request,
+        "household.html",
+        person=person,
+        people=await _people(session, now, texts),
+        promises=await _promises(session, texts),
+        directives=await _directives(session, now, texts),
+        invitations=invitations,
+    )

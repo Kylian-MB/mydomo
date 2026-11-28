@@ -263,6 +263,8 @@ button.link {
 }
 
 .household-person,
+.household-promise,
+.household-directive,
 .household-invitation {
   display: flex;
   flex-wrap: wrap;
@@ -273,12 +275,23 @@ button.link {
 }
 
 .household-role,
-.household-state {
+.household-state,
+.household-access-head,
+.household-access {
   color: var(--muted);
 }
 
-.household-person[data-person-state="removed"] .household-name,
-.household-person[data-person-state="stay_over"] .household-name {
+/* What a made role adds or removes: one line per type, under its person. */
+.household-access {
+  flex-basis: 100%;
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.household-person[data-person-state="gone"] .household-name,
+.household-person[data-person-state="withdrawn"] .household-name,
+.household-person[data-person-state="refused"] .household-name,
+.household-person[data-person-state="asleep"] .household-name {
   color: var(--muted);
 }
 

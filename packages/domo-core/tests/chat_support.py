@@ -52,6 +52,7 @@ from domo_core.llm.types import (
     ToolDefinition,
     ToolResult,
 )
+from domo_core.policy.roles import Actor
 from fakes import (
     JUDGE_DEFAULT,
     FakeCall,
@@ -841,6 +842,17 @@ def confirmation_cards(page: str) -> list[str]:
     return cards
 
 
+def an_actor(role: str, person_id: uuid.UUID | None = None) -> Actor:
+    """A person of ``role`` as the tools offered are resolved for: nobody in particular when no
+    ``person_id`` is given, with the marks the role gives."""
+    return Actor(
+        person_id or uuid.UUID(int=0),
+        role,  # type: ignore[arg-type]
+        child=role == "child",
+        visiting=role == "guest",
+    )
+
+
 def turn_tools(role: str) -> dict[str, Any]:
     """What a turn of someone of ``role`` tells ``build_system_prompt`` of the tools, under the
     default rights: those offered (``offered``) and those the rights keep from them (``kept``)."""
@@ -849,6 +861,8 @@ def turn_tools(role: str) -> dict[str, Any]:
     from domo_core.tools.registry import TOOLS
 
     return {
-        "offered": frozenset(tool.name for tool in tools_for(role, TOOLS, DEFAULT_POLICY)),  # type: ignore[arg-type]
-        "kept": tools_kept_from(role, TOOLS, DEFAULT_POLICY),  # type: ignore[arg-type]
+        "offered": frozenset(
+            tool.name for tool in tools_for(an_actor(role), TOOLS, DEFAULT_POLICY)
+        ),
+        "kept": tools_kept_from(an_actor(role), TOOLS, DEFAULT_POLICY),
     }

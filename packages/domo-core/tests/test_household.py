@@ -23,24 +23,25 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
-from chat_support import GUEST_STAY, Card, live_http_client, log_in_live, status_of
+from chat_support import GUEST_STAY, Card, an_actor, live_http_client, log_in_live, status_of
 from domo_common.i18n import t
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Account, Person, WebSession
 from domo_core.accounts.sessions import create_session, resolve_session
 from domo_core.audit.models import AuditEntry
 from domo_core.chat.models import Message
 from domo_core.confirmations.describe import describe_for_people
+from domo_core.household import service as household_service
 from domo_core.household.models import Invitation
 from domo_core.household.service import (
-    GUEST_DAYS_CEILING,
     GUEST_DAYS_DEFAULT,
     Removed,
     create_invitation,
     disable,
     resolve_person,
-    set_role,
 )
 from domo_core.llm.types import ToolCall
+from domo_core.people import records
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.catalog import (
     ACTION_FACTS,
@@ -56,6 +57,7 @@ from domo_core.policy.models import PolicyRight
 from domo_core.policy.roles import ROLES, Actor
 from domo_core.texts.view import CatalogTexts
 from domo_core.tools.context import RefusesWhateverTheRights, ToolContext
+from domo_core.tools.household_admin import guest_days_from, stay_days
 from domo_core.tools.registry import TOOLS, InvalidArguments, tools_for
 from domo_core.web.deps import get_policy
 from fakes import FakeChatModel
@@ -92,7 +94,7 @@ async def test_invite_rejects_owner_role_and_bad_names(owner_chat, count_invitat
         '{"display_name":"X","role":"owner"}',
         '{"display_name":"","role":"adult"}',
         '{"display_name":"' + "x" * 61 + '","role":"adult"}',
-        '{"display_name":"<img src=x>","role":"guest","guest_days":400}',
+        '{"display_name":"<img src=x>","role":"guest","guest_days":0}',
     ]:
         owner_chat.use_model(
             FakeChatModel(tool_script=[ToolCall("c", "household_invite", args), "ok"])
@@ -133,24 +135,24 @@ async def test_household_page_is_owner_only(live_adult_client):
 # --- who may do what -----------------------------------------------------------------------------
 
 
-def test_the_pilots_guests_stay_as_long_as_a_default_invitation():
-    assert timedelta(days=GUEST_DAYS_DEFAULT) == GUEST_STAY and GUEST_DAYS_CEILING == 365
+def test_the_pilots_guests_stay_less_than_a_default_invitation_and_no_stay_has_a_ceiling():
+    assert GUEST_STAY < timedelta(days=GUEST_DAYS_DEFAULT) == timedelta(days=30)
+    assert not hasattr(household_service, "GUEST_DAYS_CEILING")
 
 
-# What an adult is offered of them too (the owner's trial of 0.9.1): inviting, and cancelling an
-# invitation of theirs.
-ADULTS_HOUSEHOLD_TOOLS = {"household_invite", "household_cancel_invitation"}
+# What an adult is offered of them: nothing (ruling 14: the gestures on people are in no role).
+ADULTS_HOUSEHOLD_TOOLS: set[str] = set()
 
 
 @pytest.mark.parametrize(
     ("role", "has_them"), [("owner", True), ("adult", False), ("child", False), ("guest", False)]
 )
 def test_only_the_owner_is_offered_the_household_tools(role, has_them):  # D1
-    offered = {d.name for d in tools_for(role, TOOLS, DEFAULT_POLICY)}
+    offered = {d.name for d in tools_for(an_actor(role), TOOLS, DEFAULT_POLICY)}
     assert (set(HOUSEHOLD_TOOLS) <= offered) is has_them
     adults = ADULTS_HOUSEHOLD_TOOLS if role == "adult" else set()
     assert offered & set(HOUSEHOLD_TOOLS) == adults or has_them
-    assert ("invitation_link_again" in offered) is (role in ("owner", "adult"))
+    assert ("invitation_link_again" in offered) is (role == "owner")
 
 
 async def test_a_turn_tells_domo_what_exists_but_is_not_the_persons(
@@ -168,7 +170,8 @@ async def test_a_turn_tells_domo_what_exists_but_is_not_the_persons(
     line = kept_line()
     assert line is not None
     assert "household_change_role" in line and "household_remove" in line
-    assert "household_invite" not in line and "memory_keep" not in line
+    # Inviting is in no role (ruling 14): kept from an adult too. A silent tool never is.
+    assert "household_invite" in line and "memory_keep" not in line
     await grant("household.change_role", person=adult_chat.person, access="allow")
     await adult_chat.say("hello again")
     line = kept_line()
@@ -295,7 +298,7 @@ async def test_domo_is_told_the_invitation_is_made_and_the_link_was_shown(owner_
         {"display_name": "Alex", "role": "Adult"},
         {"display_name": "Alex", "role": "adult", "guest_days": 2},
         {"display_name": "Alex", "role": "guest", "guest_days": 0},
-        {"display_name": "Alex", "role": "guest", "guest_days": 366},  # the ceiling
+        {"display_name": "Alex", "role": "guest", "guest_days": 5, "no_end": True},  # both
         {"display_name": "Alex", "role": "guest", "guest_days": "2"},
         {"display_name": "Alex", "role": "guest", "guest_days": 2.0},
         {"display_name": "Alex", "role": "guest", "guest_days": True},
@@ -339,7 +342,15 @@ async def test_an_invitation_is_described_as_a_change_of_the_household(session_f
         None,
         "permissions",
         "household",
-        {"role": "guest", "days": GUEST_DAYS_DEFAULT, "display_name": "Alex", "owner_first": False},
+        {
+            "role": "guest",
+            "days": GUEST_DAYS_DEFAULT,
+            "no_end": False,
+            "display_name": "Alex",
+            "owner_first": False,
+            "exception_of": None,
+            "serves_the_speaker": False,
+        },
     )
     # Domo judged the owner should say yes first: a fact of the action, which the catalog's
     # limit of inviting reads.
@@ -404,14 +415,14 @@ async def test_a_guest_made_an_adult_stays_for_good(owner_chat, guest_member, pe
         assert (await browser.get("/chat")).status_code == 200
 
 
-async def test_someone_made_a_guest_stays_two_days_then_loses_access(
+async def test_someone_with_an_account_made_a_guest_stays_thirty_days_then_loses_access(
     owner_chat, child_member, live_child_client, person_row, last_audit_entry, clock
 ):  # R78
     reply = await owner_chat.say_with_tool(
         "household_change_role", {"person": "Sam", "role": "guest"}
     )
     assert t(
-        "action.describe.household.change_role.guest", "en", name="Sam", duration="2 days"
+        "action.describe.household.change_role.guest", "en", name="Sam", duration="30 days"
     ) in plain(reply.cards_html)
     card = await owner_chat.confirm_last(reply)
     assert card.status == "executed"
@@ -445,7 +456,7 @@ async def test_someone_made_a_guest_stays_the_days_the_owner_said(
     page = (await owner_chat.get("/household")).text
     until = in_words(alex.expires_at)
     assert re.search(
-        rf'data-person-id="{alex.id}"[^>]*data-person-role="guest"[^>]*data-person-state="guest"',
+        rf'data-person-id="{alex.id}"[^>]*data-person-role="guest"[^>]*data-person-state="has_access"',
         page,
     )
     assert t("household.state.guest", "en", date=until) in plain(page)
@@ -498,17 +509,27 @@ async def test_a_guests_stay_is_extended_or_shortened_as_a_change_of_role(
     assert (await person_row(guest_member.person)).expires_at == robin.expires_at
 
 
-async def test_the_households_rule_applies_to_a_changed_stay(
-    owner_chat, guest_member, person_row
-):  # GUEST_DAYS_RULE
-    before = (await person_row(guest_member.person)).expires_at
-    reply = await owner_chat.say_with_tool(
-        "household_change_role", {"person": "Robin", "role": "guest", "guest_days": 31}
+async def test_a_changed_stay_of_any_length_is_not_refused(
+    owner_chat, guest_member, person_row, clock
+):  # audit POL-5
+    card = await owner_chat.confirm_last(
+        await owner_chat.say_with_tool(
+            "household_change_role", {"person": "Robin", "role": "guest", "guest_days": 400}
+        )
     )
-    assert reply.actions == [
-        {"tool": "household_change_role", "status": "refused", "reason": "limit"}
-    ]
-    assert (await person_row(guest_member.person)).expires_at == before
+    assert card.status == "executed"
+    assert (await person_row(guest_member.person)).expires_at == clock() + timedelta(days=400)
+    # Or no end at all: a card of its own, with no day to say.
+    card = await owner_chat.confirm_last(
+        await owner_chat.say_with_tool(
+            "household_change_role", {"person": "Robin", "role": "guest", "no_end": True}
+        )
+    )
+    assert card.status == "executed"
+    assert (await person_row(guest_member.person)).expires_at is None
+    assert t("action.card.done.household.change_role.stay.no_end", "en", name="Robin") in plain(
+        card.html
+    )
 
 
 async def test_domo_is_told_a_guests_stay_changed(guest_member, tool_context):
@@ -570,11 +591,11 @@ def test_the_sentence_of_a_change_of_stay_reads_the_role_the_person_has():
         ({"person": 3, "role": "child"}, "invalid"),
         ({"person": "Nobody", "role": "child"}, "not_found"),
         ({"person": "", "role": "child"}, "invalid"),
-        # A stay only for a guest (R78), from 1 day to the ceiling, as for an invitation (the
-        # household's rule of 30 days is a limit: test_policy_limits.py).
-        ({"person": "Alex", "role": "child", "guest_days": 3}, "invalid"),
+        # Days from 1, as for an invitation (the household's rule of 30 days is a limit:
+        # test_policy_limits.py); for someone who is not a guest, an end of their access
+        # (the owner's answer of 2026-11-27: test_people_stays.py).
         ({"person": "Alex", "role": "guest", "guest_days": 0}, "invalid"),
-        ({"person": "Alex", "role": "guest", "guest_days": 366}, "invalid"),
+        ({"person": "Alex", "role": "guest", "guest_days": 5, "no_end": True}, "invalid"),
         ({"person": "Alex", "role": "guest", "guest_days": "3"}, "invalid"),
         ({"person": "Alex", "role": "guest", "guest_days": True}, "invalid"),
     ],
@@ -660,10 +681,12 @@ async def test_domo_is_told_how_many_rights_the_removal_paused(
     await add_member("Jo", "adult", username="jo")
     await grant("household.invite", person=alex, access="allow", summary="Alex invites")
     none = await TOOLS["household_remove"].execute({"person": "Jo"}, tool_context)
-    assert none.model_result == {"removed": "Jo", "paused_rights": 0}
+    # The owner's own removal is his withdrawal (spec 6.9): Domo is told so.
+    owners = {"withdrawn_by_the_owner": True}
+    assert none.model_result == {"removed": "Jo", "paused_rights": 0, **owners}
     assert "rights" not in none.card
     some = await TOOLS["household_remove"].execute({"person": "Alex"}, tool_context)
-    assert some.model_result == {"removed": "Alex", "paused_rights": 1}
+    assert some.model_result == {"removed": "Alex", "paused_rights": 1, **owners}
     assert some.card["rights"] == {"key": "action.card.rights.paused", "items": ["Alex invites"]}
 
 
@@ -708,7 +731,8 @@ async def test_a_removed_persons_requests_can_no_longer_be_approved(
     [
         ({"person": "Owner"}, "invalid"),  # the owner is never removed, not even by themselves
         ({"person": "Nobody"}, "not_found"),
-        ({"person": "Robin"}, "not_found"),  # a stay that is over: not in the household now
+        # A stay that is over is no refusal for the owner: his removal is a withdrawal (final
+        # review B M4).
         ({}, "invalid"),
         ({"person": "Alex", "now": True}, "invalid"),
     ],
@@ -753,6 +777,10 @@ async def test_a_member_who_may_remove_people_may_remove_themselves(
         "person": f"person:{adult_chat.person.id}",
         "current_role": "adult",
         "is_self": True,
+        "given_by_domo": False,
+        "made_role": None,
+        "has_account": True,
+        "state": "has_access",
     }
     assert (await person_row(child_member.person)).disabled_at is None
     assert (await person_row(owner_member.person)).disabled_at is None
@@ -775,6 +803,10 @@ async def test_a_member_who_may_remove_people_removes_another_without_leaving(
         "person": f"person:{child_member.person.id}",
         "current_role": "child",
         "is_self": False,
+        "given_by_domo": False,
+        "made_role": None,
+        "has_account": True,
+        "state": "has_access",
     }
 
 
@@ -943,7 +975,9 @@ def test_household_leave_is_every_members_and_never_the_owners():  # F16
     assert needs_the_judge("household.leave")
     for role in ROLES:
         assert "household.leave" in ALLOWED_ACTIONS[role]
-        assert "household_leave" in {d.name for d in tools_for(role, TOOLS, DEFAULT_POLICY)}
+        assert "household_leave" in {
+            d.name for d in tools_for(an_actor(role), TOOLS, DEFAULT_POLICY)
+        }
     # No limit, nothing explicit: the barrier's default approver (an adult, for a child).
     assert "household.leave" not in DEFAULT_LIMITS
     assert "household.leave" not in OWNER_ONLY_ACTIONS
@@ -1038,15 +1072,21 @@ async def test_cancelling_names_an_invitation_that_waits(owner_chat, arguments, 
         ),
         (
             "household.invite",
-            {"display_name": "Robin", "role": "guest", "guest_days": 3},
+            {"display_name": "Tom", "role": "guest", "guest_days": 3},
             "en",
-            ("action.describe.household.invite.guest", {"name": "Robin", "duration": "3 days"}),
+            ("action.describe.household.invite.guest", {"name": "Tom", "duration": "3 days"}),
         ),
         (
             "household.invite",
-            {"display_name": "Robin", "role": "guest"},
+            {"display_name": "Tom", "role": "guest"},
             "en",
-            ("action.describe.household.invite.guest", {"name": "Robin", "duration": "2 days"}),
+            ("action.describe.household.invite.guest", {"name": "Tom", "duration": "30 days"}),
+        ),
+        (
+            "household.invite",
+            {"display_name": "Tom", "role": "guest", "no_end": True},
+            "en",
+            ("action.describe.household.invite.guest.no_end", {"name": "Tom"}),
         ),
         (
             "household.change_role",
@@ -1056,9 +1096,10 @@ async def test_cancelling_names_an_invitation_that_waits(owner_chat, arguments, 
         ),
         (
             "household.change_role",
+            # Without the described facts, the stay is the record's (no end without an account).
             {"person": "Alex", "role": "guest"},
             "en",
-            ("action.describe.household.change_role.guest", {"name": "Alex", "duration": "2 days"}),
+            ("action.describe.household.change_role", {"name": "Alex", "role": "guest"}),
         ),
         (
             "household.change_role",
@@ -1232,8 +1273,8 @@ async def test_the_household_page_shows_people_roles_states_and_waiting_invitati
         assert name in text
     assert t("household.role.guest", "en") in text
     assert re.search(
-        rf'data-person-id="{gone.id}"[^>]*data-person-state="removed"', r.text
-    ) or re.search(rf'data-person-state="removed"[^>]*data-person-id="{gone.id}"', r.text)
+        rf'data-person-id="{gone.id}"[^>]*data-person-state="withdrawn"', r.text
+    ) or re.search(rf'data-person-state="withdrawn"[^>]*data-person-id="{gone.id}"', r.text)
     assert re.search(r'<li class="household-invitation"[^>]*data-invitation-role="child"', r.text)
     assert "/invite/" not in r.text  # the link is never shown again
 
@@ -1270,7 +1311,9 @@ async def test_a_name_means_one_person_in_the_household_now(session, add_person,
     alex = await add_person("Alex", "adult")
     await add_person("Gone", "adult")
     await session.execute(
-        update(Person).where(Person.display_name == "Gone").values(disabled_at=clock())
+        update(Person)
+        .where(Person.display_name == "Gone")
+        .values(disabled_at=clock(), state="gone")
     )
     over = await add_person("Over", "guest")
     over.expires_at = clock() - timedelta(seconds=1)
@@ -1345,27 +1388,50 @@ async def test_disabling_pauses_the_personal_rights_and_counts_them(session, add
     assert len((await session.execute(audited)).scalars().all()) == 1
 
 
+async def _give(session, person: Person, role: str, now, days: int | None = None) -> None:
+    """``person`` given ``role`` on their record (``people.records.give_access``), as a change of
+    role does."""
+    await records.give_access(
+        session,
+        person,
+        role=role,  # type: ignore[arg-type]
+        made_role=None,
+        standing=None,
+        guest_days=stay_days(role, days),  # type: ignore[arg-type]
+        by="domo",
+        by_owner=False,
+        reason="a test",
+        turn_of=None,
+        now=now,
+    )
+
+
 async def test_setting_a_role_ends_a_guests_time_limit(session, add_person, clock):
-    robin = await add_person("Robin", "guest")
-    robin.expires_at = clock() + timedelta(days=1)
+    tom = await add_person("Tom", "guest")
+    tom.expires_at = clock() + timedelta(days=1)
     await session.flush()
-    assert await set_role(session, robin, "child", now=clock()) is None
-    await session.refresh(robin)
-    assert (robin.role, robin.expires_at) == ("child", None)
+    await _give(session, tom, "child", clock())
+    await session.refresh(tom)
+    assert (tom.role, tom.expires_at, tom.is_child) == ("child", None, True)
 
 
 async def test_setting_the_guest_role_gives_an_end_of_stay(session, add_person, clock):  # R78
     alex = await add_person("Alex", "adult")
-    end = await set_role(session, alex, "guest", now=clock())
-    assert end == clock() + timedelta(days=GUEST_DAYS_DEFAULT)
+    await _give(session, alex, "guest", clock())
     await session.refresh(alex)
-    assert (alex.role, alex.expires_at) == ("guest", end)
+    end = clock() + timedelta(days=GUEST_DAYS_DEFAULT)
+    assert (alex.role, alex.expires_at, alex.last_review_due) == ("guest", end, True)
     sam = await add_person("Sam", "child")
-    longest = await set_role(session, sam, "guest", now=clock(), guest_days=GUEST_DAYS_CEILING)
-    assert longest == clock() + timedelta(days=365)
-    for role, days in (("guest", 0), ("guest", 366), ("adult", 2)):
-        with pytest.raises(ValueError):
-            await set_role(session, sam, role, now=clock(), guest_days=days)
+    await _give(session, sam, "guest", clock(), 400)
+    await session.refresh(sam)
+    assert sam.expires_at == clock() + timedelta(days=400)
+    # The days a call may give: from 1, with no ceiling, only for a guest, and never with no_end.
+    assert guest_days_from({"guest_days": 400}, "guest") == 400
+    for role, days in (("guest", 0), ("guest", -1), ("adult", 2)):
+        with pytest.raises(InvalidArguments):
+            guest_days_from({"guest_days": days}, role)  # type: ignore[arg-type]
+    with pytest.raises(InvalidArguments):
+        guest_days_from({"guest_days": 5, "no_end": True}, "guest")
 
 
 async def test_the_service_never_makes_an_owner_by_invitation(session, add_person, clock):
@@ -1385,7 +1451,7 @@ async def test_the_service_never_makes_an_owner_by_invitation(session, add_perso
 
 
 def actor(person: Person) -> Actor:
-    return Actor(person.id, person.role)  # type: ignore[arg-type]
+    return actor_of(person)
 
 
 def context(person: Person, session_factory) -> ToolContext:

@@ -294,5 +294,6 @@ async def test_a_person_who_only_left_keeps_everything(session, add_person):
     away = await add_person("Away", "guest")
     await write(session, away, "private one", kept_private=True)
     away.disabled_at = NOW
+    away.state = "gone"
     await session.flush()
     assert await seen_by(session, owner, with_kept=True) == {"private one"}

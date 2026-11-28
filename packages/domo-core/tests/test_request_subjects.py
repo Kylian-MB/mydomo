@@ -12,6 +12,8 @@ from domo_core.accounts.models import Person
 from domo_core.chat.models import MessageAction
 from domo_core.confirmations.models import Confirmation
 from domo_core.confirmations.service import may_decide, may_see
+from domo_core.policy.catalog import DEFAULT_POLICY
+from domo_core.policy.rights import NO_RIGHTS
 from sqlalchemy import select
 
 NOW = datetime(2030, 1, 7, 9, 0, tzinfo=UTC)
@@ -82,18 +84,28 @@ def test_a_request_with_a_person_concerned_is_theirs_alone_to_answer():
     alex, dana, sam = person("Alex", "owner"), person("Dana", "adult"), person("Sam", "adult")
     paul = person("Paul", "child")
     waiting = request(paul, "adult", concerned_id=dana.id)
-    assert may_decide(waiting, dana, NOW)
-    assert not may_decide(waiting, alex, NOW)
-    assert not may_decide(waiting, sam, NOW)
+    assert may_decide(waiting, dana, NOW, rights=NO_RIGHTS, policy=DEFAULT_POLICY)
+    assert not may_decide(waiting, alex, NOW, rights=NO_RIGHTS, policy=DEFAULT_POLICY)
+    assert not may_decide(waiting, sam, NOW, rights=NO_RIGHTS, policy=DEFAULT_POLICY)
     # They see it; the one who asked sees it too; another does not.
-    assert may_see(waiting, dana, NOW) and may_see(waiting, paul, NOW)
-    assert not may_see(waiting, alex, NOW) and not may_see(waiting, sam, NOW)
+    assert may_see(waiting, dana, NOW, rights=NO_RIGHTS, policy=DEFAULT_POLICY) and may_see(
+        waiting, paul, NOW, rights=NO_RIGHTS, policy=DEFAULT_POLICY
+    )
+    assert not may_see(waiting, alex, NOW, rights=NO_RIGHTS, policy=DEFAULT_POLICY) and not may_see(
+        waiting, sam, NOW, rights=NO_RIGHTS, policy=DEFAULT_POLICY
+    )
 
 
 def test_the_person_concerned_answers_only_while_in_the_household():
-    dana = person("Dana", "adult", disabled_at=NOW)
+    dana = person("Dana", "adult", disabled_at=NOW, state="gone")
     paul = person("Paul", "child")
-    assert not may_decide(request(paul, "adult", concerned_id=dana.id), dana, NOW)
+    assert not may_decide(
+        request(paul, "adult", concerned_id=dana.id),
+        dana,
+        NOW,
+        rights=NO_RIGHTS,
+        policy=DEFAULT_POLICY,
+    )
 
 
 @pytest.mark.parametrize(
@@ -112,5 +124,5 @@ def test_a_request_without_one_is_answered_as_before(approver_kind, answers, doe
     }
     waiting = request(people["requester"], approver_kind)
     assert waiting.concerned_id is None
-    assert may_decide(waiting, people[answers], NOW)
-    assert not may_decide(waiting, people[does_not], NOW)
+    assert may_decide(waiting, people[answers], NOW, rights=NO_RIGHTS, policy=DEFAULT_POLICY)
+    assert not may_decide(waiting, people[does_not], NOW, rights=NO_RIGHTS, policy=DEFAULT_POLICY)

@@ -92,11 +92,12 @@ from itertools import takewhile
 from typing import TYPE_CHECKING, Final, Literal
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import distinct, func, or_, select
+from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domo_core.accounts.models import Person
 from domo_core.accounts.passkeys import PasskeySite
+from domo_core.accounts.sessions import active_at
 from domo_core.chat.context_window import merge_consecutive_roles, select_history
 from domo_core.chat.models import Message, MessageAction
 from domo_core.chat.store import ConversationStore
@@ -115,7 +116,7 @@ from domo_core.confirmations.store import paused_chains_of, pending_for_others
 from domo_core.conversation.changes import changes_for
 from domo_core.conversation.channel import Abilities
 from domo_core.conversation.kept import KeptMessages
-from domo_core.conversation.speaker import Speaker, actor_of
+from domo_core.conversation.speaker import Clue, Speaker, actor_of, established
 from domo_core.conversation.turn import Answer, CardHeads, News, Prepared, Prompt, Turn
 from domo_core.conversation.visits import ArrivalTurns, unanswered_in, untold_decision
 from domo_core.db import SessionFactory, read_or_nothing
@@ -143,7 +144,7 @@ from domo_core.llm.models import Provider
 from domo_core.llm.newcomers import newcomers_told
 from domo_core.llm.router import KeyChoice, Route, choose_key, key_label, usable_keys
 from domo_core.llm.spending import LimitNote, at_limit, limit_notes
-from domo_core.llm.types import ChatMessage, ErrorKind
+from domo_core.llm.types import ChatMessage, ErrorKind, JsonObject
 from domo_core.madetools.launch import LaunchDeps
 from domo_core.madetools.offered import being_built_for, offer_named, offers, set_aside_for
 from domo_core.madetools.risks import operations_of, reaches_told
@@ -153,6 +154,12 @@ from domo_core.memory.embedder import NO_EMBEDDER, Embedder
 from domo_core.memory.models import Memory
 from domo_core.memory.search import recalled
 from domo_core.memory.service import core_of, source_of, told_unconfirmed, who_said
+from domo_core.people import directives
+from domo_core.people import promises as access_promises
+from domo_core.people.acts import owed_count, owed_rows
+from domo_core.people.hooks import RecordListeners
+from domo_core.people.models import MadeRole
+from domo_core.people.reach import has_account, known_records
 from domo_core.plans.models import Plan
 from domo_core.plans.schedule import as_local
 from domo_core.plans.service import builds_waited_on, waiting_of
@@ -162,6 +169,7 @@ from domo_core.policy.rights import load_rights
 from domo_core.policy.roles import Role, as_role
 from domo_core.policy.settings import PolicySettings, load_policy_settings
 from domo_core.prompts import (
+    MAX_OWED_SHOWN,
     AboutToExpire,
     ArrivalNote,
     DuePlan,
@@ -259,7 +267,10 @@ class TurnDeps:
     runs the code of Domo's tools (``sandbox``: ``NO_SANDBOX``, every call fails as a sandbox that
     is down), and the tools' own database their programs read and write (``tools_base``: ``None``,
     there is none, and each such request is refused). So are the messages people wrote while a
-    turn of theirs ran (``kept``, ``conversation.kept``)."""
+    turn of theirs ran (``kept``, ``conversation.kept``), and the channels told of what happens to
+    the records (``record_listeners``, ``people.hooks``: the application's one instance, which
+    each turn, review and run after a yes passes on; an empty one, telling nobody, where none is
+    given)."""
 
     session_factory: SessionFactory
     model_factory: ModelFactory
@@ -279,6 +290,7 @@ class TurnDeps:
     sandbox: Sandbox = NO_SANDBOX
     tools_base: ToolsBase | None = None
     kept: KeptMessages = field(default_factory=KeptMessages)
+    record_listeners: RecordListeners = field(default_factory=RecordListeners)
 
 
 @dataclass(frozen=True)
@@ -329,26 +341,61 @@ def made_tool_deps(deps: TurnDeps) -> LaunchDeps:
         waker=wake,
         tools_base=deps.tools_base,
         gatekeeper=deps.gatekeeper,
+        house_origin=deps.settings.site_origin,
     )
 
 
 async def household_shown(
-    session: AsyncSession, person_id: uuid.UUID, now: datetime
+    session: AsyncSession, person_id: uuid.UUID, now: datetime, *, detailed: bool = False
 ) -> tuple[HouseholdLine, ...]:
     """The active people of the household in the order they arrived (the ones
-    ``household_list`` calls ``active`` or a guest until a date: not removed, no guest whose stay
-    is over), the one with ``person_id`` marked as the person Domo talks with."""
+    ``household_list`` calls ``active`` or a guest until a date: they have access now, so not a
+    record that has none, no one removed, no guest whose stay is over), the one with ``person_id``
+    marked as the person Domo talks with. ``detailed`` (the owner's turns and the assistant's own,
+    spec 6.8): each also says where they stand, the child mark, the name of the role made for them
+    and whether they have an account."""
     found = await session.execute(
-        select(Person.id, Person.display_name, Person.role)
-        .where(
-            Person.disabled_at.is_(None),
-            or_(Person.expires_at.is_(None), Person.expires_at > now),
+        select(
+            Person.id,
+            Person.display_name,
+            Person.role,
+            Person.standing,
+            Person.is_child,
+            MadeRole.name,
+            has_account(),
         )
-        .order_by(Person.created_at)
+        .outerjoin(MadeRole, MadeRole.id == Person.made_role_id)
+        .where(active_at(now))
+        .order_by(Person.created_at, Person.id)
     )
     return tuple(
         HouseholdLine(name=name, role=as_role(role), is_you=found_id == person_id)
-        for found_id, name, role in found.all()
+        if not detailed
+        else HouseholdLine(
+            name=name,
+            role=as_role(role),
+            is_you=found_id == person_id,
+            standing=standing,
+            child=is_child,
+            made_role=made,
+            has_account=account,
+        )
+        for found_id, name, role, standing, is_child, made, account in found.all()
+    )
+
+
+async def known_only(session: AsyncSession) -> tuple[JsonObject, ...]:
+    """The records the assistant only knows (``known``: never given an access), in the order he
+    opened them, each with its name, where they stand and, for a child, the mark: for the owner's
+    turns and his own (spec 6.8)."""
+    found = await session.execute(
+        select(Person.display_name, Person.standing, Person.is_child)
+        .where(known_records(), Person.state == "known")
+        .order_by(Person.created_at, Person.id)
+    )
+    return tuple(
+        {"name": name, "standing": standing, **({"child": True} if is_child else {})}
+        for name, standing, is_child in found.all()
     )
 
 
@@ -698,16 +745,25 @@ async def _speaking(
     """``speaker`` with the clues kept for the person on that channel and that device
     (``identity.clues.kept_clues``) added to those the channel brings, and, when someone speaks,
     when they were heard before in the conversation ``conversation_id`` (``last_heard_at``: their
-    message before their last one, ``None`` when there is none)."""
+    message before their last one, ``None`` when there is none). The person may be a record with
+    no account: nothing here reads an account or a session.
+
+    The clues kept are added only when the code itself tied the turn to the person (``established``
+    by the channel's own clues: a session, a device, a proof). A person the channel only guessed
+    (a weak clue: a voice it recognised, later) gets none: an earlier proof on that channel and
+    device does not make a stranger taken for them sure. What such a proof is worth for a
+    recognised voice is the voice's chantier to decide."""
     if speaker.person_id is None:
         return speaker
-    kept = await kept_clues(
-        session,
-        person_id=speaker.person_id,
-        channel=speaker.channel,
-        device_id=speaker.device_id,
-        now=now,
-    )
+    kept: tuple[Clue, ...] = ()
+    if established(speaker):
+        kept = await kept_clues(
+            session,
+            person_id=speaker.person_id,
+            channel=speaker.channel,
+            device_id=speaker.device_id,
+            now=now,
+        )
     heard = None
     if not speaker.nobody_spoke:
         heard = await session.scalar(
@@ -1100,12 +1156,26 @@ async def prepare_turn(
             if owner
             else None
         )
+        # The promises of access that wait, for the owner's turns and his own, never a guest's
+        # (data: the day he recognises someone he keeps one, ``people.promises``).
+        promised = tuple(await access_promises.shown(session)) if owner or on_his_own else ()
+        # The owner's directives in force: all of them for the owner's turns and his own; for
+        # anyone else only that nobody new is kept (the owner's words stay his).
+        ruled = tuple(await directives.shown(session, deps.clock()))
+        ruled = ruled if owner or on_his_own else directives.for_others(ruled)
+        # What the owner is owed the telling of, in his own turns (told once a turn said it).
+        owed = tuple(await owed_rows(session, MAX_OWED_SHOWN)) if owner and not on_his_own else ()
+        owed_more = (await owed_count(session)) - len(owed) if owed else 0
         # The notes left for the person that Domo has not told them yet, as data (spec 4.8):
         # theirs alone.
         # On his own, Domo tells none: they wait for a turn of theirs.
         notes = () if on_his_own else await notes_to_tell(session, person.id)
         # Who is in the household, for everyone: Domo knows the names without a tool call.
-        household = await household_shown(session, person.id, deps.clock())
+        household = await household_shown(
+            session, person.id, deps.clock(), detailed=owner or on_his_own
+        )
+        # The records he only knows, with no access: the owner's turns and his own (spec 6.8).
+        known = await known_only(session) if owner or on_his_own else ()
         # The names the person uses for people of the household, theirs alone (spec 6.7).
         nicknames_of = await read_or_nothing(
             session,
@@ -1208,14 +1278,11 @@ async def prepare_turn(
     registry: ToolRegistry = {**deps.registry, **made}
     # A tool of Domo past the ones offered is found when the model calls it.
     made_tool_named: Callable[[str], Awaitable[InternalTool | None]] | None = made_tool_finder(deps)
-    tools = tools_for(
-        role, registry, policy, person_id=person.id, rights=rights, on_his_own=on_his_own
-    )
+    speaking = actor_of(speaker, person)
+    tools = tools_for(speaking, registry, policy, rights=rights, on_his_own=on_his_own)
     # What exists in the household and the rights keep from them: Domo says whose it is, never
     # that a tool is missing (the owner's trial of 0.9.1).
-    kept = tools_kept_from(
-        role, registry, policy, person_id=person.id, rights=rights, on_his_own=on_his_own
-    )
+    kept = tools_kept_from(speaking, registry, policy, rights=rights, on_his_own=on_his_own)
     # The person's message the reply answers: none when Domo speaks first (a wake, an arrival,
     # a plan).
     unprompted = (
@@ -1241,7 +1308,7 @@ async def prepare_turn(
     )
     tool_context = ToolContext(
         session_factory=deps.session_factory,
-        actor=actor_of(speaker, role),
+        actor=speaking,
         person=person,
         conversation_id=reply.conversation_id,
         origin=request.origin,
@@ -1272,6 +1339,7 @@ async def prepare_turn(
         asked_before=bool(due_plans) and all(plan.their_words for plan in due_plans),
         on_his_own=on_his_own,
         turn_reason=turn_reason,
+        record_listeners=deps.record_listeners,
     )
     prepared = Prepared(
         person_id=person.id,
@@ -1283,6 +1351,7 @@ async def prepare_turn(
         prompt=Prompt(
             display_name=person.display_name,
             role=role,
+            child=speaking.child,
             can_act=bool(tools),
             # The name they call him by, theirs alone (spec 6.7).
             calls_domo=person.calls_domo,
@@ -1292,9 +1361,14 @@ async def prepare_turn(
             writer_time=writer_time,
             ownership=ownership,
             successors=successors,
+            promises=promised,
+            directives=ruled,
+            owed=owed,
+            owed_more=owed_more,
             # The day it is, for everyone: a model has none of its own.
             today=today_of(deps.clock(), policy_settings.time_zone),
             household=household,
+            known=known,
             nicknames=tuple(nicknames_of),
             memory=memory,
             plans=plans,
@@ -1414,10 +1488,11 @@ async def _upkeep_turn(
     rights = await load_rights(session)
     role = as_role(person.role)
     only = {name: tool for name, tool in deps.registry.items() if name == _UPKEEP_TOOL}
-    tools = tools_for(role, only, policy, person_id=person.id, rights=rights)
+    speaking = actor_of(speaker, person)
+    tools = tools_for(speaking, only, policy, rights=rights)
     tool_context = ToolContext(
         session_factory=deps.session_factory,
-        actor=actor_of(speaker, role),
+        actor=speaking,
         person=person,
         conversation_id=reply.conversation_id,
         origin=request.origin,
@@ -1432,6 +1507,7 @@ async def _upkeep_turn(
         no_reader=not request.abilities.shows_once,
         abilities=request.abilities,
         speaker=speaker,
+        record_listeners=deps.record_listeners,
     )
     prepared = Prepared(
         person_id=person.id,

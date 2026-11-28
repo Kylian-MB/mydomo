@@ -14,6 +14,8 @@ from domo_core.confirmations.service import may_decide
 from domo_core.llm.types import ToolCall
 from domo_core.memory.models import Memory
 from domo_core.plans.models import Plan
+from domo_core.policy.catalog import DEFAULT_POLICY
+from domo_core.policy.rights import NO_RIGHTS
 from sqlalchemy import func, select
 from test_his_own_requests import his_turn, requests_of
 from test_notes_of_domo import decide, waiting_requests
@@ -63,8 +65,8 @@ async def test_on_his_own_he_waits_for_the_owner_s_yes_before_he_acts(
     [asked] = await waiting_requests(session_factory)
     assert (asked.by_domo, asked.approver_kind, asked.tool_name) == (True, "owner", tool)
     assert (asked.ask, asked.asked_by) == ("yes", "rule")
-    assert may_decide(asked, owner_chat.person, LIVE)
-    assert not may_decide(asked, adult_chat.person, LIVE)
+    assert may_decide(asked, owner_chat.person, LIVE, rights=NO_RIGHTS, policy=DEFAULT_POLICY)
+    assert not may_decide(asked, adult_chat.person, LIVE, rights=NO_RIGHTS, policy=DEFAULT_POLICY)
     # On the owner's yes it is done, as his.
     outcome = await decide(
         chat_server, session_factory, tool_context, asked, owner_chat.person, approve=True

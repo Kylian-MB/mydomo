@@ -25,6 +25,8 @@ from domo_core.audit import routes as audit_routes
 from domo_core.audit.log import FORBIDDEN_DETAIL_KEYS, append_audit
 from domo_core.confirmations.judge import Verdict
 from domo_core.confirmations.service import AmendOutcome, DecideOutcome
+from domo_core.people.acts import AUDIT_ACTION
+from domo_core.people.models import Act
 from domo_core.texts.formatting import local_amount, local_date
 from domo_core.texts.models import WrittenText
 from sqlalchemy import text, update
@@ -276,6 +278,8 @@ async def test_an_unknown_action_has_the_general_line(client, owner_account, ses
 DYNAMIC_SITES = {
     ("channels/page/key_routes.py", "action"): {"provider.rekeyed", "key.admin_added"},
     ("household/routes.py", "action"): {"household.joined", "household.brought_back"},
+    # Each act on a person has its action written out (``people.acts.AUDIT_ACTION``).
+    ("people/acts.py", "AUDIT_ACTION[act]"): set(AUDIT_ACTION.values()),
 }
 
 
@@ -367,6 +371,11 @@ def audited_actions() -> set[str]:
     assert unknown == [], "list these sites in DYNAMIC_SITES, with the actions they write"
     assert found_sites == set(DYNAMIC_SITES)
     return actions
+
+
+def test_every_act_on_a_person_has_its_audit_action():
+    assert set(AUDIT_ACTION) == set(get_args(Act))
+    assert all(action == f"people.{act}" for act, action in AUDIT_ACTION.items())
 
 
 def test_every_audited_action_has_its_line():

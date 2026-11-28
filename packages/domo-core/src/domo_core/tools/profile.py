@@ -62,8 +62,9 @@ class ProfileRename:
         name="profile_rename",
         description=(
             "Change the name of the person you are talking with: the name you and the household "
-            "use for them. Only their own name, and only when they ask for it. Never the name "
-            "they call you by: that is domo_name."
+            "use for them. Only their own name, and only when they ask for it (the name of "
+            "someone else's record is record_complete). Never the name they call you by: that "
+            "is domo_name."
         ),
         parameters={
             "type": "object",

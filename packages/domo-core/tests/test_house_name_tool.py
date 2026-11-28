@@ -10,6 +10,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
+from chat_support import an_actor
 from domo_core.accounts.models import Person
 from domo_core.audit.models import AuditEntry
 from domo_core.household.service import create_invitation
@@ -311,7 +312,7 @@ async def test_audit_entry_has_no_name(session_factory):
 
 def test_house_name_is_offered_to_the_owner_only():
     def names(role, policy=DEFAULT_POLICY):
-        return [d.name for d in tools_for(role, TOOLS, policy, person_id=uuid.uuid4())]
+        return [d.name for d in tools_for(an_actor(role, uuid.uuid4()), TOOLS, policy)]
 
     assert "house_name" in names("owner")
     for role in ("adult", "child", "guest"):

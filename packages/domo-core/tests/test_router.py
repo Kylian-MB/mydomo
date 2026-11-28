@@ -205,6 +205,7 @@ async def test_a_disabled_person_has_no_key(session):
     await key(session, owner, general=True)
     await key(session, alex)
     alex.disabled_at = datetime(2030, 1, 1, tzinfo=UTC)
+    alex.state = "gone"
     await session.flush()
 
     assert await usable_keys(session, alex) == []
@@ -273,6 +274,7 @@ async def test_an_invitee_follows_the_rules_for_a_host_who_left_as_if_they_were_
 
     # Alex left and has no line: Alex has no key, but Robin keeps the general key.
     alex.disabled_at = datetime(2030, 1, 1, tzinfo=UTC)
+    alex.state = "gone"
     await session.flush()
     assert await usable_keys(session, alex) == []
     assert ids(await usable_keys(session, robin)) == [general.id]
@@ -291,6 +293,7 @@ async def test_whoever_the_owner_invited_keeps_the_general_key_after_a_hand_over
 
     # The role goes to Alex (it does not matter here) and the former owner is removed.
     owner.disabled_at = datetime(2030, 1, 1, tzinfo=UTC)
+    owner.state = "gone"
     await session.flush()
 
     assert await usable_keys(session, owner) == []

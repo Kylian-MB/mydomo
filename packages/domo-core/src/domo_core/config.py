@@ -28,6 +28,7 @@ as the core's, reached with the same host, user and password: ``domo_tools`` by 
 """
 
 import ipaddress
+import re
 from datetime import timedelta
 from pathlib import Path
 
@@ -47,6 +48,45 @@ DEFAULT_TRUSTED_PROXIES = "127.0.0.1"
 # The edge's defaults too (compose.yaml): the page answers on https://localhost:8443 only.
 DEFAULT_SITE_ADDRESSES = "localhost"
 DEFAULT_HTTPS_PORT = 8443
+
+
+_SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
+
+
+def _reachable_host(entry: str) -> str | None:
+    """The host of one site address (``DOMO_SITE_ADDRESSES``: a scheme, a port or a path around
+    it is ignored), as it goes in an origin (an IPv6 address in brackets); ``None`` when it is
+    empty or names this machine alone (``localhost``, a loopback address), which nobody else
+    reaches."""
+    authority = _SCHEME.sub("", entry.strip(), count=1).split("/", 1)[0]
+    if authority.startswith("["):
+        host = authority[1 : authority.find("]")] if "]" in authority else ""
+    elif authority.count(":") == 1:
+        host = authority.split(":", 1)[0]
+    else:
+        host = authority
+    name = host.lower().rstrip(".")
+    if not name or name == "localhost" or name.endswith(".localhost"):
+        return None
+    try:
+        address = ipaddress.ip_address(name)
+    except ValueError:
+        return name
+    if address.is_loopback:
+        return None
+    return f"[{name}]" if address.version == 6 else name
+
+
+def site_origin(site_addresses: str, https_port: int) -> str | None:
+    """The address of the house's page for a link made outside any request (an invitation's link
+    the assistant sends from a review, say): ``https://`` the first site address someone else can
+    reach, with ``https_port`` unless it is 443. ``None`` when there is none: a link without an
+    address is never sent."""
+    for entry in re.split(r"[,\s]+", site_addresses):
+        host = _reachable_host(entry)
+        if host is not None:
+            return f"https://{host}" if https_port == 443 else f"https://{host}:{https_port}"
+    return None
 
 
 def check_trusted_proxies(value: str) -> str:
@@ -189,6 +229,11 @@ class CoreSettings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @property
+    def site_origin(self) -> str | None:
+        """The address of the house's page outside any request (``site_origin``)."""
+        return site_origin(self.site_addresses, self.https_port)
 
     @property
     def session_ttl(self) -> timedelta:

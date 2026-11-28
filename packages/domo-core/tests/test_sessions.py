@@ -138,7 +138,7 @@ async def test_the_session_of_a_removed_person_resolves_to_none(session, account
     raw = await create_session(session, account.id, ttl=timedelta(days=1))
     now = datetime.now(UTC)
     await session.execute(
-        update(Person).where(Person.id == account.person_id).values(disabled_at=now)
+        update(Person).where(Person.id == account.person_id).values(disabled_at=now, state="gone")
     )
     seen = (await session.execute(select(WebSession.last_seen_at))).scalar_one()
     assert await resolve_session(session, raw, now) is None

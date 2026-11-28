@@ -177,7 +177,7 @@ async def test_the_request_of_someone_who_is_no_longer_in_the_household_is_not_o
         await writer.execute(
             update(Person)
             .where(Person.id == child_member.person.id)
-            .values(disabled_at=clock() - timedelta(minutes=1))
+            .values(disabled_at=clock() - timedelta(minutes=1), state="gone")
         )
         await writer.commit()
     assert "data-confirmation-id" not in (await live_adult_client.get("/approvals")).text
@@ -193,7 +193,7 @@ async def test_the_oldest_requests_come_first_and_only_a_page_of_them_is_shown(
         for index in range(25):
             await create_confirmation(
                 writer,
-                requester=Actor(child_member.person.id, "child"),
+                requester=Actor(child_member.person.id, "child", child=True),
                 tool_name="note_leave",
                 arguments={"recipient": "Owner", "text": f"request-{index:02d}"},
                 action=DescribedAction(
@@ -481,7 +481,7 @@ async def test_the_owner_sees_both_kinds_and_an_adult_only_theirs(
         for index, approver in enumerate(("adult", "owner")):
             await create_confirmation(
                 writer,
-                requester=Actor(child_member.person.id, "child"),
+                requester=Actor(child_member.person.id, "child", child=True),
                 tool_name="note_leave",
                 arguments={"recipient": "Owner", "text": f"for-{approver}"},
                 action=DescribedAction(

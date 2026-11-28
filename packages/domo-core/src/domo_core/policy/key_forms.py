@@ -33,6 +33,7 @@ from typing import Final
 from sqlalchemy import ColumnElement, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.audit.models import AuditEntry
 from domo_core.confirmations.models import Confirmation, ConfirmationStep
@@ -44,7 +45,6 @@ from domo_core.policy.actions import DescribedAction
 from domo_core.policy.barrier import Allow, Refuse
 from domo_core.policy.catalog import PolicyTables
 from domo_core.policy.decision import decide_now
-from domo_core.policy.roles import Actor, as_role
 from domo_core.policy.settings import load_policy_settings
 from domo_core.tools.key_tools import KEY_ADD_ACTION_TYPE, key_add_action
 from domo_core.tools.model_key import REKEY_ACTION_TYPE, rekey_action
@@ -147,7 +147,7 @@ async def may_open_a_form(
     button (whoever said yes, their own yes included: a chain never shows the form at once), as
     long as that yes, or that step, is recent; the barrier does not refuse the action now (a yes
     still asked for is fine: it was given); and no key was saved under it yet."""
-    actor = Actor(person_id=person.id, role=as_role(person.role))
+    actor = actor_of(person)
     action = admin_key_action(provider, person.display_name) if admin else rekey_action(provider)
     if request_id is None:
         decision = await decide_now(session, actor, action, policy, now)
@@ -247,7 +247,7 @@ async def may_add_a_new_key(
     """Whether ``person`` may have the form of a new key of their own now, with no request
     behind it: the barrier, asked for them on the action ``key_add`` describes, lets it through
     (``may_add_a_key`` without a request). Asks nothing of the gatekeeper."""
-    actor = Actor(person_id=person.id, role=as_role(person.role))
+    actor = actor_of(person)
     return isinstance(await decide_now(session, actor, key_add_action(), policy, now), Allow)
 
 
@@ -271,7 +271,7 @@ async def may_add_a_key(
     yet. For the key ``key`` (its vault form again): it is the key started under that yes, and no
     key was saved under it yet (``_is_spent``: whatever the check said, as for a key given
     again)."""
-    actor = Actor(person_id=person.id, role=as_role(person.role))
+    actor = actor_of(person)
     action = key_add_action()
     if request_id is None:
         return await may_add_a_new_key(session, person, policy, now)

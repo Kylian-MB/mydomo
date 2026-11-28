@@ -13,13 +13,13 @@ from datetime import UTC
 from typing import Any
 
 from chat_support import ChatPilot, ChatServer
+from domo_core.accounts.actors import actor_of
 from domo_core.audit.models import AuditEntry
 from domo_core.chat.models import Message
 from domo_core.confirmations.models import Confirmation
 from domo_core.llm.types import ToolCall
 from domo_core.outward.models import OpenAddress
 from domo_core.outward.service import open_for
-from domo_core.policy.roles import Actor
 from domo_core.tools.context import ToolContext
 from fakes import FakeChatModel, is_judge_call
 from sqlalchemy import func, select
@@ -422,7 +422,7 @@ async def test_an_opening_that_takes_the_owner_s_yes_runs_only_on_his_real_yes(
     tool = TOOLS["address_open"]
     base = ToolContext(
         session_factory=owner_chat.server.session_factory,
-        actor=Actor(owner.id, owner.role),  # type: ignore[arg-type]
+        actor=actor_of(owner),  # type: ignore[arg-type]
         person=owner,
         conversation_id=uuid.uuid4(),
         origin="",

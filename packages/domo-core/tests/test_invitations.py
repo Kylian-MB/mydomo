@@ -22,10 +22,12 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from chat_support import Card, dump, live_http_client, status_of
 from domo_common.i18n import t
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Account, Person, WebSession
 from domo_core.accounts.sessions import SESSION_COOKIE
 from domo_core.accounts.throttle import MAX_FAILED_ATTEMPTS, WINDOW
 from domo_core.channels.page.cards import action_card
+from domo_core.conversation.visits import what_is_new
 from domo_core.household.models import Invitation
 from domo_core.household.service import (
     GUEST_DAYS_DEFAULT,
@@ -229,6 +231,34 @@ async def only_invitation(session_factory) -> Invitation:
         return (await reader.execute(select(Invitation))).scalar_one()
 
 
+async def test_the_one_whose_link_the_owner_was_shown_is_told_why_and_has_news(
+    owner_chat, adult_chat, grant, session_factory
+):
+    """The owner asks to see the link that waits for Alex (the owner's answer of 2026-11-27):
+    Alex's button then says that the owner was shown it, and Alex has news of it."""
+    await grant("household.invite", person=adult_chat.person, access="allow", approver="owner")
+    reply = await adult_chat.say_with_tool(
+        "household_invite", {"display_name": "Dana", "role": "adult"}
+    )
+    answer = await owner_chat.post(f"/confirmations/{reply.pending_confirmation_id}/approve")
+    assert status_of(answer) == "executed"
+    invitation = await only_invitation(session_factory)
+    shown = await owner_chat.say_with_tool(
+        "invitation_link_show", {"display_name": "Dana"}, judge="do"
+    )
+    assert shown.model_results[-1]["waited_for"] == adult_chat.person.display_name
+    gone = await adult_chat.post(f"/invitations/{invitation.id}/link")
+    assert gone.status_code == 410
+    said = t("invite.link.shown_to_owner", "en", name=owner_chat.person.display_name)
+    assert said in plain(gone.text)
+    assert t("invite.link.gone", "en") not in plain(gone.text)
+    async with session_factory() as reader:
+        alex = await reader.get(Person, adult_chat.person.id)
+        assert alex is not None and alex.news_at is not None
+        new = await what_is_new(reader, alex, since=None)
+    assert new["links_shown_to_the_owner"] == 1
+
+
 async def test_an_invitation_someone_else_said_yes_to_shows_its_link_to_the_one_who_asked(
     owner_chat, adult_chat, grant, session_factory, stored_text, audit_dump, last_audit_entry
 ):
@@ -291,13 +321,20 @@ async def test_an_invitation_someone_else_said_yes_to_shows_its_link_to_the_one_
     assert (await adult_chat.post(link_url)).status_code == 410
 
 
-async def test_an_adult_invites_their_child_at_once_and_someone_else_after_the_owners_yes(
-    owner_chat, adult_chat, live_owner_client, session_factory
+async def test_an_adult_invites_by_the_owner_s_right_and_someone_else_after_the_owners_yes(
+    owner_chat, adult_chat, live_owner_client, session_factory, grant
 ):
-    """The owner's trial of 0.9.1: an adult asked Domo to add their child, and he said he had no
-    tool for it. An adult invites with no right of the owner's: their child at once, and someone
-    Domo judged the owner should agree to first (``owner_first``) after the owner's yes, who
-    reads who asks, whom and with what role. The link is then the adult's."""
+    """Inviting is in no role (ruling 14): an adult's own call is refused, and the assistant invites
+    in his own name, or the owner opens it to that adult by a right. With it, their child at once,
+    and someone Domo judged the owner should agree to first (``owner_first``) after the owner's
+    yes, who reads who asks, whom and with what role. The link is then the adult's."""
+    refused = await adult_chat.say_with_tool(
+        "household_invite", {"display_name": "Paul", "role": "child"}, judge="do"
+    )
+    assert refused.actions == [
+        {"tool": "household_invite", "status": "refused", "reason": "not_allowed"}
+    ]
+    await grant("household.invite", person=adult_chat.person, access="allow")
     child = await adult_chat.say_with_tool(
         "household_invite", {"display_name": "Paul", "role": "child"}, judge="do"
     )
@@ -345,7 +382,7 @@ async def test_a_self_approved_invitation_shows_its_link_at_once_as_before(
 def tool_context(person: Person, session_factory, *, approved_by=None) -> ToolContext:
     return ToolContext(
         session_factory=session_factory,
-        actor=Actor(person.id, person.role),  # type: ignore[arg-type]
+        actor=actor_of(person),  # type: ignore[arg-type]
         person=person,
         conversation_id=uuid.uuid4(),
         origin="https://domo.local/",
@@ -671,7 +708,7 @@ async def test_an_invitation_says_whether_the_invitee_uses_the_inviters_key(
 @pytest.mark.parametrize("value", ["yes", 1, 0, [True]])
 async def test_uses_my_key_is_true_or_false(tool_context, value):
     actor = Actor(tool_context.person.id, "owner")
-    arguments = {"display_name": "Robin", "role": "guest", "uses_my_key": value}
+    arguments = {"display_name": "Tom", "role": "guest", "uses_my_key": value}
     with pytest.raises(InvalidArguments) as raised:
         await TOOLS["household_invite"].describe(arguments, actor, tool_context)
     assert raised.value.code == "invalid"
@@ -680,18 +717,17 @@ async def test_uses_my_key_is_true_or_false(tool_context, value):
         await TOOLS["household_invite"].describe(arguments, actor, tool_context)
 
 
-async def test_a_guest_is_invited_for_two_days_unless_told_otherwise(
+async def test_a_guest_is_invited_for_thirty_days_unless_told_otherwise(
     create_invitation_for_test, owner_account
 ):
-    guest, _ = await create_invitation_for_test(display_name="Robin", role="guest")
-    assert guest.guest_days == GUEST_DAYS_DEFAULT == 2
-    longer, _ = await create_invitation_for_test(
-        display_name="Charlie", role="guest", guest_days=30
-    )
-    assert longer.guest_days == 30
+    guest, _ = await create_invitation_for_test(display_name="Tom", role="guest")
+    assert guest.guest_days == GUEST_DAYS_DEFAULT == 30
+    # No ceiling (audit POL-5): any number of days from 1.
+    longer, _ = await create_invitation_for_test(display_name="Sam", role="guest", guest_days=400)
+    assert longer.guest_days == 400
 
 
-@pytest.mark.parametrize(("role", "guest_days"), [("adult", 3), ("guest", 0), ("guest", 366)])
+@pytest.mark.parametrize(("role", "guest_days"), [("adult", 3), ("guest", 0), ("guest", -1)])
 async def test_the_service_refuses_days_that_make_no_sense(
     create_invitation_for_test, owner_account, role, guest_days
 ):
@@ -703,18 +739,18 @@ async def test_accepting_creates_the_person_and_the_account_and_closes_the_invit
     session, owner_account, create_invitation_for_test, clock
 ):
     invitation, token = await create_invitation_for_test(
-        display_name="Robin", role="guest", guest_days=5
+        display_name="Tom", role="guest", guest_days=5
     )
     person = await join_with_password(
-        session, token=token, username="  Robin ", password=PASSPHRASE, now=clock()
+        session, token=token, username="  Tom ", password=PASSPHRASE, now=clock()
     )
-    assert (person.display_name, person.role) == ("Robin", "guest")
+    assert (person.display_name, person.role) == ("Tom", "guest")
     assert person.expires_at == clock() + timedelta(days=5)
     assert person.invited_by == owner_account.person_id
     account = (await session.execute(select(Account).where(Account.person_id == person.id))).one()[
         0
     ]
-    assert account.username == "robin" and PASSPHRASE not in account.password_hash
+    assert account.username == "tom" and PASSPHRASE not in account.password_hash
     await session.refresh(invitation)
     assert invitation.accepted_at == clock() and invitation.accepted_person_id == person.id
     with pytest.raises(InvitationUnavailable):
@@ -791,13 +827,13 @@ async def test_a_used_an_expired_and_a_cancelled_link_look_the_same(
     assert (await join(client, used)).status_code == 303
     cancelled_invitation, cancelled = await create_invitation_for_test(display_name="Sam")
     await cancel_invitation(session, cancelled_invitation, clock())
-    _, expired = await create_invitation_for_test(display_name="Robin")
+    _, expired = await create_invitation_for_test(display_name="Tom")
     clock.advance(INVITATION_TTL)
     pages = [await client.get(f"/invite/{token}") for token in (used, cancelled, expired, "nope")]
     assert {page.status_code for page in pages} == {410}
     assert len({plain(page.text) for page in pages}) == 1  # nothing tells one from the other
     for token in (cancelled, expired):
-        assert (await join(client, token, "robin")).status_code == 410
+        assert (await join(client, token, "tom")).status_code == 410
 
 
 async def test_joining_logs_the_person_in_and_sends_them_to_the_chat(

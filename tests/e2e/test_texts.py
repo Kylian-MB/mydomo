@@ -18,8 +18,8 @@ instance:
 
 * scenario 1 (0.7.1): the installation, in a French browser, ends as soon as the key works: the
   chat opens at once, in French, and the writer was never called;
-* scenario 7: Alex, an adult, asks to invite Robin for 2 days, which the owner must say yes to:
-  each of them reads the head of the card written for them, checked, with Robin's name and the
+* scenario 7: Alex, an adult, asks to invite Tom for 2 days, which the owner must say yes to:
+  each of them reads the head of the card written for them, checked, with Tom's name and the
   stay;
 * scenario 15: Dana leaves a note for Sam, whose page has no zone of notes; Sam opens his page,
   the note is in the context of the arrival turn, as data (Domo says who left it), and asked for
@@ -99,8 +99,8 @@ MARKED_BASE_URL = FAKE_LLM_BASE_URL.removesuffix("/v1") + MARKED_PREFIX + "/v1"
 # Someone the owner invites in scenario 15, who leaves Sam a note.
 DANA = Member("Dana", "adult", "dana", "dana-test-passphrase")
 # The guest Alex asks to invite in scenario 7, and for how long.
-ROBIN = "Robin"
-ROBIN_FOR_TWO_DAYS = {"display_name": ROBIN, "role": "guest", "guest_days": 2}
+TOM = "Tom"
+TOM_FOR_TWO_DAYS = {"display_name": TOM, "role": "guest", "guest_days": 2}
 TWO_DAYS = "2 days"
 # The right of scenario 7, as the owner says it and as the rights writer sums it up.
 RIGHTS_WORDS = "Alex may invite people, with my yes."
@@ -129,7 +129,7 @@ NAMES = frozenset(
         OWNER_USERNAME,
         *(member.display_name for member in (ALEX, SAM, DANA)),
         *(member.username for member in (ALEX, SAM, DANA)),
-        ROBIN,
+        TOM,
         PAUL.display_name,
     }
 )
@@ -296,7 +296,13 @@ def alex_may_invite_with_the_owners_yes(alex_id: str) -> dict[str, Any]:
             {
                 "person_id": alex_id,
                 "action_type": "household.invite",
-                "facts": {"role": "guest", "days": 2, "display_name": "Jo", "owner_first": False},
+                "facts": {
+                    "role": "guest",
+                    "days": 2,
+                    "no_end": False,
+                    "display_name": "Jo",
+                    "owner_first": False,
+                },
                 "expected": "asks_the_owner",
             }
         ],
@@ -397,9 +403,9 @@ def test_each_reader_of_a_request_reads_a_head_written_for_them(people: Househol
         "data-confirmation-status", "executed", timeout=T
     )
 
-    # Alex asks to invite Robin for 2 days: it waits for the owner's yes. The head of his card was
-    # written for him in his turn, checked against the exact action: Robin and the stay are in it.
-    asked = send_and_wait(alex, tool_message("household_invite", ROBIN_FOR_TWO_DAYS))
+    # Alex asks to invite Tom for 2 days: it waits for the owner's yes. The head of his card was
+    # written for him in his turn, checked against the exact action: Tom and the stay are in it.
+    asked = send_and_wait(alex, tool_message("household_invite", TOM_FOR_TWO_DAYS))
     expect(reply_text(asked)).to_have_text("Fake tool result: waiting_for_confirmation")
     card = confirmation_card(asked)
     expect(card).to_have_attribute("data-confirmation-status", "pending", timeout=T)
@@ -407,17 +413,17 @@ def test_each_reader_of_a_request_reads_a_head_written_for_them(people: Househol
     assert request_id
     his = card.locator(".confirmation-head")
     expect(his).to_have_text(starts_with_the_mark(), timeout=T)
-    expect(his).to_contain_text(ROBIN)
+    expect(his).to_contain_text(TOM)
     expect(his).to_contain_text(TWO_DAYS)
 
     # The owner reads it in his window "To approve", with the head written for him, in the
-    # background on his keys: Robin and the stay are in it too.
+    # background on his keys: Tom and the stay are in it too.
     owner.goto(stack.base_url + "/chat")
     theirs = owner.locator(
         f'#approvals .confirmation-card[data-confirmation-id="{request_id}"] .confirmation-head'
     )
     expect(theirs).to_have_text(starts_with_the_mark(), timeout=ASKED_FOR_MS)
-    expect(theirs).to_contain_text(ROBIN)
+    expect(theirs).to_contain_text(TOM)
     expect(theirs).to_contain_text(TWO_DAYS)
 
     # One head for each reader, kept with the card once it was checked.

@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import domo_core
 import pytest
+from domo_core.household.service import GUEST_DAYS_DEFAULT
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.catalog import (
     ACTION_FACTS,
@@ -19,7 +20,6 @@ from domo_core.policy.catalog import (
     CHANGES_NOTHING,
     DEFAULT_LIMITS,
     DEFAULT_POLICY,
-    GUEST_DAYS_RULE,
     JUDGED_WITHIN,
     KNOWN_ACTIONS,
     OWNER_ONLY_ACTIONS,
@@ -92,15 +92,40 @@ SILENT_OUTWARD_ACTIONS = {"net.close", "net.look", "account.look"}
 # (spec 13.4: whoever gave it); a guest only sees theirs.
 CHILD_OUTWARD_ACTIONS = {"account.ask", "account.look", "account.remove"}
 GUEST_OUTWARD_ACTIONS = {"account.look"}
-# What the owner and the adults may do by default: entrust a device to Domo (a child or a guest
-# only by a right), and invite someone, give the link of their invitation again or cancel it (the
-# owner's trial of 0.9.1: "Domo judges").
+# Inviting someone, giving the link of an invitation again or cancelling it: in no role (ruling
+# 14), the owner's and the assistant's.
 INVITING_ACTIONS = {
     "household.invite",
     "household.invite_again",
     "household.cancel_invitation",
 }
-ADULT_ACTIONS = {"device.entrust", *INVITING_ACTIONS, *OUTWARD_ACTIONS, "account.remove"}
+# The gestures on people and their roles beyond inviting: in no role (ruling 14).
+PEOPLE_GESTURE_ACTIONS = {
+    "household.send_link",
+    "people.open",
+    "people.complete",
+    "people.erase",
+    "people.forget",
+    "people.link",
+    "people.unlink",
+    "people.merge",
+    "people.split",
+    "people.mistake",
+    "role.create",
+    "role.change",
+    "role.delete",
+    "access.promise",
+    "access.promise_keep",
+    "access.promise_drop",
+}
+# What the assistant knows of a person, and forgetting it, asked by that person: everyone's.
+OWN_RECORD_ACTIONS = {"people.look", "people.forget_me"}
+# Reading the roles he made and the access he promised, and the owner's directives.
+PEOPLE_OWNER_READS = {"role.look", "access.promises_look"}
+DIRECTIVE_ACTIONS = {"people.directive_set", "people.directive_lift", "people.directives_look"}
+# What the owner and the adults may do by default: entrust a device to Domo (a child or a guest
+# only by a right), and agree for a child.
+ADULT_ACTIONS = {"device.entrust", "child.agree", *OUTWARD_ACTIONS, "account.remove"}
 # What every member of the household (the owner, adults and children) may do.
 MEMBER_ACTIONS = {
     "household.list",
@@ -119,6 +144,8 @@ MEMBER_ACTIONS = {
     "chain.run",
     "chain.continue",
     "household.leave",
+    # The link of an invitation that waits for them, shown once in words.
+    "household.show_link",
     # Domo's own choices of models, and a step up for the rest of a request.
     "models.choose",
     "models.step_up",
@@ -156,6 +183,7 @@ MEMBER_ACTIONS = {
     *OWN_IDEA_ACTIONS,
     *ASKING_ACTIONS,
     *CHILD_OUTWARD_ACTIONS,
+    *OWN_RECORD_ACTIONS,
 }
 # What everyone has of their own texts, a guest too: the texts they read, their writing note and
 # their language (spec 4.7).
@@ -190,6 +218,12 @@ OWNER_ACTIONS = {
     # Setting something for the whole house (a timed launch, a standing agreement): the owner's
     # by default, and it can be given (Task 27, ruling R17).
     "house.set",
+    # The gestures on people, in no role (ruling 14), the roles and promises read, and the
+    # owner's directives.
+    *INVITING_ACTIONS,
+    *PEOPLE_GESTURE_ACTIONS,
+    *PEOPLE_OWNER_READS,
+    *DIRECTIVE_ACTIONS,
 }
 # What nobody may do by default, the owner neither: changing someone else's texts, writing note or
 # language (spec 4.7, socle 8). Only a right opens it.
@@ -198,7 +232,7 @@ NOBODYS_ACTIONS = {"texts.for_someone"}
 
 def test_catalog_matches_the_plan_table():
     assert KNOWN_ACTIONS == MEMBER_ACTIONS | ADULT_ACTIONS | OWNER_ACTIONS | NOBODYS_ACTIONS
-    assert len(KNOWN_ACTIONS) == 101
+    assert len(KNOWN_ACTIONS) == 126
 
 
 def test_handing_the_owners_role_over_is_the_owners_alone_and_judged():
@@ -316,6 +350,7 @@ def test_who_may_use_what_matches_the_plan_table():
             *OWN_IDEA_ACTIONS,
             *ASKING_ACTIONS,
             *GUEST_OUTWARD_ACTIONS,
+            *OWN_RECORD_ACTIONS,
         },
     } == ALLOWED_ACTIONS
 
@@ -340,23 +375,29 @@ def test_actions_allowed_gives_the_set_of_the_role():
     assert "household.change_role" not in actions_allowed("adult")
 
 
-def test_an_adult_invites_and_a_child_or_a_guest_does_not():
-    """The owner's trial of 0.9.1: an adult asked Domo to add their child, and could not.
-    Inviting, giving the link of one's invitation again and cancelling it are the adults' too; a
-    child's and a guest's are as before (a right opens them)."""
+def test_inviting_is_in_no_role():
+    """Ruling 14: inviting, giving the link of an invitation again and cancelling it are the
+    owner's and the assistant's, in no role; a right of the owner opens them to one person."""
     for action in INVITING_ACTIONS:
-        assert action in ALLOWED_ACTIONS["owner"] and action in ALLOWED_ACTIONS["adult"]
-        assert action not in ALLOWED_ACTIONS["child"] and action not in ALLOWED_ACTIONS["guest"]
+        assert action in ALLOWED_ACTIONS["owner"]
+        for role in ("adult", "child", "guest"):
+            assert action not in ALLOWED_ACTIONS[role]
         assert action not in OWNER_ONLY_ACTIONS and needs_the_judge(action)
     # Whether Domo sends the invitation to the owner first is one of its facts, and a new link
-    # carries it too (always false), so that a limit on inviting reads both the same way.
-    for action in ("household.invite", "household.invite_again"):
-        assert dict(ACTION_FACTS[action]) == {
-            "role": "role",
-            "days": "number",
-            "display_name": "text",
-            "owner_first": "boolean",
-        }
+    # carries it too (always false), so that a limit on inviting reads both the same way. A new
+    # link also says whether the invitation is the assistant's, whoever holds the right changing
+    # it (the owner's answer of 2026-11-27): the judge weighs it.
+    inviting = {
+        "role": "role",
+        "days": "number",
+        "no_end": "boolean",
+        "display_name": "text",
+        "owner_first": "boolean",
+        "exception_of": "text",
+        "serves_the_speaker": "boolean",
+    }
+    assert dict(ACTION_FACTS["household.invite"]) == inviting
+    assert dict(ACTION_FACTS["household.invite_again"]) == inviting | {"given_by_domo": "boolean"}
 
 
 def test_the_default_policy_is_the_catalog():
@@ -462,31 +503,29 @@ def test_from_json_refuses_what_is_not_an_object():
         DescribedAction.from_json(None)
 
 
-# --- the guest stay rule is written once ---------------------------------------------------------
+# --- no length of stay is limited by the catalog (audit POL-5) ----------------------------------
 
 
-def test_the_guest_stay_rule_is_one_constant_used_by_the_limit_and_the_tools():
-    limit = DEFAULT_LIMITS["household.change_role"]
-    assert GUEST_DAYS_RULE == 30
-    assert f"action.facts.days > {GUEST_DAYS_RULE} " in limit.expression
-    assert f"{GUEST_DAYS_RULE} days" in limit.summary
-    assert DEFAULT_LIMITS["household.bring_back"] is limit
-    # Inviting holds the same stay, and asks the owner when Domo judged so (0.9.1); a new link
+def test_no_limit_of_the_catalog_reads_a_length_of_stay():
+    # Inviting asks the owner when the assistant judged so (0.9.1), and nothing else; a new link
     # follows inviting (``RIGHTS_OF``).
     inviting = DEFAULT_LIMITS["household.invite"]
-    assert f"action.facts.days > {GUEST_DAYS_RULE} " in inviting.expression
-    assert inviting.summary.startswith(limit.summary)
+    assert set(DEFAULT_LIMITS) == {"household.invite", "household.invite_again"}
     assert DEFAULT_LIMITS["household.invite_again"] is inviting
+    assert "days" not in inviting.expression and "days" not in inviting.summary
     for name in ("household_invite", "household_change_role", "household_bring_back"):
-        assert f"{GUEST_DAYS_RULE} days at most" in TOOLS[name].definition.description, name
+        description = TOOLS[name].definition.description
+        assert "days at most" not in description, name
+        assert f"{GUEST_DAYS_DEFAULT} " in description and "no_end" in description, name
 
 
 @pytest.mark.parametrize(
     "module", ["policy/catalog.py", "tools/household_admin.py", "tools/household_return.py"]
 )
-def test_no_other_30_is_written_by_hand_for_the_guest_stay_rule(module):
-    """The numeral is only in ``GUEST_DAYS_RULE``'s own line: not in an expression, a summary or
-    a description (docstrings and comments, which only talk about the rule, are left out)."""
+def test_no_30_is_written_by_hand_for_a_stay(module):
+    """The default end of a stay is ``household.service.GUEST_DAYS_DEFAULT``'s alone: the numeral
+    is not in an expression, a summary or a description of these modules (docstrings and
+    comments, which only talk about it, are left out)."""
     source = (Path(domo_core.__file__).parent / module).read_text(encoding="utf-8")
     tree = ast.parse(source)
     docstrings = {
@@ -504,14 +543,7 @@ def test_no_other_30_is_written_by_hand_for_the_guest_stay_rule(module):
         and id(node) not in docstrings
         and (node.value == 30 or (isinstance(node.value, str) and "30" in node.value))
     ]
-    allowed = [
-        node.lineno
-        for node in ast.walk(tree)
-        if isinstance(node, ast.AnnAssign)
-        and isinstance(node.target, ast.Name)
-        and node.target.id == "GUEST_DAYS_RULE"
-    ]
-    assert found == allowed
+    assert found == []
 
 
 # --- the marks of the yes-judge (0.5.0) ----------------------------------------------------------
@@ -520,6 +552,7 @@ def test_no_other_30_is_written_by_hand_for_the_guest_stay_rule(module):
 def test_what_changes_nothing_passes_without_the_judge():
     assert {
         "household.list",
+        "household.show_link",
         "note.list_sent",
         "policy.show",
         "successors.show",
@@ -558,6 +591,13 @@ def test_what_changes_nothing_passes_without_the_judge():
         # Setting something for the house is a right the tools read; by itself it changes
         # nothing (Task 27).
         "house.set",
+        # Agreeing for a child is a right to read; reading the people, roles, promises and
+        # directives changes nothing.
+        "child.agree",
+        "people.look",
+        "role.look",
+        "access.promises_look",
+        "people.directives_look",
     } == CHANGES_NOTHING
     assert {"confirmation.amend", "chain.continue"} == JUDGED_WITHIN
     assert needs_the_judge("household.invite") is True
@@ -582,6 +622,24 @@ def test_domo_memory_and_plans_are_never_shown_whatever_came_of_them():  # spec 
         | SILENT_OUTWARD_ACTIONS
         | PROGRAM_OUT
         | ASKING_ACTIONS
+        # The gestures on people that give nothing to anyone, the reads, and agreeing for a child.
+        | {
+            "people.open",
+            "people.complete",
+            "people.erase",
+            "people.link",
+            "people.unlink",
+            "people.split",
+            "people.mistake",
+            # Not role.delete: deleting a role people carry is judged (ruling 20).
+            "access.promise",
+            "access.promise_drop",
+            "people.look",
+            "role.look",
+            "access.promises_look",
+            "people.directives_look",
+            "child.agree",
+        }
         | {"house.name_domo"}
     ) == SILENT_ACTIONS
     assert all(is_silent(action_type) for action_type in SILENT_ACTIONS)

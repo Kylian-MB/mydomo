@@ -116,9 +116,11 @@ async def test_only_departed_guests_lose_their_notes(session, add_person, clock)
     here.expires_at = clock() + timedelta(days=1)
     removed_adult = await add_person("Sam", "adult")
     removed_adult.disabled_at = clock() - timedelta(days=1)
+    removed_adult.state = "gone"
     removed_guest = await add_person("Kim", "guest")
     removed_guest.expires_at = clock() + timedelta(days=1)  # the stay was not over
     removed_guest.disabled_at = clock() - timedelta(hours=1)
+    removed_guest.state = "gone"
     leaving_now = await add_person("Dana", "guest")
     leaving_now.expires_at = clock()  # a stay ends the moment it is no longer in the future
     for recipient, text in (
@@ -189,6 +191,7 @@ async def test_a_kept_note_is_erased_from_the_last_second_of_its_day_and_not_bef
     adult = await add_person("Alex", "adult")
     guest = await add_person("Robin", "guest")
     guest.disabled_at = clock() - timedelta(hours=1)
+    guest.state = "gone"
     until = the_end_of_the_day_in(clock, 1)
     await add_note(session, adult, guest, HELLO, keep_until=until)
 
@@ -222,6 +225,7 @@ async def test_a_guest_back_before_the_date_finds_the_kept_notes(session, add_pe
     clock.advance(timedelta(days=45))
     guest.expires_at = clock() + timedelta(days=5)
     guest.disabled_at = None
+    guest.state = "has_access"
     assert await erase_notes_of_departed_guests(session, clock()) == 0
     assert await texts_of_notes(session) == {HELLO}
 
@@ -248,6 +252,7 @@ async def test_a_kept_note_of_someone_who_is_not_a_guest_is_left_alone(session, 
     adult = await add_person("Alex", "adult")
     sam = await add_person("Sam", "adult")
     sam.disabled_at = clock() - timedelta(days=1)
+    sam.state = "gone"
     await add_note(session, adult, sam, HELLO, keep_until=clock() - timedelta(days=1))
 
     assert await erase_notes_of_departed_guests(session, clock()) == 0
@@ -370,9 +375,11 @@ async def test_the_rights_of_someone_removed_before_removals_paused_them_are_pau
     owner = await add_person("Owner", "owner")
     removed_adult = await add_person("Sam", "adult")
     removed_adult.disabled_at = clock() - timedelta(days=30)
+    removed_adult.state = "gone"
     removed_guest = await add_person("Kim", "guest")
     removed_guest.expires_at = clock() + timedelta(days=1)  # the stay was not over
     removed_guest.disabled_at = clock() - timedelta(hours=3)
+    removed_guest.state = "gone"
     for person in (removed_adult, removed_guest):
         session.add(a_right(owner, person, "household.invite"))
     await session.flush()

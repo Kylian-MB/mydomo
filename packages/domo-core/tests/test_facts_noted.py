@@ -141,7 +141,7 @@ async def test_the_owner_s_no_to_his_own_request_is_of_his(session_factory, monk
     alex = people["Alex"]
     _judge(monkeypatch, DOUBT)
     ctx, reply_id, _ = await _turn(session_factory, alex, on_his_own=True, reply_message_id=None)
-    await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     [request] = await _requests(session_factory)
     assert request.by_domo
     outcome, _ = await _refuse(session_factory, request.id, alex, via="button", now=LIVE)
@@ -162,7 +162,7 @@ async def test_a_yes_the_rules_refuse_is_the_code_s_refusal(session_factory, mon
     alex = people["Alex"]
     _judge(monkeypatch, DOUBT)
     ctx, reply_id, _ = await _turn(session_factory, alex, on_his_own=True, reply_message_id=None)
-    await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     [request] = await _requests(session_factory)
     # Meanwhile the owner takes back the assistant's right to invite.
     async with session_factory() as writer:
@@ -420,7 +420,7 @@ async def test_rights_for_an_idea_that_take_too_long_say_nothing_was_done(
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
     monkeypatch.setattr(execution_module, "_CHECK_SECONDS", 1.0)
     monkeypatch.setattr(execution_module, "load_rights", stalls)
-    record = await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    record = await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     assert (record.status, record.model_result["reason"]) == ("failed", "took_too_long")
     assert "try again" in str(record.model_result["detail"])
     [fact] = await facts(session_factory)
@@ -459,8 +459,10 @@ async def test_a_continued_chain_that_fails_leaves_one_fact_dated_when_it_failed
     await revoke_right(right)
     no = await grant("household.invite", person=adult_chat.person, access="deny")
     assert (await adult_chat.confirm_last(reply)).status == "failed"
-    # A day later, allowed again, the continued chain runs and its step fails.
+    # A day later, allowed again (inviting is in no role: the owner's right again, ruling 14), the
+    # continued chain runs and its step fails.
     await revoke_right(no)
+    await grant("household.invite", person=adult_chat.person, access="allow")
     registry = {**TOOLS, "household_invite": _FailingInvite()}
     adult_chat.app.dependency_overrides[get_tool_registry] = lambda: registry
     adult_chat.clock.advance(timedelta(days=1))

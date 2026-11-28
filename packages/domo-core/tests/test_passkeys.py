@@ -665,6 +665,7 @@ async def test_someone_no_longer_in_the_household_cannot_log_in_with_a_passkey(
     cred = await registered(session, alex, soft_authenticator)
     if left == "removed":
         person.disabled_at = NOW
+        person.state = "gone"
     else:
         person.expires_at = NOW
     await session.flush()
@@ -1273,6 +1274,7 @@ async def test_someone_who_left_cannot_sign_in_with_their_passkey(
     before = datetime.now(UTC) - timedelta(minutes=1)
     if left == "removed":
         person.disabled_at = before
+        person.state = "gone"
     else:
         person.role, person.expires_at = "guest", before
     await session.flush()

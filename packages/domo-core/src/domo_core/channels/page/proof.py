@@ -16,6 +16,8 @@ from domo_core.channels.page.abilities import PAGE
 from domo_core.confirmations.models import Confirmation
 from domo_core.confirmations.service import is_past_lifetime, may_decide
 from domo_core.confirmations.store import ask_of
+from domo_core.policy.open_catalog import load_policy
+from domo_core.policy.rights import load_rights
 from domo_core.policy.settings import load_policy_settings
 from domo_core.proofs.kinds import ProofPlace
 from domo_core.proofs.service import offers
@@ -61,10 +63,16 @@ async def proof_offers_of(
     """The proof each of ``requests`` offers ``viewer``, by request id: only a request that asks
     a proof, waits (within its lifetime) and that ``viewer`` may answer (``may_decide``) offers
     one. Reads only."""
+    requests = list(requests)
+    if not requests:
+        return {}
+    rights, policy = await load_rights(session), await load_policy(session)
     asking = [
         c
         for c in requests
-        if ask_of(c) == "proof" and c.status == "pending" and may_decide(c, viewer, now)
+        if ask_of(c) == "proof"
+        and c.status == "pending"
+        and may_decide(c, viewer, now, rights=rights, policy=policy)
     ]
     if not asking:
         return {}

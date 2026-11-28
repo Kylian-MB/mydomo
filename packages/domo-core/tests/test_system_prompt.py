@@ -9,6 +9,7 @@ from importlib import resources
 from zoneinfo import ZoneInfo
 
 import pytest
+from chat_support import an_actor
 from domo_core.channels.api.auth import API
 from domo_core.channels.page.abilities import PAGE
 from domo_core.chat.models import MessageAction
@@ -156,6 +157,17 @@ def test_domo_says_i_of_himself():
 
 def test_the_fixed_text_stays_under_9000():
     assert len(fixed_text()) < 9000
+
+
+# The length of the fixed text when the people of the house became the assistant's to keep (Task
+# 0 of that chantier, measured on the merged tree): what he must know of his gestures on people is
+# in his tools' descriptions and the context, never more fixed text.
+FIXED_TEXT_BEFORE_THE_PEOPLE = 8970
+
+
+def test_the_people_guidance_did_not_grow_the_fixed_text():
+    assert len(fixed_text()) <= FIXED_TEXT_BEFORE_THE_PEOPLE
+    assert len(fixed_text(role="owner")) <= FIXED_TEXT_BEFORE_THE_PEOPLE
 
 
 def test_the_fixed_text_asks_for_answers_as_said_aloud():
@@ -822,7 +834,7 @@ def test_the_tools_kept_from_the_person_are_named_and_never_called_missing():
     from domo_core.policy.catalog import DEFAULT_POLICY, is_silent
     from domo_core.tools.context import tools_kept_from
 
-    kept = tools_kept_from("child", TOOLS, DEFAULT_POLICY)
+    kept = tools_kept_from(an_actor("child"), TOOLS, DEFAULT_POLICY)
     assert "household_invite" in kept and "household_change_role" in kept
     assert all(not is_silent(TOOLS[name].action_type) for name in kept)
     lines = context_lines(
@@ -861,9 +873,9 @@ def test_a_silent_tool_the_rights_keep_is_never_named():
     policy = PolicyTables(
         KNOWN_ACTIONS, {**ALLOWED_ACTIONS, "child": ALLOWED_ACTIONS["child"] - {silent, plain}}
     )
-    offered = {definition.name for definition in tools_for("child", TOOLS, policy)}
+    offered = {definition.name for definition in tools_for(an_actor("child"), TOOLS, policy)}
     assert "memory_keep" not in offered and "note_leave" not in offered
-    kept = tools_kept_from("child", TOOLS, policy)
+    kept = tools_kept_from(an_actor("child"), TOOLS, policy)
     assert "note_leave" in kept and "memory_keep" not in kept
 
 
@@ -874,8 +886,8 @@ def test_a_tool_the_turn_left_out_is_not_named_as_kept():
     from domo_core.tools.context import tools_kept_from
 
     only = {name: tool for name, tool in TOOLS.items() if name == "key_add"}
-    everything = tools_kept_from("child", TOOLS, DEFAULT_POLICY)
-    in_the_turn = tools_kept_from("child", only, DEFAULT_POLICY)
+    everything = tools_kept_from(an_actor("child"), TOOLS, DEFAULT_POLICY)
+    in_the_turn = tools_kept_from(an_actor("child"), only, DEFAULT_POLICY)
     assert "household_invite" in everything and "household_invite" not in only
     assert "household_invite" not in in_the_turn
     assert set(in_the_turn) <= set(only)
@@ -894,13 +906,13 @@ def test_no_line_of_kept_tools_for_the_owner_nor_without_tools():
     from domo_core.policy.catalog import DEFAULT_POLICY
     from domo_core.tools.context import tools_kept_from
 
-    # An adult invites now (0.9.1): it is not among what is kept from them.
-    adult = tools_kept_from("adult", TOOLS, DEFAULT_POLICY)
-    assert "household_invite" not in adult and "household_change_role" in adult
+    # Inviting is in no role (ruling 14): it is kept from an adult, as changing a role is.
+    adult = tools_kept_from(an_actor("adult"), TOOLS, DEFAULT_POLICY)
+    assert "household_invite" in adult and "household_change_role" in adult
     # A silent tool is never named: everyone has them.
-    guest = tools_kept_from("guest", TOOLS, DEFAULT_POLICY)
+    guest = tools_kept_from(an_actor("guest"), TOOLS, DEFAULT_POLICY)
     assert "memory_keep" in TOOLS and "memory_keep" not in guest
-    owner = tools_kept_from("owner", TOOLS, DEFAULT_POLICY)
+    owner = tools_kept_from(an_actor("owner"), TOOLS, DEFAULT_POLICY)
     for role, kept, can_act in (
         ("owner", owner, True),
         ("adult", adult, False),

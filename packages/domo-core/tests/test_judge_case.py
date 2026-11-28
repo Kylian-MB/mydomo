@@ -109,6 +109,18 @@ def contents(lines: Sequence[KnownLine]) -> list[str]:
     return [line.content for line in lines]
 
 
+@pytest.fixture
+def add_person(add_person, add_account):
+    """Only someone who can answer may say yes for a child: these people have an account."""
+
+    async def _add_person(display_name: str = "A", role: str = "owner", **columns):
+        person = await add_person(display_name, role, **columns)
+        await add_account(person, display_name.lower())
+        return person
+
+    return _add_person
+
+
 async def household(add_person):
     alex = await add_person("Alex", "owner")
     sam = await add_person("Sam", "adult")
@@ -454,6 +466,7 @@ async def test_only_the_own_words_of_who_may_agree_for_them_are_marked(session, 
     # Sam, an adult who left the household.
     gone = sam
     gone.disabled_at = NOW - timedelta(days=2)
+    gone.state = "gone"
     await _keep(session, dana.id, "Paul may put the TV on, Dana says", about_id=paul.id)
     await _keep(session, alex.id, "Paul may put the TV on, Alex says", about_id=paul.id)
     await _keep(session, tom.id, "yes Paul may put the TV on, Tom says", about_id=paul.id)
@@ -660,3 +673,19 @@ async def test_in_his_own_case_what_he_told_the_person_concerned_is_marked_their
     mine = await case_of(session, alex.id, alex.id)
     assert "It cannot be undone" not in contents(mine.remembered)
     assert not any(line.concerned for line in mine.remembered)
+
+
+async def test_the_judge_is_told_that_an_adult_who_may_agree_only_passes_by(session, add_person):
+    """Answer b: Dana's mother, an adult only passing by, says Paul may put the TV on: her line
+    is marked as one who may agree, and as someone passing by, for the judge to weigh."""
+    alex, _, dana = await household(add_person)
+    paul = await add_person("Paul", "child")
+    dana.standing = "visiting"
+    await session.flush()
+    await _keep(session, dana.id, "Paul may put the TV on, Dana says", about_id=paul.id)
+    await _keep(session, alex.id, "Paul may put the TV on, Alex says", about_id=paul.id)
+    case = await case_of(session, paul.id, paul.id)
+    lines = {line.content: line for line in (*case.others_said, *case.owner_said)}
+    passing = lines["Paul may put the TV on, Dana says"]
+    assert passing.may_agree and passing.only_passing
+    assert not lines["Paul may put the TV on, Alex says"].only_passing

@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 from chat_support import ChatPilot, ChatServer, Member
 from domo_common.sandbox_api import JsonObject, RunRequest, ScanFinding
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.channels.turns import app_turn_deps
 from domo_core.conversation.prepare import made_tool_deps
@@ -39,7 +40,6 @@ from domo_core.madetools.models import (
 from domo_core.madetools.offered import READ_AS
 from domo_core.madetools.settings import set_house
 from domo_core.madetools.upkeep import toolmaking_pass
-from domo_core.policy.roles import Actor, as_role
 from domo_core.prompts import ToolWake, tool_wake_heading
 from domo_core.tools.context import InvalidArguments, ToolContext, ToolOutcome
 from domo_core.tools.registry import TOOLS
@@ -107,7 +107,7 @@ def context_of(
     return replace(
         tool_context,
         person=person,
-        actor=Actor(person.id, as_role(person.role)),
+        actor=actor_of(person),
         launch_deps=deps,
         **more,
     )

@@ -187,7 +187,9 @@ async def create_owner(
         throttle.clear(_THROTTLE_KEY)
         return retry(503, _FormError("passwords.busy", {}), busy_headers())
 
-    person = Person(display_name=shown_name, role="owner")
+    person = Person(
+        display_name=shown_name, role="owner", origin="setup", first_access_at=datetime.now(UTC)
+    )
     try:
         session.add(person)
         await session.flush()

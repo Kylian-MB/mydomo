@@ -28,11 +28,11 @@ arguments: "For invitations, a simple yes will be enough." (``describe_rule_chan
 the value never reach the people as the code spells them (a time zone is told by its name, as in
 ``Europe/Paris``: it has no other). A change of the household (an invitation, a role, a removal,
 someone brought back, a cancelled invitation, a guest's new stay) says the role in words and a
-guest's stay in days (``describe_household_change``). Handing the owner's role over says who gets
-it and that the one who asks becomes an adult. A change of the list of successors
-(``successors.set``) is one plain sentence, and the card of a request that still waits also shows
-the list as it is now and as it would be, each in one line of words (``successor_lines_of``): what
-the owner reads is what will be done.
+guest's stay in days, or that it has no end (``describe_household_change``). Handing the owner's
+role over says who gets it and that the one who asks becomes an adult. A change of the list of
+successors (``successors.set``) is one plain sentence, and the card of a request that still waits
+also shows the list as it is now and as it would be, each in one line of words
+(``successor_lines_of``): what the owner reads is what will be done.
 
 The keys are told whole, too (0.6.0): a share of a key (``key.share``) says which key (its kind,
 who gave it and its id, from the facts of its described action), with whom, and whether they may
@@ -651,11 +651,19 @@ def describe_house_rules(arguments: JsonObject, texts: Texts) -> str:
     return " ".join([texts("action.describe.keys.house"), *changes])
 
 
-def _stay(arguments: JsonObject, texts: Texts) -> str:
-    """A guest's stay in words: the call's ``guest_days``, or the default."""
-    days: object = arguments.get("guest_days")
+def _stay(arguments: JsonObject, texts: Texts, facts: Mapping[str, FactValue] | None) -> str | None:
+    """A guest's stay in words, ``None`` when it has no end: the described action's ``days`` (the
+    stay it gives, as the tool resolved it), else the call's (``no_end``, ``guest_days``, or the
+    default of an invitation, which makes an account)."""
+    days: object
+    if facts is not None and "days" in facts:
+        days = facts["days"]
+    elif arguments.get("no_end") is True:
+        days = None
+    else:
+        days = arguments.get("guest_days", GUEST_DAYS_DEFAULT)
     if days is None:
-        days = GUEST_DAYS_DEFAULT
+        return None
     if isinstance(days, bool) or not isinstance(days, int):
         raise ValueError("guest_days is a whole number")
     return _duration(days * 24, texts)
@@ -668,9 +676,9 @@ def describe_household_change(
     facts: Mapping[str, FactValue] | None = None,
 ) -> str:
     """What a change of the household does, in one plain sentence: who, and the role in words
-    (``household.role.<role>``), or for a guest (invited, or made one) how long they may stay; a
-    guest who stays a guest (``facts``, the described action's: ``current_role``) is given a new
-    stay, from now (spec 5.5).
+    (``household.role.<role>``), or for a guest (invited, or made one) how long they may stay, or
+    that their stay has no end (``.no_end``); a guest who stays a guest (``facts``, the described
+    action's: ``current_role``) is given a new stay, from now (spec 5.5).
 
     ``ValueError`` when an argument is not of its kind, ``KeyError`` when the catalog lacks a
     word for it: the caller then says the general sentence."""
@@ -679,11 +687,37 @@ def describe_household_change(
         name = _shown(_text_of(arguments, "display_name" if key.endswith("invite") else "person"))
         role = _text_of(arguments, "role")
         stays = action_type == "household.change_role" and role == "guest"
+        # The stay of a role given or of a return depends on the record (no end without an
+        # account): without the described facts nor days in the call, it is not said.
+        unknown = (
+            action_type != "household.invite"
+            and (facts is None or "days" not in facts)
+            and arguments.get("guest_days") is None
+            and arguments.get("no_end") is not True
+        )
+        duration = _stay(arguments, texts, facts) if role == "guest" and not unknown else None
+        same_role = facts is None or facts.get("current_role") in (None, role)
+        if action_type == "household.change_role" and role != "guest" and same_role:
+            # The owner's answers of 2026-11-27: an end of access with the role unchanged, and
+            # someone passing by who now lives here, each said in its own words.
+            days: object = arguments.get("guest_days")
+            if days is not None:
+                if isinstance(days, bool) or not isinstance(days, int):
+                    raise ValueError("guest_days is a whole number")
+                return texts(f"{key}.access_ends", name=name, duration=_duration(days * 24, texts))
+            if arguments.get("lives_here") is True:
+                return texts(f"{key}.lives_here", name=name)
         if stays and facts is not None and facts.get("current_role") == "guest":
-            return texts(f"{key}.stay", name=name, duration=_stay(arguments, texts))
-        if role == "guest":
-            # A guest's stay, whether invited, made a guest or brought back (R78).
-            sentence = texts(f"{key}.guest", name=name, duration=_stay(arguments, texts))
+            if duration is None:
+                return texts(f"{key}.stay.no_end", name=name)
+            return texts(f"{key}.stay", name=name, duration=duration)
+        if role == "guest" and not unknown:
+            # A guest's stay, whether invited, made a guest or brought back (R78), or none.
+            sentence = (
+                texts(f"{key}.guest.no_end", name=name)
+                if duration is None
+                else texts(f"{key}.guest", name=name, duration=duration)
+            )
         else:
             sentence = texts(key, name=name, role=texts(f"household.role.{role}"))
         told: object = arguments.get("uses_my_key")
@@ -835,6 +869,9 @@ def _fact_words(
         return texts("rights.example.yes" if value else "rights.example.no")
     if name == "days" and isinstance(value, int):
         return _duration(value * 24, texts)
+    if name == "state":
+        # Where a record stands, in words (``KeyError`` for a word the catalog lacks).
+        return texts(f"rights.example.state.{value}")
     return _shown(str(value))
 
 

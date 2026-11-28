@@ -18,6 +18,7 @@ import httpx
 from chat_support import Card
 from domo_common.gatekeeper_api import ProviderRoute, SecretRequestCreate
 from domo_common.i18n import t
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.llm.models import Provider, ProviderModel, ProviderUser
 from domo_core.llm.picker import ModelPicker
@@ -26,7 +27,6 @@ from domo_core.llm.real_spend import ANTHROPIC_VERSION, correct_factor, real_spe
 from domo_core.llm.refresh import CATALOG_ROUTE, RATES_ROUTE
 from domo_core.llm.spending_models import ExchangeRate, ModelCall, RealSpend
 from domo_core.policy.catalog import DEFAULT_POLICY, needs_the_judge
-from domo_core.policy.roles import Actor, as_role
 from domo_core.tools.context import ToolContext
 from domo_core.tools.registry import TOOLS, InvalidArguments
 from fakes import LISTED_MODELS, FakeChatModel, FakeModelLister, fake_factory
@@ -44,7 +44,7 @@ def context(person: Person, session_factory, clock, *, gatekeeper: Any = None) -
     """The context of a call ``person`` makes outside a turn."""
     return ToolContext(
         session_factory=session_factory,
-        actor=Actor(person.id, as_role(person.role)),
+        actor=actor_of(person),
         person=person,
         conversation_id=uuid.uuid4(),
         origin="https://domo.example.com/",

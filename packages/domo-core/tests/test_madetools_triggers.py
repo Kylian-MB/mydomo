@@ -308,7 +308,7 @@ async def test_a_house_trigger_launches_after_who_set_it_left(
         await session.execute(
             update(Person)
             .where(Person.id == adult_chat.person.id)
-            .values(disabled_at=server.clock())
+            .values(disabled_at=server.clock(), state="gone")
         )
         await session.commit()
     server.clock.advance(LATER)
@@ -367,7 +367,11 @@ async def test_a_trigger_for_dana_waits_while_she_is_away_and_goes_on_when_back(
 
 async def set_disabled(server: ChatServer, person: Person, at: Any) -> None:
     async with server.session_factory() as session:
-        await session.execute(update(Person).where(Person.id == person.id).values(disabled_at=at))
+        await session.execute(
+            update(Person)
+            .where(Person.id == person.id)
+            .values(disabled_at=at, state="has_access" if at is None else "gone")
+        )
         await session.commit()
 
 

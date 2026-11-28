@@ -31,7 +31,9 @@ from domo_core.household.models import Invitation
 from domo_core.llm.types import ChatMessage, JsonObject, ToolCall, ToolDefinition
 from domo_core.memory.service import keep
 from domo_core.policy.actions import DescribedAction
+from domo_core.policy.catalog import DEFAULT_POLICY
 from domo_core.policy.models import PolicyRight
+from domo_core.policy.rights import NO_RIGHTS
 from domo_core.policy.roles import Actor
 from domo_core.texts.view import CatalogTexts
 from domo_core.tools.context import ToolContext, ToolOutcome
@@ -180,6 +182,7 @@ def alex_may_invite(alex: uuid.UUID) -> dict[str, Any]:
                     "facts": {
                         "role": "guest",
                         "days": 2,
+                        "no_end": False,
                         "display_name": "Dana",
                         "owner_first": False,
                     },
@@ -615,7 +618,7 @@ async def test_what_changes_while_the_judge_answers_is_seen_before_the_action_ru
                     await writer.execute(
                         update(Person)
                         .where(Person.id == adult_chat.person.id)
-                        .values(disabled_at=adult_chat.clock())
+                        .values(disabled_at=adult_chat.clock(), state="gone")
                     )
                     await writer.commit()
             case _:
@@ -771,11 +774,12 @@ async def test_the_owners_never_ask_me_is_a_change_of_rights_like_any_other_and_
                         "facts": {
                             "role": "guest",
                             "days": 2,
+                            "no_end": False,
                             "display_name": "Dana",
                             "owner_first": False,
                         },
-                        # (An adult invites by default since 0.9.1: the catalog lets it through.)
-                        "expected": "domo_judges",
+                        # (Inviting is in no role, ruling 14: the catalog refuses it again.)
+                        "expected": "refused",
                     }
                 ],
             }
@@ -810,14 +814,16 @@ async def test_the_owners_cards_speak_to_him(owner_chat, adult_chat, grant, conf
 @pytest.mark.parametrize("lang", ["en", "fr"])
 def test_each_reader_of_a_card_reads_what_is_asked_of_them(lang):  # final review M6, spec 5.7.3
     def reader(role: str) -> Any:
-        return Person(id=uuid.uuid4(), display_name=role, role=role)
+        return Person(id=uuid.uuid4(), display_name=role, role=role, standing="lives_here")
 
     sam, alex, owner = reader("child"), reader("adult"), reader("owner")
     to_an_adult = t("confirmation.asked.to.adult", lang)
 
     def asked(viewer: Any, ask: str, by: str, why: str | None = None, kind: str = "adult") -> Any:
         c = Confirmation(requester_id=sam.id, approver_kind=kind, ask=ask, asked_by=by, ask_why=why)
-        return confirmation_routes._asked(c, viewer, CatalogTexts(lang))
+        return confirmation_routes._asked(
+            c, viewer, CatalogTexts(lang), rights=NO_RIGHTS, policy=DEFAULT_POLICY
+        )
 
     # Sam's request waits for an adult: he reads whose yes Domo asks, never "your yes".
     for ask in ("yes", "explicit_yes", "proof"):
@@ -1286,7 +1292,9 @@ async def test_a_judge_limit_lets_through_what_the_judge_knows(
 ):
     # The owner's limit leaves it to the judge (spec part 13): it knows, it is done, and the
     # owner is not bothered.
-    await grant("household.invite", role="adult", limit='"judge"', judge_question=FRIEND)
+    await grant(
+        "household.invite", role="adult", access="allow", limit='"judge"', judge_question=FRIEND
+    )
     reply = await adult_chat.say_with_tool(
         "household_invite", INVITE_ROBIN, judge="do: Robin is Alex's friend"
     )
@@ -1307,7 +1315,9 @@ async def test_a_judge_limit_the_judge_doubts_goes_to_the_owner(
     adult_chat, owner_member, grant, count_invitations, confirmation_status, verdict
 ):
     # A doubt, or a judge that does not answer, sends it to the owner, with the question.
-    await grant("household.invite", role="adult", limit='"judge"', judge_question=FRIEND)
+    await grant(
+        "household.invite", role="adult", access="allow", limit='"judge"', judge_question=FRIEND
+    )
     reply = await adult_chat.say_with_tool("household_invite", INVITE_ROBIN, judge=verdict)
     assert reply.actions == [{"tool": "household_invite", "status": "waiting"}]
     assert reply.model_results[-1]["by"] == "the owner"
@@ -1319,7 +1329,13 @@ async def test_an_ask_owner_limit_always_goes_to_the_owner(
     adult_chat, owner_member, grant, count_invitations
 ):
     # "ask_owner" is the owner's own word (ruling P4): whatever the judge says, he is asked.
-    await grant("household.invite", role="adult", limit='"ask_owner"', judge_question=FRIEND)
+    await grant(
+        "household.invite",
+        role="adult",
+        access="allow",
+        limit='"ask_owner"',
+        judge_question=FRIEND,
+    )
     reply = await adult_chat.say_with_tool("household_invite", INVITE_ROBIN, judge="do")
     assert reply.actions == [{"tool": "household_invite", "status": "waiting"}]
     assert reply.model_results[-1]["by"] == "the owner"
@@ -1331,7 +1347,9 @@ async def test_a_chain_step_under_a_judge_limit_goes_to_the_owner(
     adult_chat, owner_member, grant, count_invitations
 ):
     # Ruling P4: only a single action is judged first; a chain's step asks as it says.
-    await grant("household.invite", role="adult", limit='"judge"', judge_question=FRIEND)
+    await grant(
+        "household.invite", role="adult", access="allow", limit='"judge"', judge_question=FRIEND
+    )
     reply = await adult_chat.say_with_tool(
         TOOL, chain(("household_invite", INVITE_ROBIN)), judge="do"
     )

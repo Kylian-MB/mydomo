@@ -16,8 +16,9 @@ a chain that stopped (``tools.chain.ChainContinue``).
    the one who asked made it or it already waited when the yes was given (``_open_invitation``).
    Two waits of a chain never mix their invitations: each has its name. One that ended
    (cancelled, or past its date) gives way only to an invitation of that name that waits and that
-   the one who asked made (a new link of theirs): never to one someone else made since, whose
-   link the one who asked does not hold. Accepted: the person arrived, and the step goes on.
+   the one who asked made (a new link of theirs) or the assistant made in its place, for the same
+   person and role (he invited again): never to one someone else made since, whose link the one
+   who asked does not hold. Accepted: the person arrived, and the step goes on.
    Still open: the chain pauses there (``_pause``: the request is ``waiting_arrival``, waiting
    for that invitation, ``chain.paused`` is audited), and the upkeep resumes it once the
    invitation is accepted (``confirmations.arrivals``). Ended, or none: the chain stops there
@@ -161,7 +162,7 @@ from domo_core.policy.barrier import (
 )
 from domo_core.policy.catalog import is_made, warned_since
 from domo_core.policy.decision import ChainBasis, decide_in_chain, decide_now, judged_actor
-from domo_core.policy.rights import Approver
+from domo_core.policy.rights import Approver, load_rights
 from domo_core.policy.roles import Actor
 from domo_core.prompts import ChainReport, JustDecided
 from domo_core.text import name_key
@@ -211,7 +212,8 @@ CHECK_FAILED: Final = "check_failed"
 NOT_ARRIVED: Final = "not_arrived"
 # The reasons of a step that stopped the chain and is known not to have acted (spec 4.4): it never
 # ran, refused by the barrier (``not_allowed``, ``untrusted_identity``, ``limit``,
-# ``limit_error``), no longer what was asked for (``no_longer_possible``), with nobody's yes
+# ``limit_error``, ``owner_directive``), no longer what was asked for (``no_longer_possible``),
+# with nobody's yes
 # (``needs_confirmation``), waiting for an arrival that did not come (``not_arrived``), or stopped
 # by a check before it (``CHECK_FAILED``); or its tool rejected its arguments (the codes of
 # ``InvalidArguments``). Any other reason (``failed``: its tool failed; ``timeout``: it took too
@@ -222,6 +224,7 @@ KNOWN_NOT_DONE: Final = frozenset(
         "untrusted_identity",
         "limit",
         "limit_error",
+        "owner_directive",
         "no_longer_possible",
         "needs_confirmation",
         NOT_ARRIVED,
@@ -610,7 +613,7 @@ class _Runner:
                 if (
                     self.decider is None
                     or not self.said_yes
-                    or not covers(self.given, decision.approver, self.decider, self.ctx.person.id)
+                    or not await self._covered(self.decider, decision.approver)
                 ):
                     # No yes covers the step (nobody said one to a chain the judge let through):
                     # its rest waits for the approver's yes (Ruling R27, JDG-9).
@@ -662,7 +665,36 @@ class _Runner:
             case "waiting" if invitation_id is not None:
                 return await self._pause(position, invitation_id, name)
             case _:
-                return await self._stop(position, step, NOT_ARRIVED, card=not_arrived_card(name))
+                return await self._stop(
+                    position,
+                    step,
+                    NOT_ARRIVED,
+                    card=not_arrived_card(name),
+                    more=await self._invited_again(name),
+                )
+
+    async def _invited_again(self, name: str) -> JsonObject | None:
+        """What the assistant is told when the invitation a step waited for ended and another one
+        of the same name waits now that the chain does not take by itself (someone new invited
+        again by name: the code cannot know it is the same person): that invitation, its name,
+        role and who made it, for him to judge and continue the chain on it himself
+        (``chain_continue`` with ``invitation``), or ask. ``None`` when there is none."""
+        now = self.ctx.clock()
+        try:
+            async with self.ctx.session_factory() as session:
+                found = await resolve_invitation(session, name, now=now)
+        except Exception:
+            return None
+        if found.kind == "return":
+            return None
+        return {
+            "invited_again": {
+                "invitation": str(found.id),
+                "name": found.display_name,
+                "role": found.role,
+                "made_by": "the assistant" if found.created_by is None else "a person of the house",
+            }
+        }
 
     async def _arrival(
         self, name: str
@@ -686,10 +718,16 @@ class _Runner:
                     if invitation is not None and invitation.accepted_at is not None:
                         return "arrived", invitation.id
                     if invitation is None or not is_open(invitation, now):
-                        # It ended: a new link of the one who asked for that name, if one waits;
-                        # never one someone else made, whose link they do not hold.
+                        # It ended: a new link of the one who asked, or of the assistant, for that
+                        # name, if one waits; never one someone else made, whose link they do not
+                        # hold.
                         invitation = await _open_invitation(
-                            session, c, name, now, made_by_the_requester_only=True
+                            session,
+                            c,
+                            name,
+                            now,
+                            made_by_the_requester_only=True,
+                            replaces=invitation,
                         )
                         if invitation is None:
                             return "ended", None
@@ -735,6 +773,15 @@ class _Runner:
                 if invitation is not None and name_key(invitation.display_name) == key:
                     return invitation
         return await _open_invitation(session, c, name, now, made_by_the_requester_only=False)
+
+    async def _covered(self, decider: Person, needed: Approver) -> bool:
+        """Whether the yes ``decider`` gave to the chain covers a step that needs the agreement
+        of ``needed`` (``store.covers``), under the rights in force now."""
+        async with self.ctx.session_factory() as session:
+            rights = await load_rights(session)
+        return covers(
+            self.given, needed, decider, self.ctx.person.id, rights=rights, policy=self.ctx.policy
+        )
 
     async def _decided(
         self, actor_now: Actor, action: DescribedAction, basis: ChainBasis | None
@@ -843,15 +890,18 @@ class _Runner:
         limit: str | None = None,
         record: ActionRecord | None = None,
         card: JsonObject | None = None,
+        more: JsonObject | None = None,
     ) -> ChainRun:
         """Stop the chain at ``position`` (see the module docstring), in one transaction; the
-        step's card is ``card`` when it is given (an arrival that did not come names whom)."""
+        step's card is ``card`` when it is given (an arrival that did not come names whom), and
+        what the assistant is told of it holds ``more`` when it is given."""
+        told = _refused_result(reason, limit) if record is None else record.model_result
         failed = StepDone(
             position,
             step.action_type,
             "failed",
             reason,
-            _refused_result(reason, limit) if record is None else record.model_result,
+            told if more is None else {**told, **more},
         )
         left = self._left_from(position + 1)
         now = self.ctx.clock()
@@ -1067,22 +1117,52 @@ async def _open_invitation(
     now: datetime,
     *,
     made_by_the_requester_only: bool,
+    replaces: Invitation | None = None,
 ) -> Invitation | None:
     """The one invitation of ``name`` that waits in the household at ``now``
     (``resolve_invitation``), if the yes given to the chain ``c`` covers it: the one who asked made
-    it (they hold its link), or, unless ``made_by_the_requester_only``, it already waited when the
-    yes was given (the yes was given to a chain that waits for it). One someone else made since is
-    never taken: its link is theirs, and whoever comes with it would have the rest of the chain run
-    under a yes that never covered it. ``None`` otherwise."""
+    it (they hold its link), the assistant made it in place of ``replaces``, the invitation of the
+    wait that ended (a link broke and he invited again the same person with the same role: the
+    chain goes on under its yes, the owner's answer of 2026-11-27, "Domo juge et continue"), or,
+    unless
+    ``made_by_the_requester_only``, it already waited when the yes was given (the yes was given to
+    a chain that waits for it). One someone else made since is never taken: its link is theirs,
+    and whoever comes with it would have the rest of the chain run under a yes that never covered
+    it. ``None`` otherwise."""
     try:
         invitation = await resolve_invitation(session, name, now=now)
     except InvalidArguments:
         return None
-    if invitation.created_by == c.requester_id:
+    if invitation.created_by == c.requester_id or _made_again(invitation, replaces, c):
         return invitation
-    if made_by_the_requester_only or c.decided_at is None or invitation.created_at > c.decided_at:
+    if made_by_the_requester_only or _made_after_the_yes(invitation, c):
         return None
     return invitation
+
+
+def _made_again(invitation: Invitation, replaces: Invitation | None, c: Confirmation) -> bool:
+    """Whether ``invitation`` was made again in place of ``replaces``, the invitation of a wait
+    that ended, by the assistant or by a person who held the right to invite (the owner's answer
+    of 2026-11-27: the assistant judges it is the same request and goes on): the same person and
+    the same role. The same person is the same record; someone new under the same name only when
+    the new link is for the one who asked the chain (``link_for_id``): an invitation made for a
+    namesake never takes the place of theirs."""
+    if replaces is None or invitation.id == replaces.id:
+        return False
+    if not invitation.by_domo and invitation.created_by is None:
+        return False
+    same = invitation.person_id == replaces.person_id and invitation.role == replaces.role
+    known = replaces.person_id is not None or invitation.link_for_id == c.requester_id
+    return same and known
+
+
+def _made_after_the_yes(invitation: Invitation, c: Confirmation) -> bool:
+    """Whether ``invitation`` was made after the yes given to the chain ``c``: such an
+    invitation, made by someone other than the one who asked (the assistant's own included, but
+    the one made in place of an invitation that ended: ``_made_again``), is never taken under
+    that yes; the chain stops at its wait, and is asked again (the safe side). Before any
+    yes, nothing is covered."""
+    return c.decided_at is None or invitation.created_at > c.decided_at
 
 
 async def run_steps(

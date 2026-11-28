@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
+from domo_core.accounts.models import Account, Person
 from domo_core.memory.service import SecretRefused
 from domo_core.plans.models import Plan
 from domo_core.plans.service import (
@@ -22,11 +23,34 @@ from domo_core.plans.service import (
     waiting_of,
     waiting_plan_of,
 )
+from sqlalchemy import delete
 from sqlalchemy.exc import IntegrityError
 
 NOW = datetime(2027, 1, 4, 9, 0, tzinfo=UTC)  # a Monday, 10:00 in Brussels
 BRUSSELS = ZoneInfo("Europe/Brussels")
 EVERY_DAY_AT_8 = "FREQ=DAILY;BYHOUR=8;BYMINUTE=0"
+
+
+@pytest.fixture
+def add_person(add_person, add_account):
+    """A plan is kept for someone who can answer: these people have an account."""
+
+    async def _add_person(display_name: str = "A", role: str = "owner", **columns):
+        person = await add_person(display_name, role, **columns)
+        await add_account(person, display_name.lower())
+        return person
+
+    return _add_person
+
+
+async def test_a_plan_is_kept_only_for_someone_who_can_answer(session, add_person):
+    tom = await add_person("Tom", "guest")
+    nobody = Person(display_name="Sam", role="guest")
+    session.add(nobody)
+    await session.flush()
+    await make(session, person_id=tom.id, why="x", now=NOW, zone=BRUSSELS, due_at=at(5, 9))
+    with pytest.raises(ValueError, match="who can answer"):
+        await make(session, person_id=nobody.id, why="x", now=NOW, zone=BRUSSELS, due_at=at(5, 9))
 
 
 def at(day: int, hour: int, minute: int = 0) -> datetime:
@@ -261,6 +285,7 @@ async def test_a_change_keeps_what_it_is_not_given(session, add_person):
 async def test_a_plan_goes_with_its_person(session, add_person):
     alex = await add_person("Alex", "adult")
     await make(session, person_id=alex.id, why="Remind.", now=NOW, zone=BRUSSELS, on_return=True)
+    await session.execute(delete(Account).where(Account.person_id == alex.id))
     await session.delete(alex)
     await session.flush()
     assert await due_on_return(session, alex.id, NOW) == []
@@ -290,6 +315,7 @@ async def test_the_plans_of_someone_who_left_are_never_due_and_stay(session, add
     assert {p.person_id for p in await due(session, later)} == {alex.id, dana.id}
     # Alex is removed, Dana's stay ends.
     alex.disabled_at = NOW
+    alex.state = "gone"
     dana.expires_at = at(5, 8)
     await session.flush()
     assert await due(session, later) == []
@@ -300,3 +326,16 @@ async def test_the_plans_of_someone_who_left_are_never_due_and_stay(session, add
     # Nothing is deleted: they still wait.
     for kept in plans.values():
         assert all(plan.state == "waiting" for plan in kept)
+
+
+async def test_the_plan_of_someone_without_an_account_is_never_due(session, add_person):
+    alex = await add_person("Alex", "adult")
+    dana = await add_person("Dana", "adult")
+    for person in (alex, dana):
+        await make(
+            session, person_id=person.id, why="Remind.", now=NOW, zone=BRUSSELS, due_at=at(4, 18)
+        )
+    later = at(5, 9)
+    assert {p.person_id for p in await due(session, later)} == {alex.id, dana.id}
+    await session.execute(delete(Account).where(Account.person_id == dana.id))
+    assert {p.person_id for p in await due(session, later)} == {alex.id}

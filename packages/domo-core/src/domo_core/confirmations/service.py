@@ -168,6 +168,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import is_active
 from domo_core.audit.log import append_audit
@@ -235,6 +236,7 @@ from domo_core.confirmations.store import (
 from domo_core.conversation.execution import (
     LIMIT_ERROR_DETAIL,
     NOT_ALLOWED_DETAIL,
+    OWNER_DIRECTIVE_DETAIL,
     consult_the_judge,
     execute_allowed,
     failed_record,
@@ -244,7 +246,7 @@ from domo_core.conversation.execution import (
 )
 from domo_core.conversation.speaker import Speaker
 from domo_core.db import SessionFactory
-from domo_core.household.service import resolve_person, whole_names
+from domo_core.household.service import names_among, resolve_person, whole_names
 from domo_core.identity.clues import keep_proof_clue
 from domo_core.learning.models import Kind
 from domo_core.learning.record import kept_reason, note_went_wrong, reason_code
@@ -271,12 +273,12 @@ from domo_core.policy.catalog import (
     on_his_own_tables,
 )
 from domo_core.policy.decision import ChainBasis, decide_now
-from domo_core.policy.rights import Approver, load_rights
+from domo_core.policy.open_catalog import load_policy
+from domo_core.policy.rights import Approver, RightsTable, load_rights
 from domo_core.policy.roles import (
     DOMO_LABEL,
     DOMO_SUBJECT_ID,
     Actor,
-    as_role,
     domo_actor,
 )
 from domo_core.policy.settings import PolicySettings, load_policy_settings
@@ -400,7 +402,9 @@ _LINK: Final = re.compile(r"https?://|www\.", re.IGNORECASE)
 # can no longer be carried out whoever approves it (the requester left, or lost the right, or the
 # call no longer describes the same action), or a limit refused it now (``limit``), or a limit
 # could not be checked (``limit_error``).
-RefusalReason = Literal["not_allowed", "no_longer_possible", "limit", "limit_error"]
+RefusalReason = Literal[
+    "not_allowed", "no_longer_possible", "limit", "limit_error", "owner_directive"
+]
 
 # The ways of saying yes that do not give an explicit yes (the button, a firm yes in words,
 # ``explicit_phrase``: the firm yes the code knows or the one the classifier read, and a proof
@@ -462,14 +466,24 @@ _NOBODY_TO_ASK: Final = (
 _NOTE_LEAVE: Final = "note.leave"
 
 
-def may_decide(c: Confirmation, person: Person, now: datetime) -> bool:
-    """Whether ``person`` may answer the request: the requester for a ``self`` request; an adult
-    or the owner other than the requester for an ``adult`` one; the owner, not the requester, for
-    an ``owner`` one; when a person is concerned (``concerned_id``), that person alone, whatever
-    the kind. Only an active person may."""
+def may_decide(
+    c: Confirmation,
+    person: Person,
+    now: datetime,
+    *,
+    rights: RightsTable,
+    policy: PolicyTables,
+) -> bool:
+    """Whether ``person`` may answer the request, under the ``rights`` in force and the catalog
+    ``policy``: the requester for a ``self`` request; someone who may agree for the requester
+    (``who_agrees``) for an ``adult`` one; the owner, not the requester, for an ``owner`` one;
+    when a person is concerned (``concerned_id``), that person alone, whatever the kind. Only an
+    active person may."""
     if c.concerned_id is not None:
         return is_active(person, now) and person.id == c.concerned_id
-    return is_active(person, now) and approves(c.approver_kind, person, requester_of(c))
+    return is_active(person, now) and approves(
+        c.approver_kind, person, requester_of(c), rights=rights, policy=policy
+    )
 
 
 def _waits_for_someone_else(
@@ -493,10 +507,17 @@ def _use_grant(ctx: ToolContext, confirmation_id: uuid.UUID) -> None:
         ctx.change_grant = None
 
 
-def may_see(c: Confirmation, person: Person, now: datetime) -> bool:
+def may_see(
+    c: Confirmation,
+    person: Person,
+    now: datetime,
+    *,
+    rights: RightsTable,
+    policy: PolicyTables,
+) -> bool:
     """Whether ``person`` may see the request's card: its requester, or someone who may answer
-    it. Anyone else is told nothing about it."""
-    return person.id == c.requester_id or may_decide(c, person, now)
+    it (``may_decide``, under ``rights`` and ``policy``). Anyone else is told nothing about it."""
+    return person.id == c.requester_id or may_decide(c, person, now, rights=rights, policy=policy)
 
 
 def _refused_yes(
@@ -515,6 +536,8 @@ def _refused_yes(
         model_result["detail"] = LIMIT_ERROR_DETAIL
     elif reason == "not_allowed":
         model_result["detail"] = NOT_ALLOWED_DETAIL
+    elif reason == "owner_directive":
+        model_result["detail"] = OWNER_DIRECTIVE_DETAIL
     return ActionRecord(
         tool_name=c.tool_name,
         action_type=action_type_of(c),
@@ -807,16 +830,17 @@ async def open_for_a_proof(
     may answer it (``may_decide``), else ``not_yours``. So a second proof of a request already
     answered (from another tab) is told so before any means is read. Returns the request and the
     person as the database holds them; nothing else is written."""
+    rights, policy = await load_rights(session), await load_policy(session)
     opened = await _open_pending(
         session,
         confirmation_id,
         person_id,
         now,
-        allowed=lambda c, person: may_see(c, person, now),
+        allowed=lambda c, person: may_see(c, person, now, rights=rights, policy=policy),
     )
     if not isinstance(opened, _Open):
         return "not_yours" if opened == "not_allowed" else opened
-    if not may_decide(opened.c, opened.person, now):
+    if not may_decide(opened.c, opened.person, now, rights=rights, policy=policy):
         return "not_yours"
     return opened.c, opened.person
 
@@ -896,6 +920,8 @@ def _why_refused(decision: Refuse, decider: Person, requester_id: uuid.UUID) -> 
             return "limit"
         case "limit_error":
             return "limit_error"
+        case "owner_directive":
+            return "owner_directive"
         case _ if decider.id != requester_id:
             return "no_longer_possible"
         case _:
@@ -970,6 +996,8 @@ def _the_rights_ask_again(
     requester_id: uuid.UUID,
     *,
     for_others: bool,
+    rights: RightsTable,
+    policy: PolicyTables,
 ) -> bool:
     """Whether a change of the single request ``c`` by ``person`` is a new request whatever the
     judge would say, because the rights decide whose yes it needs: the one who asked changed their
@@ -980,7 +1008,7 @@ def _the_rights_ask_again(
     if for_others:
         return True
     if isinstance(decision, NeedsApproval):
-        return not approves(decision.approver, person, requester_id)
+        return not approves(decision.approver, person, requester_id, rights=rights, policy=policy)
     return _the_requesters_own_yes(asked_of(c), person, requester_id)
 
 
@@ -1030,28 +1058,39 @@ async def _described_again(
 
 
 def _yes_of_someone_else(
-    decision: Decision, decider: Person, requester_id: uuid.UUID
+    decision: Decision,
+    decider: Person,
+    requester_id: uuid.UUID,
+    *,
+    rights: RightsTable,
+    policy: PolicyTables,
 ) -> NeedsApproval | None:
     """The barrier's decision, replayed for the requester, when it asks for an agreement the
     decider cannot give (the requester was made a child, say, a right gave the yes to the owner):
     the request then waits for that agreement (Ruling R27). ``None`` when the decider's yes is
     the one it asks for, or it asks for none."""
     if isinstance(decision, NeedsApproval) and not approves(
-        decision.approver, decider, requester_id
+        decision.approver, decider, requester_id, rights=rights, policy=policy
     ):
         return decision
     return None
 
 
 def _yes_not_covering(
-    decision: Decision, c: Confirmation, decider: Person, requester_id: uuid.UUID
+    decision: Decision,
+    c: Confirmation,
+    decider: Person,
+    requester_id: uuid.UUID,
+    *,
+    rights: RightsTable,
+    policy: PolicyTables,
 ) -> NeedsApproval | None:
     """For a chain: the replay of its own action, when it asks for a more demanding agreement
     than the one ``decider`` gave to it as an approver of ``c``'s kind (``store.covers``); the
     chain then waits for that agreement (Ruling R27). ``None`` when the decider's yes covers it,
     or it asks for none."""
     if isinstance(decision, NeedsApproval) and not covers(
-        c.approver_kind, decision.approver, decider, requester_id
+        c.approver_kind, decision.approver, decider, requester_id, rights=rights, policy=policy
     ):
         return decision
     return None
@@ -1242,7 +1281,7 @@ def requester_context(base: ToolContext) -> Callable[[Person, uuid.UUID], ToolCo
     def build(requester: Person, conversation_id: uuid.UUID) -> ToolContext:
         return replace(
             base,
-            actor=Actor(person_id=requester.id, role=as_role(requester.role)),
+            actor=actor_of(requester),
             person=requester,
             conversation_id=conversation_id,
             due_plans=(),
@@ -1273,8 +1312,9 @@ async def idea_decided_with_the_speaker(
     one for the speaker, a right merely not given counted as given (``barrier.given_for_an_idea``),
     the stricter standing (``barrier.stricter``): what the owner wrote for them or their role, and
     an adult's agreement for a child, still hold."""
-    theirs = given_for_an_idea(policy, speaker.role, action.action_type)
-    person = await decide_now(session, speaker, action, theirs, now)
+    theirs = given_for_an_idea(policy, speaker.role, action.action_type, child=speaker.child)
+    # His side (`domo`) read the owner's directives, with his exception: not again here.
+    person = await decide_now(session, speaker, action, theirs, now, directives_read=True)
     return stricter(person, domo)
 
 
@@ -1340,12 +1380,13 @@ async def decide_confirmation(
             )
             await clues.commit()
     async with session_factory() as session:
+        in_force = await load_rights(session)
         opened = await _open_pending(
             session,
             confirmation_id,
             decider.id,
             now,
-            allowed=lambda c, person: may_decide(c, person, now),
+            allowed=lambda c, person: may_decide(c, person, now, rights=in_force, policy=policy),
         )
         if not isinstance(opened, _Open):
             return ("not_yours" if opened == "not_allowed" else opened), None
@@ -1415,7 +1456,7 @@ async def decide_confirmation(
         if made_in_a_turn(c):
             actor = domo_actor()
             ctx = ctx_factory(requester, made_in)
-            idea_speaker = Actor(requester.id, as_role(requester.role))
+            idea_speaker = actor_of(requester)
         elif replayed_on_his_own(c):
             actor = domo_actor()
             policy = on_his_own_tables(policy)
@@ -1465,9 +1506,9 @@ async def decide_confirmation(
             reason = _why_refused(decision, current, asker)
             return "refused", _refused_yes(c, reason, limit=_refusal_of(decision))
         need = (
-            _yes_not_covering(decision, c, current, asker)
+            _yes_not_covering(decision, c, current, asker, rights=in_force, policy=policy)
             if chain
-            else _yes_of_someone_else(decision, current, asker)
+            else _yes_of_someone_else(decision, current, asker, rights=in_force, policy=policy)
         )
         if need is not None:
             if need.approver == c.approver_kind:
@@ -1626,7 +1667,7 @@ async def _undoing_noted(
     await note_undoing(
         session,
         action_type=action.action_type,
-        keys=keys_of(action, record.model_result),
+        keys=keys_of(action, record.model_result, requester_of(c)),
         by=requester_of(c),
         now=now,
         reason=None,
@@ -2021,6 +2062,7 @@ async def amend_confirmation(
     if not for_others and ctx.change_grant != confirmation_id:
         raise InvalidArguments("invalid", _NO_GRANT)
     async with session_factory() as session:
+        in_force = await load_rights(session)
         opened = await _open_pending(
             session,
             confirmation_id,
@@ -2032,7 +2074,7 @@ async def amend_confirmation(
             allowed=lambda c, person: (
                 _waits_for_someone_else(c, person, ctx.conversation_id, now)
                 if for_others
-                else may_decide(c, person, now)
+                else may_decide(c, person, now, rights=in_force, policy=ctx.policy)
                 and (c.approver_kind != "self" or c.conversation_id == ctx.conversation_id)
             ),
         )
@@ -2100,7 +2142,12 @@ async def amend_confirmation(
         if isinstance(tool, NamesPeople):
             # The people it names by their whole name, as a call on its own (spec 6.7).
             arguments = await whole_names(
-                session, arguments, tool.person_arguments, now=now, speaker=person.id
+                session,
+                arguments,
+                tool.person_arguments,
+                now=now,
+                speaker=person.id,
+                among=names_among(tool),
             )
             if by_approver:
                 # An approver's words name people as the approver does: a name that means nobody
@@ -2109,7 +2156,9 @@ async def amend_confirmation(
                 for argument in tool.person_arguments:
                     value = arguments.get(argument)
                     if isinstance(value, str):
-                        await resolve_person(session, value, now=now, speaker=person.id)
+                        await resolve_person(
+                            session, value, now=now, speaker=person.id, among=names_among(tool)
+                        )
         if arguments == dict(c.arguments):
             raise InvalidArguments(
                 "invalid", "the change changes nothing: give the arguments that change"
@@ -2121,7 +2170,7 @@ async def amend_confirmation(
             raise InvalidArguments("invalid", "this request can no longer be changed")
         run_ctx = replace(
             ctx,
-            actor=Actor(person_id=requester.id, role=as_role(requester.role)),
+            actor=actor_of(requester),
             person=requester,
             conversation_id=made_in,
             change_grant=None,
@@ -2169,7 +2218,13 @@ async def amend_confirmation(
         # R27): it is then a new request whatever the judge says, but the judge is consulted on
         # the new version all the same (spec 4.1, 4.4), and what it asks counts.
         by_the_rights = _the_rights_ask_again(
-            decision, c, person, requester.id, for_others=for_others
+            decision,
+            c,
+            person,
+            requester.id,
+            for_others=for_others,
+            rights=in_force,
+            policy=ctx.policy,
         )
         # A request that waited for the person it concerns: whose yes the changed one waits for,
         # and where, is the code's again (invariant ii); the change is a yes only from whoever
@@ -2180,7 +2235,9 @@ async def amend_confirmation(
             else await _placed_again(session, requester.id, action, decision, made_in, now)
         )
         if placed is not None:
-            by_the_rights = not _answers(placed, person, requester.id)
+            by_the_rights = not _answers(
+                placed, person, requester.id, rights=in_force, policy=ctx.policy
+            )
         # The judge judges the changed action again, for the one who asked (F22), with the
         # request's history, told before the change marks it decided (F23).
         says = describe_for_people(action, arguments, REFERENCE)
@@ -2357,9 +2414,10 @@ async def _amend_his_own(
             return False
         if answerer is None:
             return c.conversation_id == ctx.conversation_id
-        return may_decide(c, person, now)
+        return may_decide(c, person, now, rights=in_force, policy=ctx.policy)
 
     async with session_factory() as session:
+        in_force = await load_rights(session)
         opened = await _open_pending(session, confirmation_id, ctx.person.id, now, allowed=allowed)
         if not isinstance(opened, _Open):
             if opened == "not_allowed":
@@ -2388,6 +2446,7 @@ async def _amend_his_own(
                 tool.person_arguments,
                 now=now,
                 speaker=requester.id if answerer is None else answerer.id,
+                among=names_among(tool),
             )
         if arguments == dict(c.arguments):
             raise InvalidArguments(
@@ -2402,7 +2461,7 @@ async def _amend_his_own(
             raise InvalidArguments("invalid", "this request can no longer be changed")
         run_ctx = replace(
             ctx,
-            actor=Actor(person_id=requester.id, role=as_role(requester.role)),
+            actor=actor_of(requester),
             person=requester,
             conversation_id=made_in,
             change_grant=None,
@@ -2493,7 +2552,9 @@ async def _amend_his_own(
             # asks a plain yes, never the change's words.
             asked = Asked("yes", "judge", None)
         # Whether the answerer's yes is the one it needs now (his own yes is nobody's).
-        theirs = answerer is not None and _answers(placed, answerer, requester_of(c))
+        theirs = answerer is not None and _answers(
+            placed, answerer, requester_of(c), rights=in_force, policy=ctx.policy
+        )
         if answerer is None:
             runs = asked is None and isinstance(decision, Allow)
         else:
@@ -2625,7 +2686,9 @@ async def _run_his_change(
         tool=tool,
         action=action,
         arguments=arguments,
-        ctx=run_ctx,
+        # Who it was judged as, for a tool that records who acted (``people.whose``), as for a
+        # request that runs after a yes.
+        ctx=replace(run_ctx, judged_as=actor),
         decider=decider,
         via="change",
         changed=True,
@@ -2875,6 +2938,7 @@ def _presented_by(
     approver: Approver,
     *,
     before: str,
+    rights: RightsTable,
 ) -> tuple[AmendOutcome, uuid.UUID | None, uuid.UUID | None]:
     """For a change that made a new request waiting for the yes of ``approver``, of a request that
     waited for the yes of ``before`` (its ``approver_kind``): the outcome (``asked_again`` while its
@@ -2882,8 +2946,8 @@ def _presented_by(
     for the approver it waited for, an adult or the owner: spec 5.2; ``approver_changed``
     otherwise), and the replies that present it (R74): this turn's to the one who asked when they
     changed it (``message_id``), or to the approver when they did and still are one of its approvers
-    (``shown_to_approver``)."""
-    theirs = approves(approver, person, requester_id)
+    (``shown_to_approver``). ``rights`` are those in force, ``ctx.policy`` the catalog."""
+    theirs = approves(approver, person, requester_id, rights=rights, policy=ctx.policy)
     by_requester = person.id == requester_id
     # The one who asked: their own yes, or that of the approver their request waited for.
     same = theirs or (by_requester and approver == before)
@@ -2951,7 +3015,12 @@ async def _ask_again(
     else:
         approver, question = approver_of(c), c.ask_reason
     outcome, message_id, shown_to_approver = _presented_by(
-        ctx, person, actor.person_id, approver, before=c.approver_kind
+        ctx,
+        person,
+        actor.person_id,
+        approver,
+        before=c.approver_kind,
+        rights=await load_rights(session),
     )
     new = await _changed_request(
         session,
@@ -3029,7 +3098,9 @@ async def _ask_again_placed(
         concerned_id=placed.concerned_id,
     )
     # Shown by this turn's reply where it waits in this very conversation, to whoever answers it.
-    answers = _answers(placed, person, actor.person_id)
+    answers = _answers(
+        placed, person, actor.person_id, rights=await load_rights(session), policy=ctx.policy
+    )
     new.last_shown_message_id = ctx.domo_message_id if here and answers else None
     if not here or not answers or placed.concerned_id is not None:
         new.shown_to_approver_message_id = None
@@ -3066,12 +3137,19 @@ async def _ask_again_placed(
     return outcome, new
 
 
-def _answers(placed: _Placed, person: Person, requester_id: uuid.UUID) -> bool:
+def _answers(
+    placed: _Placed,
+    person: Person,
+    requester_id: uuid.UUID,
+    *,
+    rights: RightsTable,
+    policy: PolicyTables,
+) -> bool:
     """Whether ``person`` answers a request placed so (``_Placed``): the person it concerns, or
-    an approver of the agreement it waits for."""
+    an approver of the agreement it waits for, under ``rights`` and ``policy``."""
     if placed.concerned_id is not None:
         return placed.concerned_id == person.id
-    return approves(placed.approver, person, requester_id)
+    return approves(placed.approver, person, requester_id, rights=rights, policy=policy)
 
 
 # --- a change of rights, drafted again by the writer (spec 5.3) ----------------------------------
@@ -3153,13 +3231,14 @@ async def _amend_rights(
     now = ctx.clock()
     arguments: JsonObject = {"draft": str(redraft.draft_id)}
     async with session_factory() as session:
+        in_force = await load_rights(session)
         opened = await _open_pending(
             session,
             confirmation_id,
             ctx.person.id,
             now,
             allowed=lambda c, person: (
-                may_decide(c, person, now)
+                may_decide(c, person, now, rights=in_force, policy=ctx.policy)
                 and (c.requester_id, c.conversation_id) == (person.id, ctx.conversation_id)
             ),
         )
@@ -3169,7 +3248,7 @@ async def _amend_rights(
             _use_grant(ctx, confirmation_id)
             return opened, None, None
         c, person = opened.c, opened.person
-        actor = Actor(person_id=person.id, role=as_role(person.role))
+        actor = actor_of(person)
         run_ctx = replace(
             ctx,
             actor=actor,
@@ -3413,7 +3492,7 @@ async def _amend_chain(
         match.kind == "kept" and match.old_position is not None and with_basis[match.old_position]
         for match in matches
     ]
-    actor = Actor(person_id=requester.id, role=as_role(requester.role))
+    actor = actor_of(requester)
     run_ctx = replace(
         ctx,
         actor=actor,
@@ -3488,7 +3567,13 @@ async def _amend_chain(
     # same (spec 4.1, 4.4), and what it asks counts.
     by_the_rights = for_others or (
         isinstance(decision, NeedsApproval)
-        and not approves(decision.approver, decider, requester.id)
+        and not approves(
+            decision.approver,
+            decider,
+            requester.id,
+            rights=await load_rights(session),
+            policy=ctx.policy,
+        )
     )
 
     # The judge judges the new version, for the one who asked, with the request's history,
@@ -3645,7 +3730,12 @@ async def _ask_the_chain_again(
         # Nobody else's agreement is needed: the yes is the requester's own (N1).
         approver, question = "self", None
     outcome, message_id, shown_to_approver = _presented_by(
-        ctx, again.decider, again.requester.id, approver, before=c.approver_kind
+        ctx,
+        again.decider,
+        again.requester.id,
+        approver,
+        before=c.approver_kind,
+        rights=await load_rights(session),
     )
     new = await replace_chain_request(
         session,

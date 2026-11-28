@@ -9,7 +9,8 @@ from dataclasses import replace
 from typing import Any
 
 import pytest
-from domo_core.accounts.models import Person
+from domo_core.accounts.actors import actor_of
+from domo_core.accounts.models import Account, Person
 from domo_core.audit.models import AuditEntry
 from domo_core.channels.api.render import request_of
 from domo_core.chat.models import Conversation, Message, MessageAction
@@ -38,7 +39,8 @@ from domo_core.llm.types import JsonObject, ToolCall, ToolDefinition
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.catalog import DEFAULT_POLICY, on_his_own_tables
 from domo_core.policy.models import PolicyRight
-from domo_core.policy.roles import Actor, as_role
+from domo_core.policy.rights import NO_RIGHTS
+from domo_core.policy.roles import Actor
 from domo_core.policy.settings import load_policy_settings
 from domo_core.texts.view import REFERENCE
 from domo_core.tools.context import OwnIdea, ToolContext, ToolOutcome
@@ -53,14 +55,23 @@ WITH_MY_KEY = {"display_name": "Tom", "role": "guest", "guest_days": 1, "uses_my
 
 
 async def _people(
-    session_factory: Any, *people: tuple[str, str], grants: bool = True
+    session_factory: Any,
+    *people: tuple[str, str],
+    grants: bool = True,
+    inviters: tuple[str, ...] = (),
 ) -> dict[str, Person]:
     """These people, each with a conversation, and (``grants``) the assistant's own rights to
-    invite and to take back a device (he has neither by default)."""
+    invite and to take back a device (he has neither by default); ``inviters`` are the people the
+    owner opened inviting to (it is in no role: ruling 14)."""
     async with session_factory() as writer:
         made = {name: Person(display_name=name, role=role) for name, role in people}
         writer.add_all(made.values())
         await writer.flush()
+        # Whoever answers for a thing has an account (``concerned_of``).
+        writer.add_all(
+            Account(person_id=person.id, username=name.lower(), password_hash="hash")
+            for name, person in made.items()
+        )
         writer.add_all(Conversation(person_id=person.id) for person in made.values())
         creator = next(iter(made.values()))
         writer.add_all(
@@ -73,6 +84,17 @@ async def _people(
                 created_by=creator.id,
             )
             for action_type in (("household.invite", "device.remove") if grants else ())
+        )
+        writer.add_all(
+            PolicyRight(
+                person_id=made[name].id,
+                action_type="household.invite",
+                access="allow",
+                summary=f"{name} may invite.",
+                owner_words="they may invite",
+                created_by=creator.id,
+            )
+            for name in inviters
         )
         await writer.commit()
     return made
@@ -109,7 +131,7 @@ async def _turn(
     notified: list[uuid.UUID] = []
     ctx = ToolContext(
         session_factory=session_factory,
-        actor=Actor(person.id, as_role(person.role)),
+        actor=actor_of(person),
         person=person,
         conversation_id=conversation.id,
         origin="",
@@ -178,7 +200,7 @@ async def test_on_his_own_a_doubt_about_the_house_waits_for_the_owner(session_fa
     alex = people["Alex"]
     _judge(monkeypatch, DOUBT)
     ctx, reply_id, _ = await _turn(session_factory, alex, on_his_own=True, reply_message_id=None)
-    record = await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    record = await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     assert record.status == "waiting"
     assert record.model_result["by"] == "you"
     [request] = await _requests(session_factory)
@@ -188,7 +210,9 @@ async def test_on_his_own_a_doubt_about_the_house_waits_for_the_owner(session_fa
         settings = await load_policy_settings(reader)
         listed = await pending_for(reader, alex.id, ctx.conversation_id, settings, LIVE)
     assert [c.id for c in listed] == [request.id]
-    assert may_decide(request, alex, LIVE) and not may_decide(request, people["Sam"], LIVE)
+    assert may_decide(
+        request, alex, LIVE, rights=NO_RIGHTS, policy=DEFAULT_POLICY
+    ) and not may_decide(request, people["Sam"], LIVE, rights=NO_RIGHTS, policy=DEFAULT_POLICY)
 
 
 async def test_a_doubt_about_dana_s_thing_waits_for_dana_not_the_owner(
@@ -212,7 +236,9 @@ async def test_a_doubt_about_dana_s_thing_waits_for_dana_not_the_owner(
     assert (request.conversation_id, request.requester_id) == (danas.id, alex.id)
     assert (request.concerned_id, request.approver_kind, request.by_domo) == (dana.id, "self", True)
     assert request.last_shown_message_id is None
-    assert may_decide(request, dana, LIVE) and not may_decide(request, alex, LIVE)
+    assert may_decide(
+        request, dana, LIVE, rights=NO_RIGHTS, policy=DEFAULT_POLICY
+    ) and not may_decide(request, alex, LIVE, rights=NO_RIGHTS, policy=DEFAULT_POLICY)
     async with session_factory() as reader:
         settings = await load_policy_settings(reader)
         listed = await pending_for(reader, dana.id, danas.id, settings, LIVE)
@@ -253,7 +279,7 @@ async def test_the_barrier_s_approver_still_wins(session_factory, monkeypatch):
     _judge(monkeypatch, DOUBT)
     ctx, reply_id, _ = await _turn(session_factory, paul)
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    record = await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    record = await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     assert record.status == "waiting"
     assert record.model_result["by"] == "an adult"
     [request] = await _requests(session_factory)
@@ -265,10 +291,10 @@ async def test_the_judge_cannot_name_who_answers(session_factory, monkeypatch):
     alex = people["Alex"]
     _judge(monkeypatch, Judgement("yes", reason="ask Sam", noted="Sam must answer this, not Alex"))
     ctx, reply_id, _ = await _turn(session_factory, alex, on_his_own=True, reply_message_id=None)
-    await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     [request] = await _requests(session_factory)
     assert (request.concerned_id, request.requester_id) == (alex.id, alex.id)
-    assert not may_decide(request, people["Sam"], LIVE)
+    assert not may_decide(request, people["Sam"], LIVE, rights=NO_RIGHTS, policy=DEFAULT_POLICY)
 
 
 async def test_a_refusal_of_the_judge_is_a_fact(session_factory, monkeypatch):
@@ -277,7 +303,7 @@ async def test_a_refusal_of_the_judge_is_a_fact(session_factory, monkeypatch):
     _judge(monkeypatch, Judgement("do_not", reason="not now", noted="Tom was sent away last week"))
     ctx, reply_id, _ = await _turn(session_factory, sam)
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    record = await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    record = await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     assert record.status == "refused"
     [fact] = await _facts(session_factory)
     # The case was the house's (Alex's): no reason of it is kept about Sam, never the journal's
@@ -317,7 +343,7 @@ async def test_with_no_owner_now_nobody_is_asked_and_it_is_a_fact(session_factor
     dana = people["Dana"]
     _judge(monkeypatch, DOUBT)
     ctx, reply_id, _ = await _turn(session_factory, dana, on_his_own=True, reply_message_id=None)
-    record = await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    record = await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     assert record.status == "refused"
     assert record.model_result["reason"] == "nobody_to_ask"
     assert await _requests(session_factory) == []
@@ -333,7 +359,7 @@ async def test_a_guest_s_idea_the_judge_doubts_waits_for_the_owner_and_his_yes_m
     _judge(monkeypatch, DOUBT)
     ctx, reply_id, notified = await _turn(session_factory, sam)
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    record = await handle_tool_call(invite(WITH_MY_KEY), ctx=ctx, reply_id=reply_id)
+    record = await handle_tool_call(invite(WITH_MY_KEY, his=True), ctx=ctx, reply_id=reply_id)
     assert record.status == "waiting"
     assert record.model_result["who"] == "Alex"
     [request] = await _requests(session_factory)
@@ -382,8 +408,10 @@ async def test_a_guest_s_idea_the_judge_doubts_waits_for_the_owner_and_his_yes_m
         )
         decided_by = {entry.actor for entry in decided}
         news_at = await reader.scalar(select(Person.news_at).where(Person.id == sam.id))
-    # Run in Sam's turn, as at first: his invitation, and "my key" still means Sam's.
-    assert (made.created_by, made.uses_inviter_key) == (sam.id, True)
+    # Run in Sam's turn, as at first: the assistant's invitation (S-K), never Sam's; its link
+    # waits for the owner, since Sam may not invite.
+    assert (made.created_by, made.by_domo, made.link_for_id) == (None, True, alex.id)
+    assert made.uses_inviter_key is True
     # The assistant's act: the barrier's lines on it are his, and it is counted once as his.
     assert decided_by == {"domo"}
     assert done is not None
@@ -400,7 +428,7 @@ async def test_his_idea_replayed_at_the_yes_keeps_the_speaker_s_socle(session_fa
     _judge(monkeypatch, DOUBT)
     ctx, reply_id, _ = await _turn(session_factory, sam)
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     [request] = await _requests(session_factory)
     # Meanwhile the owner forbids Sam to invite, on purpose.
     async with session_factory() as writer:
@@ -450,7 +478,7 @@ async def test_a_refusal_on_the_person_s_side_is_audited_under_them(session_fact
     judged = _judge(monkeypatch)
     ctx, reply_id, _ = await _turn(session_factory, sam)
     ctx.own_idea = OwnIdea(REASON, born_of=sam.id)
-    record = await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    record = await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     assert record.status == "refused" and record.model_result["whose_rights"] == "the person's"
     assert judged.cases == []
     async with session_factory() as reader:
@@ -473,7 +501,7 @@ async def test_a_request_in_someone_else_s_conversation_holds_no_judge_reason(
     _judge(monkeypatch, Judgement("warn", reason="Sam said Tom was sad lately"))
     ctx, reply_id, _ = await _turn(session_factory, people["Sam"])
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     [request] = await _requests(session_factory)
     assert request.concerned_id == people["Alex"].id
     # Ruling R69: the fact that it was warned is kept (Alex's answer is remembered for Alex), never
@@ -486,7 +514,9 @@ async def test_an_unmarked_call_in_a_turn_he_began_stays_the_person_s_wherever_i
     session_factory, monkeypatch
 ):
     # Ruling R31: no grant to the assistant; Dana may invite, the house's thing is Alex's.
-    people = await _people(session_factory, ("Alex", "owner"), ("Dana", "adult"), grants=False)
+    people = await _people(
+        session_factory, ("Alex", "owner"), ("Dana", "adult"), grants=False, inviters=("Dana",)
+    )
     alex, dana = people["Alex"], people["Dana"]
     _judge(monkeypatch, DOUBT)
     ctx, reply_id, _ = await _turn(
@@ -525,14 +555,16 @@ async def test_his_change_of_an_idea_born_in_a_turn_keeps_that_turn_s_rules(
     judged = _judge(monkeypatch, DOUBT)
     ctx, reply_id, _ = await _turn(session_factory, people["Sam"])
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     [request] = await _requests(session_factory)
     deciding: list[tuple[Actor, Any]] = []
     decide = service_module.decide_now
 
-    async def changed_for(session: Any, actor: Actor, action: Any, policy: Any, now: Any) -> Any:
+    async def changed_for(
+        session: Any, actor: Actor, action: Any, policy: Any, now: Any, **kwargs: Any
+    ) -> Any:
         deciding.append((actor, policy))
-        return await decide(session, actor, action, policy, now)
+        return await decide(session, actor, action, policy, now, **kwargs)
 
     monkeypatch.setattr(service_module, "decide_now", changed_for)
     # On his own, in Alex's conversation, he changes it.
@@ -587,7 +619,9 @@ async def _danas_invite_waiting_for_alex(
     session_factory: Any, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[dict[str, Person], ToolContext, Confirmation]:
     """A turn he began for Dana: her invitation (no mark) waits for Alex, the house's owner."""
-    people = await _people(session_factory, ("Alex", "owner"), ("Dana", "adult"), grants=False)
+    people = await _people(
+        session_factory, ("Alex", "owner"), ("Dana", "adult"), grants=False, inviters=("Dana",)
+    )
     _judge(monkeypatch, DOUBT)
     ctx, reply_id, _ = await _turn(
         session_factory, people["Dana"], turn_reason="her plan is due", reply_message_id=None
@@ -625,7 +659,9 @@ async def test_the_concerned_person_s_change_asked_again_still_waits_for_them(
     # Who answers is the code's again: Alex, in his conversation, listed for him.
     assert (new.approver_kind, new.concerned_id, new.conversation_id) == ("self", alex.id, alexs.id)
     assert (new.requester_id, new.by_domo) == (dana.id, False)
-    assert may_decide(new, alex, LIVE) and not may_decide(new, dana, LIVE)
+    assert may_decide(new, alex, LIVE, rights=NO_RIGHTS, policy=DEFAULT_POLICY) and not may_decide(
+        new, dana, LIVE, rights=NO_RIGHTS, policy=DEFAULT_POLICY
+    )
     async with session_factory() as reader:
         settings = await load_policy_settings(reader)
         listed = await pending_for(reader, alex.id, alexs.id, settings, LIVE)
@@ -664,7 +700,7 @@ async def test_his_change_that_now_needs_the_owner_waits_in_the_turn_it_was_made
     _judge(monkeypatch, DOUBT)
     ctx, reply_id, _ = await _turn(session_factory, sam)
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     [request] = await _requests(session_factory)
     # Now the owner wants to say yes to every invitation of the assistant's first.
     async with session_factory() as writer:
@@ -702,11 +738,13 @@ async def test_a_request_whose_turn_cannot_be_known_is_never_run_in_the_approver
     _judge(monkeypatch, DOUBT)
     ctx, reply_id, _ = await _turn(session_factory, people["Sam"])
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     [request] = await _requests(session_factory)
+    # Said to be made under a reply of the approver's own conversation: not the one who asked's.
+    alexs_reply = await _reply_in(session_factory, await _conversation_of(session_factory, alex))
     async with session_factory() as writer:
         await writer.execute(
-            update(Confirmation).where(Confirmation.id == request.id).values(message_id=None)
+            update(Confirmation).where(Confirmation.id == request.id).values(message_id=alexs_reply)
         )
         await writer.commit()
         stored = await writer.get(Confirmation, request.id)
@@ -716,6 +754,28 @@ async def test_a_request_whose_turn_cannot_be_known_is_never_run_in_the_approver
     assert outcome == "refused"
     async with session_factory() as reader:
         assert await reader.scalar(select(func.count()).select_from(Invitation)) == 0
+
+
+async def test_a_request_made_under_no_reply_was_made_in_the_requester_s_conversation(
+    session_factory, monkeypatch
+):
+    # A review writes no reply: what it asks was made in the conversation of the one who asked.
+    people = await _people(session_factory, ("Alex", "owner"), ("Sam", "guest"))
+    _judge(monkeypatch, DOUBT)
+    ctx, reply_id, _ = await _turn(session_factory, people["Sam"])
+    await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
+    await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
+    [request] = await _requests(session_factory)
+    async with session_factory() as writer:
+        await writer.execute(
+            update(Confirmation).where(Confirmation.id == request.id).values(message_id=None)
+        )
+        await writer.commit()
+        stored = await writer.get(Confirmation, request.id)
+        assert stored is not None
+        assert await conversation_made_in(writer, stored) == ctx.conversation_id
+    outcome, _ = await _yes(ctx, request, people["Alex"])
+    assert outcome == "executed"
 
 
 def test_words_that_answer_a_request_of_someone_else_s_turn_wake_its_turn():
@@ -739,7 +799,15 @@ async def test_the_one_who_asked_sees_it_waits_for_the_person_it_concerns(
     async with session_factory() as reader:
         settings = await load_policy_settings(reader)
         shown = await request_of(reader, request.id, dana, LIVE)
-    card = confirmation_card(request, viewer=dana, settings=settings, texts=REFERENCE, now=LIVE)
+    card = confirmation_card(
+        request,
+        viewer=dana,
+        settings=settings,
+        texts=REFERENCE,
+        now=LIVE,
+        rights=NO_RIGHTS,
+        policy=DEFAULT_POLICY,
+    )
     assert card.can_decide is False
     assert card.action.text == REFERENCE("action.card.waiting.the_concerned")
     assert card.asked is not None and "your" not in card.asked.lower()
@@ -775,7 +843,9 @@ async def test_a_doubted_chain_about_someone_else_s_thing_waits_for_the_person_o
     session_factory, monkeypatch
 ):
     # Ruling R34: a chain is never moved to a person concerned.
-    people = await _people(session_factory, ("Alex", "owner"), ("Dana", "adult"), grants=False)
+    people = await _people(
+        session_factory, ("Alex", "owner"), ("Dana", "adult"), grants=False, inviters=("Dana",)
+    )
     dana = people["Dana"]
     _judge(monkeypatch, DOUBT)
     ctx, reply_id, notified = await _turn(
@@ -787,7 +857,7 @@ async def test_a_doubted_chain_about_someone_else_s_thing_waits_for_the_person_o
     [request] = await _requests(session_factory)
     assert (request.approver_kind, request.concerned_id) == ("self", None)
     assert (request.requester_id, request.conversation_id) == (dana.id, ctx.conversation_id)
-    assert may_decide(request, dana, LIVE)
+    assert may_decide(request, dana, LIVE, rights=NO_RIGHTS, policy=DEFAULT_POLICY)
     assert notified == []
 
 
@@ -803,7 +873,9 @@ async def test_a_doubted_chain_on_his_own_waits_for_the_conversation_s_person(
     [request] = await _requests(session_factory)
     assert request.concerned_id is None
     assert (request.requester_id, request.conversation_id) == (alex.id, ctx.conversation_id)
-    assert may_decide(request, alex, LIVE) and not may_decide(request, people["Dana"], LIVE)
+    assert may_decide(
+        request, alex, LIVE, rights=NO_RIGHTS, policy=DEFAULT_POLICY
+    ) and not may_decide(request, people["Dana"], LIVE, rights=NO_RIGHTS, policy=DEFAULT_POLICY)
 
 
 async def test_the_note_and_the_question_survive_a_change_of_the_person_it_concerns(
@@ -880,7 +952,7 @@ async def test_his_change_gives_no_news_to_the_person_of_his_turn(session_factor
     _judge(monkeypatch, DOUBT)
     ctx, reply_id, _ = await _turn(session_factory, people["Sam"])
     await handle_tool_call(mark(), ctx=ctx, reply_id=reply_id)
-    await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)
+    await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)
     [request] = await _requests(session_factory)
     async with session_factory() as writer:
         await writer.execute(update(Person).where(Person.id == alex.id).values(news_at=None))
@@ -927,7 +999,9 @@ async def test_a_reroute_at_the_yes_lets_the_barrier_s_approver_answer(
     assert now_waiting is not None
     # The barrier's approver wins: the owner answers it now, not the person it concerned.
     assert (now_waiting.approver_kind, now_waiting.concerned_id) == ("owner", None)
-    assert may_decide(now_waiting, alex, LIVE) and not may_decide(now_waiting, dana, LIVE)
+    assert may_decide(
+        now_waiting, alex, LIVE, rights=NO_RIGHTS, policy=DEFAULT_POLICY
+    ) and not may_decide(now_waiting, dana, LIVE, rights=NO_RIGHTS, policy=DEFAULT_POLICY)
 
 
 async def test_the_person_it_concerns_answers_in_words_and_the_turn_it_was_born_in_wakes(
@@ -936,7 +1010,9 @@ async def test_the_person_it_concerns_answers_in_words_and_the_turn_it_was_born_
     # Dana's turn: the assistant's marked invitation, his judge doubts it; an invitation is the
     # house's, so it waits for Alex, in Alex's conversation.
     await grant("household.invite", for_domo=True, access="allow")
-    adult_chat.use_model(FakeChatModel(tool_script=[mark(), invite(), "Done."], judge="yes"))
+    adult_chat.use_model(
+        FakeChatModel(tool_script=[mark(), invite(his=True), "Done."], judge="yes")
+    )
     await adult_chat.say("Tom comes tonight")
     [request] = await _requests(session_factory)
     assert request.concerned_id == owner_chat.person.id

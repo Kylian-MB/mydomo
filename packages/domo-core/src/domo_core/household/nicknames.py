@@ -15,7 +15,7 @@ transaction.
 
 import uuid
 from datetime import datetime
-from typing import Final
+from typing import Final, Literal
 
 from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint, delete, func, select
 from sqlalchemy.dialects.postgresql import insert
@@ -25,6 +25,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import active_at
 from domo_core.db import Base
+from domo_core.people.reach import known_records
 from domo_core.prompts import MAX_NICKNAMES_SHOWN
 from domo_core.text import name_key
 
@@ -109,10 +110,16 @@ async def of(
 
 
 async def meant(
-    session: AsyncSession, person_id: uuid.UUID, name: str, *, now: datetime
+    session: AsyncSession,
+    person_id: uuid.UUID,
+    name: str,
+    *,
+    now: datetime,
+    among: Literal["household", "records"] = "household",
 ) -> Person | None:
     """The person in the household at ``now`` that ``name`` means as a nickname ``person_id``
-    keeps; ``None`` when it is no nickname of theirs, or the one it means left."""
+    keeps (``among="records"``: any record the assistant may name, whatever its state); ``None``
+    when it is no nickname of theirs, or the one it means left (or is no record any more)."""
     key = name_key(name)
     if not key:
         return None
@@ -122,7 +129,7 @@ async def meant(
         .where(
             PersonNickname.person_id == person_id,
             PersonNickname.nickname_key == key,
-            active_at(now),
+            active_at(now) if among == "household" else known_records(),
         )
     )
     return result.scalars().first()

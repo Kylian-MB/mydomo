@@ -39,7 +39,7 @@ from domo_core.confirmations.arrivals import arrivals_pass
 from domo_core.confirmations.models import Confirmation, ConfirmationStep
 from domo_core.confirmations.replan import StepMatch, calls_of, match_steps, step_call
 from domo_core.household.models import Invitation
-from domo_core.household.service import disable
+from domo_core.household.service import create_invitation, disable
 from domo_core.llm.types import ToolCall
 from domo_core.policy.asks import Asked
 from domo_core.policy.catalog import ACTION_FACTS
@@ -547,6 +547,86 @@ async def test_a_new_link_of_the_requester_takes_a_chain_up_again_after_its_link
     assert (note.recipient_id, note.text) == (paul.id, "bienvenue")
 
 
+async def _his_invitation(session_factory: Any, clock: Any, name: str, role: str) -> Invitation:
+    """An invitation the assistant makes on his own idea, its link waiting for the owner."""
+    async with session_factory() as writer:
+        owner_id = (
+            await writer.execute(select(Person.id).where(Person.role == "owner"))
+        ).scalar_one()
+        invitation, _ = await create_invitation(
+            writer,
+            display_name=name,
+            role=role,
+            guest_days=1 if role == "guest" else None,
+            created_by=None,
+            now=clock(),
+            link_for=owner_id,
+            reason=f"the link of {name} broke",
+            with_token=False,
+        )
+        await writer.commit()
+        return invitation
+
+
+async def test_the_assistant_s_new_link_takes_a_chain_up_again_after_its_link_expired(
+    owner_chat,
+    join_with_invitation,
+    upkeep_pass,
+    clock,
+    confirmation_status,
+    stored_notes,
+    session_factory,
+):  # the owner's answer of 2026-11-27: "Domo juge et continue"
+    cid = await paused_chain(owner_chat, INVITE_PAUL, note_for("Paul", "bienvenue", "Paul"))
+    expired = await invitation_named(session_factory, "Paul")
+    clock.advance(timedelta(days=8))
+    await upkeep_pass()
+    assert await confirmation_status(cid) == "failed"
+    # The link broke: the assistant invites Paul again, as an adult, and goes on under the yes.
+    new = await _his_invitation(session_factory, clock, "Paul", "adult")
+    assert new.id != expired.id and new.by_domo
+    reply = await owner_chat.say_with_tool("chain_continue", {"request_id": str(cid)}, judge="do")
+    assert reply.model_results[-1]["chain"] == "waiting_for_arrival"
+    assert (await request_row(session_factory, cid)).waiting_for_invitation_id == new.id
+    paul = await join_with_invitation(new.id, "paul")
+    await upkeep_pass()
+    assert await confirmation_status(cid) == "executed"
+    [note] = await stored_notes()
+    assert (note.recipient_id, note.text) == (paul.id, "bienvenue")
+
+
+async def test_a_wait_never_takes_an_invitation_of_his_for_someone_else(
+    owner_chat,
+    invite_for_test,
+    join_with_invitation,
+    upkeep_pass,
+    clock,
+    confirmation_status,
+    steps_rows,
+    session_factory,
+):  # the reviewer's case: the wait for Tom is reached only after Paul's arrival
+    await invite_for_test("Tom", "adult")
+    cid = await paused_chain(
+        owner_chat,
+        INVITE_PAUL,
+        note_for("Paul", "bienvenue", "Paul"),
+        note_for("Tom", "bienvenue", "Tom"),
+    )
+    # While the chain waits for Paul, Tom's invitation ends, and the assistant invites another
+    # Tom, a visiting guest, on his own idea.
+    await owner_chat.say_with_tool("household_cancel_invitation", {"display_name": "Tom"})
+    await owner_chat.say("oui")
+    clock.advance(timedelta(minutes=1))
+    await _his_invitation(session_factory, clock, "Tom", "guest")
+    await join_with_invitation((await invitation_named(session_factory, "Paul")).id, "paul")
+    await upkeep_pass()
+    # The wait for Tom does not take his invitation: it was never this request's.
+    assert await confirmation_status(cid) == "failed"
+    rows = await steps_rows(cid)
+    assert [row.status for row in rows] == ["done", "done", "failed"]
+    assert rows[2].result is not None and rows[2].result["reason"] == "not_arrived"
+
+
 async def test_a_link_someone_else_made_never_takes_a_chain_up_again(
     owner_chat,
     adult_chat,
@@ -574,6 +654,37 @@ async def test_a_link_someone_else_made_never_takes_a_chain_up_again(
     rows = await steps_rows(cid)
     assert [row.status for row in rows] == ["done", "failed"]
     assert rows[1].result is not None and rows[1].result["reason"] == "not_arrived"
+
+
+async def test_the_assistant_is_told_of_a_link_made_again_and_may_continue_on_it(
+    owner_chat,
+    adult_chat,
+    grant,
+    upkeep_pass,
+    clock,
+    steps_rows,
+    confirmation_status,
+    session_factory,
+):  # ruling 22: the code does not decide it is the same Paul; the assistant may
+    cid = await paused_chain(owner_chat, INVITE_PAUL, note_for("Paul", "bienvenue", "Paul"))
+    await owner_chat.say_with_tool("household_cancel_invitation", {"display_name": "Paul"})
+    await owner_chat.say("oui")
+    await upkeep_pass()
+    clock.advance(timedelta(minutes=1))
+    await grant("household.invite", person=adult_chat.person, access="allow")
+    await adult_chat.say_with_tool("household_invite", {"display_name": "Paul", "role": "adult"})
+    await adult_chat.say("je confirme")
+    again = await invitation_named(session_factory, "Paul")
+    await owner_chat.say_with_tool("chain_continue", {"request_id": str(cid)}, judge="do")
+    assert await confirmation_status(cid) == "failed"
+    rows = await steps_rows(cid)
+    told = rows[1].result
+    assert told is not None and told["reason"] == "not_arrived"
+    reply = await owner_chat.say_with_tool(
+        "chain_continue", {"request_id": str(cid), "invitation": str(again.id)}, judge="do"
+    )
+    assert reply.model_results[-1]["chain"] == "waiting_for_arrival"
+    assert (await request_row(session_factory, cid)).waiting_for_invitation_id == again.id
 
 
 async def test_a_wait_never_takes_a_link_someone_else_made_after_the_yes(

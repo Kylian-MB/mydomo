@@ -57,6 +57,8 @@ from tests.fakes.fake_llm.app import (
     BACK_TOOL,
     BY_HAND_COMMAND,
     BY_HAND_PREFIX,
+    CALLS_COMMAND,
+    CALLS_PREFIX,
     CLASSIFIER_CHANGE_PREFIX,
     CLASSIFIER_FIRST_LINE,
     CORE_MARKER,
@@ -691,6 +693,69 @@ def test_the_by_hand_script_needs_tools_and_its_json(fake):
     answer = post(fake, body(command)).json()
     assert answer["choices"][0]["message"]["content"] == f"Fake reply: {command}"
     for broken in (BY_HAND_COMMAND + "{nope", BY_HAND_COMMAND + '{"run": {}}'):
+        answer = post(fake, with_tools(broken)).json()
+        assert answer["choices"][0]["message"]["content"] == f"Fake reply: {broken}"
+
+
+# --- several calls in one turn (the script of /calls) ---------------------------------------------
+
+CALLS_SCRIPT = [
+    {"tool": "act_on_my_own", "arguments": {"reason": "They come on Saturday."}},
+    {"tool": "record_open", "arguments": {"name": "Tom", "standing": "visiting"}},
+]
+
+
+def calls_turn(*results: str, offered: bool = True) -> dict[str, object]:
+    """A turn of the script: the person's words and command, then each call the fake made and its
+    result (``results``), as the core sends them; ``offered``: whether tools are offered still."""
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": "Be brief."},
+        {
+            "role": "user",
+            "content": "My parents come on Saturday.\n"
+            + JUDGE_PREFIX
+            + "do "
+            + CALLS_COMMAND
+            + json.dumps(CALLS_SCRIPT),
+        },
+    ]
+    for number, result in enumerate(results):
+        call = {
+            "id": f"call_{number}",
+            "type": "function",
+            "function": {"name": CALLS_SCRIPT[number]["tool"], "arguments": "{}"},
+        }
+        messages.append({"role": "assistant", "content": None, "tool_calls": [call]})
+        messages.append({"role": "tool", "tool_call_id": f"call_{number}", "content": result})
+    turn: dict[str, object] = {"model": "fake-1", "tools": OFFERED, "messages": messages}
+    if not offered:
+        turn["tool_choice"] = "none"
+    return turn
+
+
+def test_the_calls_script_makes_each_call_in_turn_then_says_their_statuses(fake):
+    def answer(*results: str, offered: bool = True) -> dict[str, Any]:
+        return post(fake, calls_turn(*results, offered=offered)).json()["choices"][0]["message"]
+
+    [first] = answer()["tool_calls"]
+    assert first["function"]["name"] == "act_on_my_own"
+    assert json.loads(first["function"]["arguments"]) == CALLS_SCRIPT[0]["arguments"]
+    done, refused = json.dumps({"status": "done"}), json.dumps({"status": "refused"})
+    [second] = answer(done)["tool_calls"]
+    assert second["function"]["name"] == "record_open"
+    assert json.loads(second["function"]["arguments"]) == CALLS_SCRIPT[1]["arguments"]
+    over = answer(done, refused)
+    assert "tool_calls" not in over and over["content"] == CALLS_PREFIX + "done, refused"
+    # No tool offered any more (the core's last round): what was made is said.
+    cut = answer(done, offered=False)
+    assert "tool_calls" not in cut and cut["content"] == CALLS_PREFIX + "done"
+
+
+def test_the_calls_script_needs_tools_and_its_json(fake):
+    command = CALLS_COMMAND + json.dumps(CALLS_SCRIPT)
+    answer = post(fake, body(command)).json()
+    assert answer["choices"][0]["message"]["content"] == f"Fake reply: {command}"
+    for broken in (CALLS_COMMAND + "[nope", CALLS_COMMAND + "[]", CALLS_COMMAND + '[{"x": 1}]'):
         answer = post(fake, with_tools(broken)).json()
         assert answer["choices"][0]["message"]["content"] == f"Fake reply: {broken}"
 

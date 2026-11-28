@@ -69,6 +69,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.types import Receive, Scope, Send
 
 from domo_core.accounts.account_routes import get_password_check_throttle
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.accounts.passwords import Argon2Busy, busy_headers
 from domo_core.accounts.throttle import LoginThrottle
@@ -118,7 +119,6 @@ from domo_core.devices.models import Device
 from domo_core.devices.service import device_of, finish_pairing
 from domo_core.naming import name_shown
 from domo_core.policy.open_catalog import load_policy
-from domo_core.policy.roles import Actor, as_role
 from domo_core.policy.settings import load_policy_settings
 from domo_core.proofs.service import ProofHeldBack, prove
 from domo_core.texts.view import Texts, person_texts
@@ -347,7 +347,7 @@ async def prove_confirmation(
     # The moment of the decision, made the requester's (``requester_context``), as on the page.
     moment = ToolContext(
         session_factory=deps.session_factory,
-        actor=Actor(person_id=person.id, role=as_role(person.role)),
+        actor=actor_of(person),
         person=person,
         conversation_id=cid,  # replaced by the request's own conversation
         origin=str(request.base_url),
@@ -364,6 +364,7 @@ async def prove_confirmation(
         # by hand runs as a turn runs it.
         made_tool_named=made_tool_finder(deps),
         launch_deps=made_tool_deps(deps),
+        record_listeners=deps.record_listeners,
     )
     try:
         outcome, record = await prove(

@@ -33,17 +33,19 @@ catalog says. A limit (``Limit``) is defined here, in the base module, because t
 limits are written with it too; ``policy.rights`` re-exports it (this module never imports that
 one).
 
-The catalog's own limits (``DEFAULT_LIMITS``, spec 5.11) are rules of the product that the tools
-used to hold themselves: a guest stays 30 days at most. They belong to the owner: a right that
-carries a limit replaces the default one, and a right whose limit is ``"allow"`` lifts it. They
-apply to everyone, the owner included. What stays in the tools is technical or about integrity:
-lengths, names that tell people apart, the owner's role never given, the owner never removed and
-never leaving (they hand their role over first), a guest's stay within
-``household.service.GUEST_DAYS_CEILING``.
+The catalog's own limits (``DEFAULT_LIMITS``, spec 5.11) are rules of the product the owner may
+replace: an invitation the assistant judged should wait for the owner's yes waits for it. A right
+that carries a limit replaces the default one, and a right whose limit is ``"allow"`` lifts it. No
+limit of the catalog reads the length of a stay (audit POL-5): a stay of any length, or with no
+end, is the owner's order or the assistant's judgement; a limit the owner writes himself on its
+``days`` still applies before any judgement. What stays in the tools is technical or about
+integrity: lengths of texts, names that tell people apart, the owner's role never given, the owner
+never removed and never leaving (they hand their role over first).
 
 Leaving the household oneself (``household.leave``, spec 5.9) is every person's, the guest's too (a
 guest may leave early); an adult agrees first for a child. Removing someone else
-(``household.remove``) stays the owner's, or the right of whoever the owner gave it to.
+(``household.remove``) is a gesture on people, in no role (``PEOPLE_GESTURES``): the assistant's
+and the owner's, and whoever the owner gives the right to.
 
 Each member's own keys (0.6.0, spec 4.2, 4.3) are theirs: adding one (``key.add``), giving it
 again (``model.rekey``), removing it (``key.remove``), saying who else may use it (``key.share``)
@@ -97,12 +99,14 @@ A person may entrust a device to Domo (spec 6.5): the owner and the adults by de
 devices (``device.list``, which changes nothing) and takes their own back (``device.remove``); the
 owner takes back anyone's, and nobody else does (the tool's own refusal, whatever the rights say).
 
-Inviting someone (``household.invite``) is the owner's and the adults' by default (the owner's
-trial of 0.9.1: "Domo judges"): an adult invites their own child at once, and Domo sends the
-invitation to the owner first when it seems to deserve it (someone the household does not know,
-another adult, someone on the owner's keys). The call says so (``owner_first``, one of its facts),
-and the catalog's limit of inviting then asks the owner. An adult gives again, or cancels, only an
-invitation they made (the tools' own guard); the owner any.
+Inviting someone (``household.invite``), and every other gesture on the people of the house and
+their roles (``PEOPLE_GESTURES``), is in no role (ruling 14): the owner's and Domo's, and the owner
+may open one to a precise person by a right. Domo sends an invitation to the owner first when it
+seems to deserve it; the call says so (``owner_first``, one of its facts), and the catalog's limit
+of inviting then asks the owner. The roles Domo makes start from a built-in base and never hold
+what is above their ceiling (``ROLE_CEILING``); a child-marked person gets nothing reserved to
+adults from a role (``adults_only``). Who may agree for a child is a right to read
+(``CHILD_AGREE``), the adults' by default.
 
 Domo's memory (0.9.0, spec 6.2) is in everyone's turn, a guest's too: keeping, changing,
 forgetting and looking up a memory (``memory.*``) are his judgement, never judged (they are with
@@ -182,6 +186,9 @@ _KNOWN: Final[tuple[str, ...]] = (
     # A new link for an invitation that waits (the old one stops working): its rights are those of
     # inviting (``RIGHTS_OF``).
     "household.invite_again",
+    # The link of an invitation that waits, shown once to the one it waits for, in words (the
+    # button of their card does the same): it changes nothing, and is never his own idea.
+    "household.show_link",
     "household.change_role",
     "household.remove",
     # Leaving oneself: nothing is erased and they can be brought back, but it closes their account.
@@ -328,6 +335,35 @@ _KNOWN: Final[tuple[str, ...]] = (
     # Setting something for the whole house: a timed launch, a standing agreement (Task 27,
     # ruling R17). It changes nothing by itself: the tools read it (``HOUSE_SET``).
     "house.set",
+    # Agreeing for a child (``CHILD_AGREE``): a right to read, no tool of its own.
+    "child.agree",
+    # The people of the house (the records, their links, their merges, a mistake of access), the
+    # roles the assistant makes, the access he promises, and a new invitation link sent: in no
+    # role (``PEOPLE_GESTURES``). Looking at them changes nothing (``PEOPLE_READ_ACTIONS``).
+    "people.open",
+    "people.complete",
+    "people.look",
+    "people.erase",
+    "people.forget",
+    "people.forget_me",
+    "people.link",
+    "people.unlink",
+    "people.merge",
+    "people.split",
+    "people.mistake",
+    "role.create",
+    "role.change",
+    "role.delete",
+    "role.look",
+    "access.promise",
+    "access.promise_keep",
+    "access.promise_drop",
+    "access.promises_look",
+    "household.send_link",
+    # The owner's directives on the people of the house (``OWNER_DIRECTIVE_ACTIONS``).
+    "people.directive_set",
+    "people.directive_lift",
+    "people.directives_look",
 )
 KNOWN_ACTIONS: Final[frozenset[str]] = frozenset(_KNOWN)
 # What nobody may do by default, the owner neither, nor Domo (``DOMO_NOT_BY_DEFAULT``):
@@ -422,6 +458,56 @@ AGREEMENT_ACTIONS: Final = frozenset({"agreement.keep", "agreement.drop"})
 # (``tools.context.ToolContext.may_set_for_the_house``): asked by someone who may not, the call
 # waits for the owner's yes. It changes nothing by itself and is never a tool of its own.
 HOUSE_SET: Final = "house.set"
+# Agreeing for a child (``confirmations.who_agrees``): the owner's and the adults' by default, and
+# a right may give or deny it to anyone, or a role the assistant makes may hold it, like any type.
+# It changes nothing by itself and is never a tool of its own.
+CHILD_AGREE: Final = "child.agree"
+# What the assistant reads of the people of the house, the roles he made and the access he
+# promised: the first is everyone's (the tool limits a person to themselves), the others the
+# owner's and his.
+PEOPLE_READ_ACTIONS: Final[frozenset[str]] = frozenset(
+    {"people.look", "role.look", "access.promises_look"}
+)
+# The owner's directives on the people of the house, which the code applies before any
+# judgement: setting one, lifting one, looking at them. The owner's alone.
+OWNER_DIRECTIVE_ACTIONS: Final[frozenset[str]] = frozenset(
+    {"people.directive_set", "people.directive_lift", "people.directives_look"}
+)
+# What gives someone an access, or a way to one, and what makes someone new: the owner's
+# directives on people (``people.directives``) are applied to these before any judgement. A call
+# of the assistant's that the owner's words let through says which directive (the fact
+# ``exception_of``).
+GIVES_ACCESS: Final[frozenset[str]] = frozenset(
+    {
+        "household.invite",
+        "household.invite_again",
+        "household.change_role",
+        "household.bring_back",
+        "household.send_link",
+        "access.promise_keep",
+    }
+)
+MAKES_SOMEONE_NEW: Final[frozenset[str]] = frozenset({"people.open", "household.invite"})
+# The fact that names the directive a call is an exception to: the assistant's, never what an
+# owner's right is about (the rights writer leaves it out of the facts of an example).
+EXCEPTION_FACT: Final = "exception_of"
+# The fact that says the record that gets an access is the person whose turn it is: the judge is
+# shown it beside "the idea was born of their words" (``people.records.give_access``), since saying
+# who one is gives nothing by itself. On every type that gives an access.
+SERVES_THE_SPEAKER_FACT: Final = "serves_the_speaker"
+# The fact that says the access taken away is one the assistant gave (``household.remove``): his
+# to take back when a stay ends or he was wrong, and his judge's to weigh. On an invitation
+# cancelled or given a new link: the assistant made it.
+GIVEN_BY_DOMO_FACT: Final = "given_by_domo"
+# The fact that says the access given wakes one that slept at the record's next visit
+# (``people.records.returns_now``: its stay was over and its access returns): the visit is the
+# reason, and the judge weighs it. On the types that give an access again.
+RETURNS_FACT: Final = "returns"
+# The facts of an action that are the assistant's and his judge's to weigh, never what an owner's
+# right is about: the rights writer leaves them out of the facts of an example.
+JUDGED_FACTS: Final[frozenset[str]] = frozenset(
+    {EXCEPTION_FACT, SERVES_THE_SPEAKER_FACT, GIVEN_BY_DOMO_FACT, RETURNS_FACT}
+)
 # Going out (step 2, spec 13.3 to 13.5). Domo's own acts on the addresses and the accounts, like
 # his acts on his tools: opening and closing an address, his look at what is open, asking someone
 # for an account and his look at the accounts. He has them on his own by default; looking changes
@@ -470,6 +556,9 @@ _EVERYONES_ACTIONS: Final = (
     | {PROGRAM_OUT}
     | AGREEMENT_ACTIONS
     | {"confirmation.own_idea", ASKING_AGREED}
+    # What the assistant knows of a person, and forgetting it, asked by that person (the tools
+    # limit a person to themselves).
+    | {"people.look", "people.forget_me"}
 )
 
 # The actions of every member of the household, whatever their role: reading who is in the
@@ -496,6 +585,7 @@ _MEMBER_ACTIONS = _EVERYONES_ACTIONS | frozenset(
         "chain.run",
         "chain.continue",
         "household.leave",
+        "household.show_link",
         "models.choose",
         "models.step_up",
         "model.rekey",
@@ -511,20 +601,11 @@ _MEMBER_ACTIONS = _EVERYONES_ACTIONS | frozenset(
     }
 )
 
-# What an adult may do besides every member's: entrust a device to Domo, and invite someone,
-# give the link of an invitation they made again, or cancel it (the owner's trial of 0.9.1: "Domo
-# judges"; whose invitation it is, is the tools' own guard, ``tools.household_admin``). Domo
-# sends an adult's invitation to the owner first when he judges it deserves it (``owner_first``,
-# read by the catalog's limit of inviting). And going out, but a port of the machine that hosts
-# Domo and sharing a house account (``_ADULT_OUTWARD_ACTIONS``).
-_ADULT_ACTIONS: Final = _ADULT_OUTWARD_ACTIONS | frozenset(
-    {
-        "device.entrust",
-        "household.invite",
-        "household.invite_again",
-        "household.cancel_invitation",
-    }
-)
+# What an adult may do besides every member's: entrust a device to Domo, and agree for a child
+# (``CHILD_AGREE``). And going out, but a port of the machine that hosts Domo and sharing a house
+# account (``_ADULT_OUTWARD_ACTIONS``). Inviting someone is in no role (``PEOPLE_GESTURES``,
+# ruling 14): the owner and the assistant invite, and the owner may open it to one person.
+_ADULT_ACTIONS: Final = _ADULT_OUTWARD_ACTIONS | frozenset({"device.entrust", CHILD_AGREE})
 
 _ALLOWED_ACTIONS: dict[Role, frozenset[str]] = {
     # The owner may do everything in the catalog, but what is nobody's by default.
@@ -555,15 +636,22 @@ _ALLOWED_ACTIONS: dict[Role, frozenset[str]] = {
 
 # The facts each action type is described with (spec 5.4): their names and kinds. The tool of the
 # action writes them (``DescribedAction.facts``); a limit can only be about these. An action with
-# no fact has none (``{}``). ``days`` is the days of a guest's stay, ``None`` for anyone else.
+# no fact has none (``{}``). ``days`` is the days of a guest's stay, ``None`` for anyone else and
+# for a stay with no end (``no_end``). ``returns`` (``RETURNS_FACT``) is the judge's.
 # ``is_self`` says that the person acted on is the one who asks. Leaving says the role the person
 # who leaves has now (``current_role``): they act on themselves alone.
 # ``owner_first`` says that Domo judged the owner should say yes before the invitee joins (the
 # call's own word, false when it does not say).
+_ON_A_RECORD: Final[dict[str, FactType]] = {
+    "has_account": "boolean",
+    "state": "text",
+    "made_role": "text",
+}
 _FACTS: dict[str, dict[str, FactType]] = {
     "household.invite": {
         "role": "role",
         "days": "number",
+        "no_end": "boolean",
         "display_name": "text",
         "owner_first": "boolean",
     },
@@ -572,18 +660,50 @@ _FACTS: dict[str, dict[str, FactType]] = {
     "household.invite_again": {
         "role": "role",
         "days": "number",
+        "no_end": "boolean",
         "display_name": "text",
         "owner_first": "boolean",
+        GIVEN_BY_DOMO_FACT: "boolean",
     },
+    # A role, a removal and a return act on a record, with or without an account: ``made_role`` is
+    # the name of the role made for the household the action gives (a removal: the one the record
+    # carries), ``None`` for a built-in role alone; ``state`` where the record stands now
+    # (``known``, ``has_access``, ``gone``...).
     "household.change_role": {
         "person": "person",
         "current_role": "role",
         "role": "role",
         "days": "number",
+        "no_end": "boolean",
+        RETURNS_FACT: "boolean",
+        # Someone passing by who now lives here, and what it changes (the owner's answer of
+        # 2026-11-27): an owner's rule may read them ("ask me before someone comes to live here").
+        "comes_to_live": "boolean",
+        "off_the_guests_key_rule": "boolean",
+        "may_then_agree_for_a_child": "boolean",
+        **_ON_A_RECORD,
     },
-    "household.remove": {"person": "person", "current_role": "role", "is_self": "boolean"},
+    # ``given_by_domo``: the access taken away is one the assistant gave (the last access given to
+    # the record was his act), as when a stay ends or he was wrong; the judge weighs it.
+    "household.remove": {
+        "person": "person",
+        "current_role": "role",
+        "is_self": "boolean",
+        GIVEN_BY_DOMO_FACT: "boolean",
+        **_ON_A_RECORD,
+    },
     "household.leave": {"current_role": "role"},
-    "household.bring_back": {"person": "person", "role": "role", "days": "number"},
+    # A promise kept gives the role and the stay it names: a limit of the owner's reads them as it
+    # does for a role given.
+    "access.promise_keep": {"role": "role", "days": "number"},
+    "household.bring_back": {
+        "person": "person",
+        "role": "role",
+        "days": "number",
+        "no_end": "boolean",
+        RETURNS_FACT: "boolean",
+        **_ON_A_RECORD,
+    },
     # ``from`` is the person who hands the role over, ``to`` the one who gets it; the roles are
     # the ones the database holds when the call is described.
     "household.transfer_ownership": {
@@ -592,7 +712,18 @@ _FACTS: dict[str, dict[str, FactType]] = {
         "requester_role": "role",
         "to_role": "role",
     },
-    "household.cancel_invitation": {"role": "role"},
+    # ``given_by_domo``: the invitation is the assistant's, which whoever holds the right changes.
+    "household.cancel_invitation": {"role": "role", GIVEN_BY_DOMO_FACT: "boolean"},
+    # ``loses_access``: forgetting takes away the access of someone who lives here
+    # (``people.forget.loses_access``): the judge weighs it, and a limit of the owner's may read it.
+    "people.forget": {"loses_access": "boolean"},
+    "people.forget_me": {"loses_access": "boolean"},
+    # The two records a link is between: ``from`` is ``relation`` ``to``.
+    "people.link": {"from": "person", "to": "person"},
+    "people.unlink": {"from": "person", "to": "person"},
+    # The two records a merge makes one (the record kept, the one absorbed), and splits again.
+    "people.merge": {"kept": "person", "absorbed": "person"},
+    "people.split": {"kept": "person", "absorbed": "person"},
     "note.leave": {"recipient": "person", "recipient_role": "role", "length": "number"},
     "note.withdraw": {"recipient": "person", "seen": "boolean"},
     # ``days`` is how many days from today the author keeps the note until.
@@ -687,8 +818,9 @@ _FACTS: dict[str, dict[str, FactType]] = {
     # An account by its name, the kind of its place (``header``, ``basic``, ``login``), whether it
     # is the house's, who gives it, how many hosts it is bound to and whether one of them is on
     # the internet. Never a value, a header's template, a path or a form's link.
-    # Whether the owner removed it last, and on which day (``removed_by_owner``, ``removed_on``:
-    # what asking it again is weighed against, Task 27; a rule of his may read them).
+    # Whether the owner removed it last, on which day and at which instant (``removed_by_owner``,
+    # ``removed_on``, ``removed_at``: what asking it again is weighed against, Task 27; a rule of
+    # his may read the first two).
     "account.ask": {
         "name": "text",
         "place": "text",
@@ -698,6 +830,7 @@ _FACTS: dict[str, dict[str, FactType]] = {
         "outward": "boolean",
         "removed_by_owner": "boolean",
         "removed_on": "date",
+        "removed_at": "text",
     },
     "account.remove": {"name": "text", "for_house": "boolean", "of": "person"},
     # What a program sends out (spec 13.3, 13.6): the zone of its address as written
@@ -729,6 +862,8 @@ OWNER_ONLY_ACTIONS: frozenset[str] = frozenset(
         # Opening a house account to guests, or closing it to Domo alone (ruling P2): it moves
         # who may use what the house was given, and no right gives it to anyone else.
         "account.share",
+        # The owner's directives on the people of the house.
+        *OWNER_DIRECTIVE_ACTIONS,
     }
 )
 
@@ -741,6 +876,7 @@ OWNER_ONLY_ACTIONS: frozenset[str] = frozenset(
 CHANGES_NOTHING: frozenset[str] = frozenset(
     {
         "household.list",
+        "household.show_link",
         "note.list_sent",
         "policy.show",
         "successors.show",
@@ -752,6 +888,9 @@ CHANGES_NOTHING: frozenset[str] = frozenset(
         "confirmation.own_idea",
         ASKING_AGREED,
         HOUSE_SET,
+        CHILD_AGREE,
+        *PEOPLE_READ_ACTIONS,
+        "people.directives_look",
         "models.choose",
         "models.step_up",
         "models.refresh",
@@ -776,8 +915,33 @@ CHANGES_NOTHING: frozenset[str] = frozenset(
 # line in the history the model reads on later turns, whatever came of the call (done, refused,
 # invalid, failed). The action is still stored with its reply, and the model reads its result in
 # the turn.
+# Of the gestures on people, those that give nothing to anyone: a record opened, completed or
+# erased, a link made or undone, a merge split, a mistake of access taken back, a role deleted, a
+# promise noted or dropped. The code's own guards hold on them (the owner's directives, the child
+# mark, the ceiling of the roles; an end of stay is only ever moved earlier on a stay that runs,
+# ``people.records.only_shortens``: a later one gives an access, the judged gestures' part); they
+# are never shown, never judged, and an idea of the assistant still reaches them
+# (``SILENT_YET_HIS_IDEA``).
+_SILENT_PEOPLE_GESTURES: Final[frozenset[str]] = frozenset(
+    {
+        "people.open",
+        "people.complete",
+        "people.erase",
+        "people.link",
+        "people.unlink",
+        "people.split",
+        "people.mistake",
+        # Not ``role.delete``: deleting a role people carry changes what they may do, so it is
+        # judged and shown as a change of role is (the owner's answer of 2026-11-27).
+        "access.promise",
+        "access.promise_drop",
+    }
+)
 SILENT_ACTIONS: Final[frozenset[str]] = (
-    MEMORY_ACTIONS
+    _SILENT_PEOPLE_GESTURES
+    | PEOPLE_READ_ACTIONS
+    | {"people.directives_look", CHILD_AGREE}
+    | MEMORY_ACTIONS
     | PLAN_ACTIONS
     | NAME_ACTIONS
     | DELIVERY_ACTIONS
@@ -819,8 +983,16 @@ def warned_since(
 
 
 # The silent types whose call an idea of Domo's still reaches (``act_on_my_own``): the call takes
-# the mark and is judged and recorded as his. Empty here: another branch adds its silent types.
-SILENT_YET_HIS_IDEA: Final[frozenset[str]] = frozenset()
+# the mark and is judged and recorded as his: the gestures on people that give nothing to anyone,
+# and the look at a record, which his own idea may ask of another's, in anyone's turn (to check for
+# a duplicate before opening a record), and the look at the promises of access that wait (the day he
+# recognises someone, in anyone's turn, to keep one).
+SILENT_YET_HIS_IDEA: Final[frozenset[str]] = _SILENT_PEOPLE_GESTURES | {
+    "people.look",
+    "access.promises_look",
+    # The look at the roles a review offers him on his own (``memory.review``).
+    "role.look",
+}
 
 # The prefix of the action types of the tools Domo makes (``made.<name>``, the open catalog:
 # ``policy.open_catalog``). No type of the code starts with it.
@@ -913,12 +1085,12 @@ ADULT_AGREES_FOR_A_CHILD: frozenset[str] = frozenset(
 )
 
 
-def an_adult_agrees_for(role: str, action_type: str) -> bool:
-    """Whether an adult's agreement stands for that of a person of ``role`` on ``action_type``
-    by default (a child, on ``ADULT_AGREES_FOR_A_CHILD``): the single spot for this rule, read by
+def an_adult_agrees_for(child: bool, action_type: str) -> bool:
+    """Whether an adult's agreement stands for that of a person on ``action_type`` by default (a
+    child, ``child``, on ``ADULT_AGREES_FOR_A_CHILD``): the single spot for this rule, read by
     the barrier (whose agreement a request needs) and by who answers for a thing of theirs
     (``policy.subjects.concerned_of``)."""
-    return role == "child" and action_type in ADULT_AGREES_FOR_A_CHILD
+    return child and action_type in ADULT_AGREES_FOR_A_CHILD
 
 
 def needs_the_judge(action_type: str) -> bool:
@@ -936,7 +1108,17 @@ def needs_the_judge(action_type: str) -> bool:
 ALLOWED_ACTIONS: Mapping[Role, frozenset[str]] = MappingProxyType(_ALLOWED_ACTIONS)
 ACTION_FACTS: Mapping[str, Mapping[str, FactType]] = MappingProxyType(
     {
-        action_type: MappingProxyType(_FACTS.get(action_type, {}))
+        action_type: MappingProxyType(
+            {
+                **_FACTS.get(action_type, {}),
+                **(
+                    {EXCEPTION_FACT: "text"}
+                    if action_type in GIVES_ACCESS | MAKES_SOMEONE_NEW
+                    else {}
+                ),
+                **({SERVES_THE_SPEAKER_FACT: "boolean"} if action_type in GIVES_ACCESS else {}),
+            }
+        )
         for action_type in dict.fromkeys((*_KNOWN, *_FACTS))
     }
 )
@@ -964,35 +1146,14 @@ class Limit:
     summary: str
 
 
-# The most days a guest stays unless the owner chose otherwise: the household's rule, written here
-# once. The limit below, its summary and the descriptions of the tools that give a stay all say it
-# from this number (the tools accept up to the technical ceiling,
-# ``household.service.GUEST_DAYS_CEILING``).
-GUEST_DAYS_RULE: Final = 30
-
-# A stay longer than the household's rule, for a guest.
-_TOO_LONG_A_STAY: Final = (
-    'action.facts.role == "guest" && action.facts.days != null '
-    f"&& action.facts.days > {GUEST_DAYS_RULE}"
-)
-
-# A guest's stay, as the household's rule has it.
-_GUEST_STAY = Limit(
-    f'{_TOO_LONG_A_STAY} ? "refuse" : "allow"',
-    None,
-    f"A guest stays {GUEST_DAYS_RULE} days at most.",
-)
-
-# Inviting (the owner's trial of 0.9.1): a guest's stay as the household's rule has it, and the
-# owner's yes first when Domo judged the invitation deserves it (``owner_first``). The owner's
-# own request goes on (``barrier.decide``: asking is his agreement); the stay is checked first,
-# so that it holds for him too.
+# Inviting (the owner's trial of 0.9.1): the owner's yes first when Domo judged the invitation
+# deserves it (``owner_first``). The owner's own request goes on (``barrier.decide``: asking is
+# his agreement). No length of stay is read (audit POL-5).
 _INVITING = Limit(
-    f'{_TOO_LONG_A_STAY} ? "refuse" : action.facts.owner_first ? "ask_owner" : "allow"',
+    'action.facts.owner_first ? "ask_owner" : "allow"',
     None,
-    f"A guest stays {GUEST_DAYS_RULE} days at most. When the assistant judges that the owner "
-    "should say "
-    "yes before someone joins, the invitation waits for the owner's yes.",
+    "When the assistant judges that the owner should say yes before someone joins, the "
+    "invitation waits for the owner's yes.",
 )
 
 # The catalog's limits, by action type (see the module docstring). Their summaries are in English,
@@ -1001,10 +1162,8 @@ DEFAULT_LIMITS: Mapping[str, Limit] = MappingProxyType(
     {
         "household.invite": _INVITING,
         # Read through the type it follows (``RIGHTS_OF``): the same limit, said for both. A new
-        # link never asks the owner first (its ``owner_first`` is always false): the stay alone.
+        # link never asks the owner first (its ``owner_first`` is always false).
         "household.invite_again": _INVITING,
-        "household.change_role": _GUEST_STAY,
-        "household.bring_back": _GUEST_STAY,
     }
 )
 
@@ -1036,9 +1195,11 @@ NO_RISK: Final = Risks()
 
 # What cannot be undone among the code's types: handing the owner's role over, removing a key,
 # forgetting a memory, taking a note back and telling a successor's death; and removing an account
-# (one given again is another account, spec 13.4).
+# (one given again is another account, spec 13.4); and forgetting a person.
 _IRREVERSIBLE: Final = frozenset(
     {
+        "people.forget",
+        "people.forget_me",
         "household.transfer_ownership",
         "key.remove",
         "account.remove",
@@ -1106,12 +1267,24 @@ PERMISSION_TYPES: Final[frozenset[str]] = frozenset(
         "policy.update",
         "house.name_domo",
         "models.set_level",
+        # The gestures on people that give an access or a way in, may move one, or change who
+        # may do what, and the owner's directives.
+        "household.send_link",
+        "access.promise_keep",
+        "people.merge",
+        "role.create",
+        "role.change",
+        "role.delete",
+        "people.directive_set",
+        "people.directive_lift",
     }
 )
 # The types of the code that handle a secret: a key given, given again, removed, shared, its admin
-# key, and the rules of the house on the keys.
-_SECRET_TYPES: Final = frozenset(
-    {"model.rekey", "key.add", "key.remove", "key.share", "key.admin", "keys.house"}
+# key, and the rules of the house on the keys; and an account removed or shared
+# (``_ACCOUNT_SECRET_TYPES``).
+SECRET_TYPES: Final = (
+    frozenset({"model.rekey", "key.add", "key.remove", "key.share", "key.admin", "keys.house"})
+    | _ACCOUNT_SECRET_TYPES
 )
 # The household's people he may invite, take back, remove and give another role on his own
 # judgement (the owner, 2026-11-23); his own judge weighs each, and the owner takes any of it back
@@ -1130,7 +1303,30 @@ DOMO_HOUSEHOLD_ACTIONS: Final[frozenset[str]] = frozenset(
 # 2026-11-24), as removing an account that no longer serves (``account.remove``); sharing a house
 # account stays the owner's alone.
 DOMO_DEVICE_ACTIONS: Final[frozenset[str]] = frozenset({"device.entrust", "device.remove"})
-_HIS_OWN_AFTER_ALL: Final = DOMO_HOUSEHOLD_ACTIONS | DOMO_DEVICE_ACTIONS | {"account.remove"}
+# The gestures on the people of the house and their roles (ruling 14): in no role. Only the owner
+# and the assistant make them, and the owner may open one to a precise person by a right. A role
+# the assistant makes never holds one (``ROLE_CEILING``).
+PEOPLE_GESTURES: Final[frozenset[str]] = DOMO_HOUSEHOLD_ACTIONS | frozenset(
+    {
+        "household.send_link",
+        "people.open",
+        "people.complete",
+        "people.erase",
+        "people.forget",
+        "people.link",
+        "people.unlink",
+        "people.merge",
+        "people.split",
+        "people.mistake",
+        "role.create",
+        "role.change",
+        "role.delete",
+        "access.promise",
+        "access.promise_keep",
+        "access.promise_drop",
+    }
+)
+_HIS_OWN_AFTER_ALL: Final = PEOPLE_GESTURES | DOMO_DEVICE_ACTIONS | {"account.remove"}
 # What Domo does not have by default (the controller's ruling of 2026-11-18, the socle): secrets,
 # spending limits, who may do what, and what is nobody's, but what ``DOMO_HOUSEHOLD_ACTIONS`` and
 # ``DOMO_DEVICE_ACTIONS`` hold and removing an account. What is nobody's, a right of the owner
@@ -1140,7 +1336,7 @@ _HIS_OWN_AFTER_ALL: Final = DOMO_HOUSEHOLD_ACTIONS | DOMO_DEVICE_ACTIONS | {"acc
 # Going out adds sharing an account (a secret), and a port of the machine that hosts him (the
 # owner's by default).
 DOMO_NOT_BY_DEFAULT: Final[frozenset[str]] = (
-    _SECRET_TYPES
+    SECRET_TYPES
     | {"spending.limit"}
     | PERMISSION_TYPES
     | _NOBODYS_ACTIONS
@@ -1154,10 +1350,112 @@ DOMO_NOT_BY_DEFAULT: Final[frozenset[str]] = (
 # from him.
 CLOSED_TO_DOMO: Final[frozenset[str]] = DOMO_NOT_BY_DEFAULT - _NOBODYS_ACTIONS - {NET_OPEN_HOST}
 
+# What a role the assistant makes never holds (ruling 15, socle 7), whatever its accesses say: the
+# owner's own, spending limits, the gestures on people, and what is closed to the assistant
+# himself (he does not give what he does not have). Held in code at the writing of a role
+# (``people.made_roles``) and at every reading (``policy.rights.RightsTable.resolve``).
+ROLE_CEILING: Final[frozenset[str]] = (
+    OWNER_ONLY_ACTIONS
+    | {"spending.limit"}
+    | PEOPLE_GESTURES
+    # All he does not have by default: closed to him, nobody's (another's texts), and a port of
+    # the machine that hosts him, which only the owner may give him.
+    | DOMO_NOT_BY_DEFAULT
+)
+# What a role the assistant makes may still take away, though it is above its ceiling or what
+# everyone has: leaving the household and "forget me" (the owner's answer of 2026-11-27, "Oui,
+# Domo juge"). Never what it gives.
+ROLE_MAY_DENY: Final[frozenset[str]] = frozenset({"household.leave", "people.forget_me"})
+
 # What Domo may do on his own, for the house (the owner, 2026-11-18: he may do everything and
 # judges himself whether it is right): every type of the code but the owner's own and what he does
 # not have by default (``DOMO_NOT_BY_DEFAULT``). Every open kind joins it (``load_policy``).
 DOMO_ACTIONS: Final[frozenset[str]] = KNOWN_ACTIONS - OWNER_ONLY_ACTIONS - DOMO_NOT_BY_DEFAULT
+
+# What is sensitive (spec 6.12, the seam of the voice): what a speaker the code is not sure of
+# never gets on a weak clue alone (``barrier.may_act_weakly``, not called yet). The owner's rule it
+# serves: ordinary things from an unsure speaker are done; for these the assistant judges first,
+# and asks a proof only on a real doubt. Derived from the catalog's own sets, so that a type added
+# to one of them is sensitive at once:
+NOT_WEAKLY: Final[frozenset[str]] = (
+    # the owner's own (rules, rights, succession, the level of models, a house account shared,
+    # his directives) and who may do what (the household, devices entrusted, keys, limits);
+    OWNER_ONLY_ACTIONS
+    | PERMISSION_TYPES
+    # the people, their roles, accesses and directives, and reading them;
+    | PEOPLE_GESTURES
+    | PEOPLE_READ_ACTIONS
+    | OWNER_DIRECTIVE_ACTIONS
+    | {"people.forget_me", "household.show_link", "household.leave"}
+    # the rights to read: who agrees for a child, what is set for the whole house;
+    | {CHILD_AGREE, HOUSE_SET}
+    # keys, accounts and their secrets; opening an address, a port of the machine included;
+    | SECRET_TYPES
+    | OUTWARD_ACTIONS
+    | {NET_OPEN_HOST}
+    # spending, and whatever costs, leaves the house or cannot be undone; what is said in
+    # someone's name;
+    | {"spending.limit", "spending.show"}
+    | {
+        action_type
+        for action_type, risks in CODE_RISKS.items()
+        if risks.costs or risks.outward or risks.irreversible
+    }
+    | {"note.leave", "note.withdraw", "note.keep"}
+    # the person's devices;
+    | _OWN_DEVICE_ACTIONS
+    # memory deleted, rewritten or searched, what is private to the person, what weighs on how
+    # others are trusted, and another person's things;
+    | {"memory.forget", "memory.change", "memory.search"}
+    | TRUST_ACTIONS
+    | DELIVERY_ACTIONS
+    | _RECEIVED_NOTE_ACTIONS
+    | {"note.list_sent", "texts.find"}
+    | _NOBODYS_ACTIONS
+    # a yes, an agreement that lasts, and what carries other actions (the assistant's own mark,
+    # ``confirmation.own_idea``, is not a yes);
+    | (
+        {action_type for action_type in _KNOWN if action_type.startswith("confirmation.")}
+        - {"confirmation.own_idea"}
+    )
+    | AGREEMENT_ACTIONS
+    | {"chain.run", "chain.continue"}
+    # changing or dropping a plan (making one is the person's own: ``plan.set``);
+    | {"plan.change", "plan.cancel"}
+    # writing, changing, removing or timing a tool of the assistant's, and a program run by hand
+    # (launching one follows the risks of its operation: ``barrier.may_act_weakly``).
+    | TOOL_ACTIONS
+    | PROGRAM_ACTIONS
+    | {PROGRAM_RUN}
+)
+# The ordinary things an unsure speaker may have done, written out so that a test compares them
+# with what the catalog leaves (``KNOWN_ACTIONS - NOT_WEAKLY - PROGRAM_REQUESTS``: what a running
+# program asks follows its risks). The person's own texts and writing, their name and the names
+# they use, the assistant's choices of models, a memory kept, a plan or a reminder of their own,
+# a complaint and its question, and the assistant's own mark.
+WEAKLY_FINE: Final[frozenset[str]] = frozenset(
+    {
+        "household.list",
+        "policy.show",
+        "profile.rename",
+        "profile.name_domo",
+        "texts.rewrite",
+        "texts.restore",
+        "texts.language",
+        "texts.note",
+        "texts.language_version",
+        "writing.choose",
+        "models.choose",
+        "models.refresh",
+        "memory.keep",
+        "plan.set",
+        "people.nickname_keep",
+        "people.nickname_forget",
+        "learning.note",
+        "learning.asked",
+        "confirmation.own_idea",
+    }
+)
 
 # What, in a turn Domo acts in on his own (a launch for the house woke him: Task 9), is about the
 # person whose conversation it is, as their own: their profile and the name they call him by, the
@@ -1205,6 +1503,13 @@ class PolicyTables:
     limits: Mapping[str, Limit] = DEFAULT_LIMITS
     kinds: Mapping[str, OpenKind] = NO_KINDS
     domo: frozenset[str] = DOMO_ACTIONS
+
+
+def adults_only(policy: PolicyTables) -> frozenset[str]:
+    """What is reserved to adults today in ``policy`` (ruling 16): what the adults have and the
+    children have not, open kinds included. A role never opens it to a child-marked person: only
+    the owner's right for that person does (``policy.rights.RightsTable.resolve``)."""
+    return policy.allowed.get("adult", frozenset()) - policy.allowed.get("child", frozenset())
 
 
 def risks_of(action_type: str, policy: PolicyTables) -> Risks:

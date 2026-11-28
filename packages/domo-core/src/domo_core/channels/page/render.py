@@ -71,6 +71,8 @@ from domo_core.conversation.events import Acted, Decided, Ended, Event, Failed, 
 from domo_core.db import SessionFactory
 from domo_core.llm.types import JsonObject
 from domo_core.naming import name_shown
+from domo_core.policy.open_catalog import load_policy
+from domo_core.policy.rights import load_rights
 from domo_core.policy.settings import PolicySettings, load_policy_settings
 from domo_core.texts.cards import KeptHead, head_of, heads_of
 from domo_core.texts.view import Texts
@@ -278,6 +280,7 @@ async def cards_of(
         (a.confirmation_id for taken in actions.values() for a in taken if a.confirmation_id),
     )
     settings = await load_policy_settings(session) if requests else PolicySettings({})
+    rights, policy = await load_rights(session), await load_policy(session)
     replaced = await predecessors_of(session, requests)
     changers = await changers_of(session, requests.values(), replaced)
     drafts = await draft_lines_of(
@@ -335,7 +338,7 @@ async def cards_of(
                 for_requester=True,
                 head=heads.get(action.id),
             )
-        if not may_see(request_of, person, now):
+        if not may_see(request_of, person, now, rights=rights, policy=policy):
             return not_yours_card(request_of.id, texts)
         # The reply that answered the person's words deciding the request (a yes, a no, or a
         # change Domo applied) shows what came of it: the request's own card is under the
@@ -363,6 +366,8 @@ async def cards_of(
             settings=settings,
             texts=texts,
             now=now,
+            rights=rights,
+            policy=policy,
             replaced=replaced.get(request_of.id),
             draft=drafts.get(request_of.id),
             successors=successors.get(request_of.id),

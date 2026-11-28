@@ -108,6 +108,7 @@ from chat_support import (
 )
 from domo_common.meanings import all_keys, group_of, meaning, meaning_hash, written_groups
 from domo_core.accounts import passwords
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Account, Person
 from domo_core.accounts.passkey_routes import new_passkey_options_throttle
 from domo_core.accounts.passwords import hash_password
@@ -129,7 +130,6 @@ from domo_core.migrate import upgrade_to_head
 from domo_core.notes.models import Note
 from domo_core.policy.catalog import DEFAULT_POLICY
 from domo_core.policy.models import PolicyRight
-from domo_core.policy.roles import Actor, as_role
 from domo_core.policy.settings import (
     PolicySettings,
     load_policy_settings,
@@ -474,8 +474,10 @@ async def tools_base(tools_admin: ToolsAdmin) -> AsyncIterator[ToolsBase]:
 
 @pytest.fixture
 def add_person(session: AsyncSession) -> Callable[..., Awaitable[Person]]:
-    async def _add_person(display_name: str = "A", role: str = "owner") -> Person:
-        person = Person(display_name=display_name, role=role)
+    async def _add_person(
+        display_name: str = "A", role: str = "owner", **columns: object
+    ) -> Person:
+        person = Person(display_name=display_name, role=role, **columns)
         session.add(person)
         await session.flush()
         return person
@@ -1384,7 +1386,11 @@ def set_role(
 
     async def _set_role(person: Person, role: str) -> None:
         async with session_factory() as writer:
-            await writer.execute(update(Person).where(Person.id == person.id).values(role=role))
+            await writer.execute(
+                update(Person)
+                .where(Person.id == person.id)
+                .values(role=role, is_child=role == "child")
+            )
             await writer.commit()
 
     return _set_role
@@ -1600,7 +1606,7 @@ def tool_context(
     person = owner_member.person
     return ToolContext(
         session_factory=chat_server.session_factory,
-        actor=Actor(person.id, as_role(person.role)),
+        actor=actor_of(person),
         person=person,
         conversation_id=uuid.uuid4(),
         origin=chat_server.base_url,

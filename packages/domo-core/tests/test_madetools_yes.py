@@ -23,6 +23,7 @@ from chat_support import ChatPilot, ChatServer
 from conftest import FakeClock
 from domo_common.i18n import t
 from domo_common.sandbox_api import JsonObject, RunRequest
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.channels.turns import app_turn_deps
 from domo_core.confirmations.describe import describe_type
@@ -45,7 +46,7 @@ from domo_core.policy.actions import DescribedAction
 from domo_core.policy.catalog import DEFAULT_POLICY, Risks
 from domo_core.policy.facts import STOPPED_FOR_A_YES, decision_facts
 from domo_core.policy.open_catalog import load_policy
-from domo_core.policy.roles import Actor, as_role, domo_actor
+from domo_core.policy.roles import Actor, domo_actor
 from domo_core.prompts import ToolWake
 from domo_core.texts.view import CatalogTexts
 from domo_core.tools.context import InvalidArguments, ToolContext
@@ -455,7 +456,7 @@ async def test_a_dry_run_never_stops_declares_or_wakes(session_factory, live_clo
         tool_name="order",
         tool_id=tool.id,
         for_whom=ForWhom(dana),
-        actor=Actor(dana.id, as_role(dana.role)),
+        actor=actor_of(dana),
         depth=0,
         chain=Chain(),
         waited=False,
@@ -515,7 +516,7 @@ async def test_a_yes_call_waits_and_is_shown_and_the_judge_never_reads_the_outpu
     # The stored call, once said yes to, takes the yes and runs it once.
     offer = await offer_named(session_factory, deps, "t_order")
     assert offer is not None
-    ctx = replace(tool_context, person=dana, actor=Actor(dana.id, as_role(dana.role)))
+    ctx = replace(tool_context, person=dana, actor=actor_of(dana))
     ran = await offer.execute({"yes_for": str(stop.id)}, ctx)
     assert ran.model_result == {
         "launch": "done",

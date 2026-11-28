@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from chat_support import dump, live_http_client, status_of
 from domo_common.i18n import t
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.household.models import Invitation
 from domo_core.household.service import create_invitation
@@ -119,14 +120,14 @@ async def test_the_link_given_again_replaces_the_old_one_and_keeps_the_invitatio
 
 
 async def test_the_card_of_the_link_given_again_says_its_end(owner_chat):
-    await invited(owner_chat, name="Robin", role="adult")
+    await invited(owner_chat, name="Tom", role="adult")
     reply = await owner_chat.say_with_tool(
-        "invitation_link_again", {"display_name": "Robin"}, judge="do"
+        "invitation_link_again", {"display_name": "Tom"}, judge="do"
     )
     invitation = await the_invitation(owner_chat.server.session_factory)
     expires = in_words(invitation.expires_at)
     page = (await owner_chat.get("/chat")).text
-    done = t("action.card.done.household.invite_again", "en", name="Robin", expires=expires)
+    done = t("action.card.done.household.invite_again", "en", name="Tom", expires=expires)
     assert done in " ".join(html.unescape(re.sub(r"<[^>]+>", " ", page)).split())
     assert reply.actions == [{"tool": "invitation_link_again", "status": "done"}]
 
@@ -183,7 +184,7 @@ async def waiting_with_link(session_factory, by: Person, name: str) -> tuple[Inv
 def _context(person: Person, session_factory, **more) -> ToolContext:
     return ToolContext(
         session_factory=session_factory,
-        actor=Actor(person.id, person.role),  # type: ignore[arg-type]
+        actor=actor_of(person),  # type: ignore[arg-type]
         person=person,
         conversation_id=uuid.uuid4(),
         origin="https://domo.local/",
@@ -336,7 +337,9 @@ async def test_a_return_link_is_made_again_by_bringing_the_person_back(session_f
     invitation = await waiting_for(session_factory, owner, "Dana")
     async with session_factory() as writer:
         await writer.execute(
-            update(Invitation).where(Invitation.id == invitation.id).values(person_id=gone.id)
+            update(Invitation)
+            .where(Invitation.id == invitation.id)
+            .values(person_id=gone.id, kind="return")
         )
         await writer.commit()
     with pytest.raises(InvalidArguments) as refused:
@@ -353,7 +356,7 @@ def _right(action_type: str, *, person_id=None, role=None, access=None) -> Right
 def test_whoever_may_invite_with_a_role_may_give_its_link_again():
     alex = uuid.uuid4()
     adult = Actor(alex, "adult")
-    child = Actor(uuid.uuid4(), "child")
+    child = Actor(uuid.uuid4(), "child", child=True)
     owner = Actor(uuid.uuid4(), "owner")
 
     def again(role: str, days: int | None) -> DescribedAction:
@@ -363,27 +366,33 @@ def test_whoever_may_invite_with_a_role_may_give_its_link_again():
             target=f"invitation:{uuid.uuid4()}",
             effect="permissions",
             destination="household",
-            facts={"role": role, "days": days, "display_name": "Dana", "owner_first": False},
+            facts={
+                "role": role,
+                "days": days,
+                "no_end": role == "guest" and days is None,
+                "display_name": "Dana",
+                "owner_first": False,
+            },
         )
 
     def moment(actor: Actor, action: DescribedAction) -> dict[str, object]:
         return facts_of(actor, action, name="Alex", local_now=None)
 
     adult_again = again("adult", None)
-    # The owner and the adults by default (0.9.1); a right on inviting moves it, never one of its
-    # own.
+    # The owner's by default (inviting is in no role, ruling 14); a right on inviting moves it,
+    # never one of its own.
     assert decide(owner, adult_again, facts=moment(owner, adult_again)) == Allow()
-    assert decide(adult, adult_again, facts=moment(adult, adult_again)) == Allow()
+    assert decide(adult, adult_again, facts=moment(adult, adult_again)) == Refuse("not_allowed")
     rights = RightsTable((_right("household.invite", person_id=alex, access="deny"),))
     assert decide(adult, adult_again, DEFAULT_POLICY, rights, moment(adult, adult_again)) == Refuse(
         "not_allowed"
     )
     rights = RightsTable((_right("household.invite", person_id=alex, access="allow"),))
     assert decide(adult, adult_again, DEFAULT_POLICY, rights, moment(adult, adult_again)) == Allow()
-    # The limits of inviting apply: a guest stays the household's rule at most.
-    long_stay = again("guest", 31)
-    refused = decide(adult, long_stay, DEFAULT_POLICY, rights, moment(adult, long_stay))
-    assert isinstance(refused, Refuse) and refused.reason == "limit"
+    # No limit of inviting reads a stay (audit POL-5): a long one, or none, goes on.
+    for days in (400, None):
+        long_stay = again("guest", days)
+        assert decide(adult, long_stay, DEFAULT_POLICY, rights, moment(adult, long_stay)) == Allow()
     # A child asks an adult, as for inviting.
     child_rights = RightsTable((_right("household.invite", role="child", access="allow"),))
     child_again = again("adult", None)

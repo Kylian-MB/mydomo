@@ -142,7 +142,17 @@ async def test_a_changed_chain_is_judged_again_with_what_changed(
     first, second = judge_cases(owner_chat.server)
     # The new version, judged for the one who asked, with the request's history: what it asked,
     # what it did before and does after the change; nobody had said yes yet (F23).
-    assert second["person"] == first["person"] == {"name": "Owner", "role": "owner"}
+    assert (
+        second["person"]
+        == first["person"]
+        == {
+            "name": "Owner",
+            "role": "owner",
+            "made_role": None,
+            "child": False,
+            "standing": "lives_here",
+        }
+    )
     assert second["action"]["type"] == "chain.run"
     assert [step["type"] for step in second["steps"]] == [
         "household.change_role",
@@ -281,7 +291,13 @@ async def test_an_approvers_change_is_judged_on_the_one_who_asked(
     assert await confirmation_status(rid) == "executed"
     case = judge_cases(chat_server)[-1]
     # The case is Sam's: their name, their words, their request; never Alex's words.
-    assert case["person"] == {"name": "Sam", "role": "child"}
+    assert case["person"] == {
+        "name": "Sam",
+        "role": "child",
+        "made_role": None,
+        "child": True,
+        "standing": "lives_here",
+    }
     assert case["words"] == ["Invite Tom for a week, please."]
     assert "seulement 3 jours" not in json.dumps(case, ensure_ascii=False)
     assert case["rights"]["needs"] == "adult"

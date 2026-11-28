@@ -96,6 +96,15 @@ def test_every_table_is_declared_on_the_shared_base():
         "service_accounts",
         # And what went wrong, kept for the judge to learn from (domo judges first).
         "went_wrong",
+        # The people the assistant makes: roles, who is whom to whom, what was promised.
+        "roles",
+        "role_accesses",
+        "person_links",
+        "access_promises",
+        "owner_directives",
+        "record_merges",
+        "person_acts",
+        "person_channel_refs",
     }
 
 

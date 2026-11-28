@@ -19,7 +19,9 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from chat_support import an_actor
 from domo_common.i18n import t
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.confirmations.describe import describe_for_people
 from domo_core.devices.models import Device, DevicePairing
@@ -44,7 +46,6 @@ from domo_core.policy.catalog import (
     OWNER_ONLY_ACTIONS,
     needs_the_judge,
 )
-from domo_core.policy.roles import Actor
 from domo_core.setup_flow.code import SETUP_CODE_ALPHABET
 from domo_core.texts.view import CatalogTexts
 from domo_core.tools.context import InvalidArguments, ToolContext
@@ -240,6 +241,7 @@ async def test_a_device_of_someone_who_left_is_not_known_even_before_it_is_forgo
     removed = await add_person("Dana", "adult")
     _, other = await paired(session, removed)
     removed.disabled_at = NOW
+    removed.state = "gone"
     await session.flush()
     assert await device_of(session, other, NOW) is None
 
@@ -387,11 +389,11 @@ async def test_the_owner_may_entrust_a_device_too(owner_chat):
 
 
 async def test_a_child_or_a_guest_may_not_unless_the_owner_gives_the_right(
-    child_chat, guest_chat, grant, session_factory
+    child_chat, guest_chat, grant, revoke_right, session_factory
 ):
     for chat in (child_chat, guest_chat):
         assert "device_entrust" not in [
-            d.name for d in tools_for(chat.person.role, TOOLS, DEFAULT_POLICY)
+            d.name for d in tools_for(an_actor(chat.person.role), TOOLS, DEFAULT_POLICY)
         ]
         reply = await chat.say_with_tool("device_entrust", {}, judge="do")
         assert reply.actions == [
@@ -400,7 +402,14 @@ async def test_a_child_or_a_guest_may_not_unless_the_owner_gives_the_right(
         assert not CODE.findall(reply.cards_html)
     async with session_factory() as reader:
         assert (await reader.execute(select(DevicePairing))).first() is None
-    await grant("device.entrust", person=child_chat.person, access="allow")
+    # Reserved to adults (ruling 16): the owner's right for the child opens it, an adult agreeing
+    # first unless that right says the child agrees for themselves.
+    opened = await grant("device.entrust", person=child_chat.person, access="allow")
+    waiting = await child_chat.say_with_tool("device_entrust", {}, judge="do")
+    assert waiting.actions == [{"tool": "device_entrust", "status": "waiting"}]
+    assert waiting.model_results[-1]["by"] == "an adult"
+    await revoke_right(opened)
+    await grant("device.entrust", person=child_chat.person, access="allow", approver="self")
     reply = await child_chat.say_with_tool("device_entrust", {}, judge="do")
     assert reply.actions == [{"tool": "device_entrust", "status": "done"}]
     assert len(CODE.findall(reply.cards_html)) == 1
@@ -414,7 +423,7 @@ async def test_a_child_or_a_guest_may_not_unless_the_owner_gives_the_right(
 def context_of(person: Person, session_factory, clock, **more) -> ToolContext:
     return ToolContext(
         session_factory=session_factory,
-        actor=Actor(person.id, person.role),  # type: ignore[arg-type]
+        actor=actor_of(person),  # type: ignore[arg-type]
         person=person,
         conversation_id=uuid.uuid4(),
         origin="https://domo.local/",
@@ -638,7 +647,7 @@ def test_the_catalog_knows_the_three_actions_and_who_may_do_them():
         ("device_remove", "device.remove"),
     ):
         assert TOOLS[tool].action_type == action
-        assert tool in [d.name for d in tools_for("owner", TOOLS, DEFAULT_POLICY)]
+        assert tool in [d.name for d in tools_for(an_actor("owner"), TOOLS, DEFAULT_POLICY)]
     assert "device.entrust" in DEFAULT_POLICY.allowed["adult"]
     for role in ("child", "guest"):
         assert "device.entrust" not in DEFAULT_POLICY.allowed[role]

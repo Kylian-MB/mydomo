@@ -43,6 +43,8 @@ from domo_core.confirmations.service import (
 )
 from domo_core.db import SessionFactory
 from domo_core.llm.choices import load_choices
+from domo_core.policy.open_catalog import load_policy
+from domo_core.policy.rights import load_rights
 from domo_core.policy.settings import load_policy_settings
 from domo_core.texts.cards import CardFacts, CardOf, KeptHead, card_facts, head_of
 from domo_core.texts.scheduler import TextWriting
@@ -74,11 +76,13 @@ async def head_facts_of(
     waiting = await waiting_names_of(session, [found])
     changers = await changers_of(session, [found], replaced)
     people = {person.id: person for person in (await session.execute(select(Person))).scalars()}
+    rights, policy = await load_rights(session), await load_policy(session)
     readers = [people[found.requester_id]] if found.requester_id in people else []
     readers.extend(
         person
         for person in people.values()
-        if person.id != found.requester_id and may_decide(found, person, now)
+        if person.id != found.requester_id
+        and may_decide(found, person, now, rights=rights, policy=policy)
     )
     facts: list[tuple[Person, CardFacts]] = []
     for reader in readers:
@@ -88,12 +92,16 @@ async def head_facts_of(
             settings=settings,
             texts=REFERENCE,
             now=now,
+            rights=rights,
+            policy=policy,
             replaced=replaced.get(confirmation_id),
             waiting_for=waiting.get(confirmation_id),
             changed_by=changers.get(confirmation_id),
             holed=True,
         )
-        facts.append((reader, card_facts(card, reader=reader, people=people)))
+        facts.append(
+            (reader, card_facts(card, reader=reader, people=people, rights=rights, policy=policy))
+        )
     return facts
 
 
@@ -197,6 +205,7 @@ async def write_action_head(
         async with session_factory() as session:
             if WRITE_DONE not in (await load_choices(session, None)).write_now:
                 return None
+            rights, policy = await load_rights(session), await load_policy(session)
         reference = action_card(
             tool_name=record.tool_name,
             status=record.status,
@@ -206,7 +215,7 @@ async def write_action_head(
             holed=texts,
         )
         people: Mapping[uuid.UUID, Person] = {reader.id: reader}
-        facts = card_facts(reference, reader=reader, people=people)
+        facts = card_facts(reference, reader=reader, people=people, rights=rights, policy=policy)
         await writing.head_now(CardOf(message_action_id=record.action_id), reader, facts)
         async with session_factory() as session:
             return await head_of(

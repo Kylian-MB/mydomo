@@ -15,11 +15,11 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from chat_support import ChatPilot
-from domo_core.accounts.models import Person
+from domo_core.accounts.actors import actor_of
+from domo_core.accounts.models import Account, Person
 from domo_core.audit.models import AuditEntry
 from domo_core.plans.models import Plan
 from domo_core.policy.catalog import DEFAULT_POLICY
-from domo_core.policy.roles import Actor
 from domo_core.tools.context import InvalidArguments, ToolContext
 from domo_core.tools.plan_tools import PAST, SECRET_REFUSED
 from domo_core.tools.registry import TOOLS
@@ -55,7 +55,7 @@ def context(
     unless ``answers`` is false (a turn Domo started)."""
     return ToolContext(
         session_factory=session_factory,
-        actor=Actor(person.id, person.role),  # type: ignore[arg-type]
+        actor=actor_of(person),  # type: ignore[arg-type]
         person=person,
         conversation_id=uuid.uuid4(),
         origin="",
@@ -93,6 +93,12 @@ async def two_people(session_factory) -> tuple[Person, Person]:
         await writer.flush()
         sam = Person(display_name="Sam", role="child")
         writer.add(sam)
+        await writer.flush()
+        # A plan is kept for someone who can answer: both have an account.
+        writer.add_all(
+            Account(person_id=who.id, username=who.display_name.lower(), password_hash="hash")
+            for who in (alex, sam)
+        )
         await writer.commit()
     return alex, sam
 

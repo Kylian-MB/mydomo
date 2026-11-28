@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 
 import pytest
+from domo_core.accounts.actors import actor_of
 from domo_core.chat.agent import TurnFailed, run_turn
 from domo_core.confirmations.judge import RightsSay
 from domo_core.conversation.execution import consult_the_judge
@@ -16,7 +17,6 @@ from domo_core.llm.spending_models import CatalogSnapshot
 from domo_core.llm.types import ChatMessage, ModelCallError
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.catalog import DEFAULT_POLICY
-from domo_core.policy.roles import Actor, as_role
 from domo_core.tools.context import ToolContext
 from domo_core.tools.registry import TOOLS
 from fakes import FakeChatModel, fake_factory
@@ -79,7 +79,7 @@ async def test_the_judge_never_takes_a_model_below_medium(owner, session_factory
 
     ctx = ToolContext(
         session_factory=session_factory,
-        actor=Actor(owner.id, as_role(owner.role)),
+        actor=actor_of(owner),
         person=owner,
         conversation_id=uuid.uuid4(),
         origin="https://domo.example.com/",

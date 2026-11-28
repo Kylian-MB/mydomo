@@ -5,7 +5,8 @@ out when the barrier decides.
   Domo on his own (``roles.domo_actor``), ``{"id": "domo", "role": "adult", "name":
   "Domo"}``;
 * ``action``: ``{"type", "target", "facts"}``, the described action and its facts (written by the
-  tool, ``DescribedAction.facts``);
+  tool, ``DescribedAction.facts``); a stay with no end (``no_end``) reads ``days`` as
+  ``NO_END_DAYS``, longer than any limit on its length (the owner's ruling, Task 21);
 * ``now``: ``{"hour", "minute", "weekday" (1 is Monday ... 7 Sunday), "date": "YYYY-MM-DD"}``, in
   the household's time zone, and only when the owner has set it (``household.time_zone``): an hour
   is never guessed, and a limit that reads it without one fails (closed);
@@ -143,6 +144,11 @@ class _Done(NamedTuple):
     last_at: datetime | None
 
 
+# The days a limit reads for a stay with no end (``no_end``): longer than any limit the owner
+# writes on the length of a stay, so that "60 days at most" stops it as it stops 61.
+NO_END_DAYS: Final = 1_000_000
+
+
 def facts_of(
     actor: Actor,
     action: DescribedAction,
@@ -160,12 +166,16 @@ def facts_of(
     there counts 0)."""
     counted_people = people or {}
     counted_invitations = invitations or {}
+    of_the_action = dict(action.facts)
+    if of_the_action.get("no_end") is True and of_the_action.get("days") is None:
+        # A stay with no end is longer than any limit on its length (``NO_END_DAYS``).
+        of_the_action["days"] = NO_END_DAYS
     facts: dict[str, object] = {
         "actor": {"id": actor_label(actor), "role": actor.role, "name": name},
         "action": {
             "type": action.action_type,
             "target": action.target,
-            "facts": dict(action.facts),
+            "facts": of_the_action,
         },
         "household": {
             "people": {role: counted_people.get(role, 0) for role in ROLES},

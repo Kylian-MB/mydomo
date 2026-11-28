@@ -95,6 +95,7 @@ async def test_someone_whose_stay_ended_is_not_found(session, add_person, clock)
     await add_person("Owner", "owner")
     gone = await add_person("Dana Gone", "adult")
     gone.disabled_at = clock()
+    gone.state = "gone"
     over = await add_person("Paul Over", "guest")
     over.expires_at = clock() - timedelta(seconds=1)
     await session.flush()
@@ -112,16 +113,20 @@ async def test_an_empty_name_means_nobody(session, add_person, clock):
 
 
 async def test_a_successor_named_in_full_is_never_taken_for_a_longer_name(
-    session, add_person, clock
+    session, add_person, add_account, clock
 ):
     """The list of successors finds someone who left by their whole name before a member whose
     name only begins the same way (``succession._person_named``)."""
     await add_person("Owner", "owner")
     sam = await add_person("Sam", "adult")
     samuel = await add_person("Samuel", "adult")
+    # A successor by person has an account.
+    await add_account(sam, "sam")
+    await add_account(samuel, "samuel")
     [entry] = await entries_from(session, [{"person": "Sam"}], clock())
     assert entry.person_id == sam.id
     sam.disabled_at = clock()
+    sam.state = "gone"
     await session.flush()
     # Sam left and is not on the list: then "Sam" is Samuel, the one person it begins.
     [entry] = await entries_from(session, [{"person": "Sam"}], clock())
@@ -232,7 +237,7 @@ async def test_remove_sam_while_sams_invitation_waits_removes_nobody(
 
 
 async def test_a_chain_names_whom_its_steps_act_on_whole(owner_chat: ChatPilot, add_member):
-    await add_member("Samuel", "adult")
+    await add_member("Samuel", "adult", username="samuel")
     chain = {
         "steps": [
             {"tool": "household_change_role", "arguments": {"person": "Sam", "role": "child"}},
@@ -312,3 +317,27 @@ async def test_a_stored_share_or_limit_runs_for_the_person_it_was_described_for(
     again = await TOOLS[tool].describe(asked, ctx.actor, ctx)
     outcome = await TOOLS[tool].execute(asked, replace(ctx, described_action=again))
     assert outcome.status == "done"
+
+
+async def test_a_name_among_the_records_never_takes_the_household_member_it_begins(
+    session, add_person, clock
+):
+    from domo_core.household.service import names_among
+
+    await add_person("Owner", "owner")
+    await add_person("Tomas", "adult")
+    tom = await add_person("Tom", "guest", expires_at=clock() - timedelta(days=1))
+    # Among the household "Tom" is the beginning of "Tomas"; among the records it is Tom.
+    assert (await resolve_person(session, "Tom", now=clock())).display_name == "Tomas"
+    found = await resolve_person(session, "Tom", now=clock(), among="records")
+    assert found.id == tom.id
+    named = await whole_names(
+        session, {"person": "Tom"}, ("person",), now=clock(), speaker=None, among="records"
+    )
+    assert named == {"person": "Tom"}
+    assert names_among(TOOLS["record_look"]) == "records"
+    # A removal and a change of role act on a record too (with or without access); handing the
+    # owner's role over is only ever to someone of the household.
+    assert names_among(TOOLS["household_remove"]) == "records"
+    assert names_among(TOOLS["household_change_role"]) == "records"
+    assert names_among(TOOLS["household_transfer_ownership"]) == "household"

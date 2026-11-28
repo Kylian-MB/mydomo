@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from domo_core.accounts.models import Person
+from domo_core.accounts.models import Account, Person
 from domo_core.policy.actions import DescribedAction, FactValue
 from domo_core.policy.catalog import KNOWN_ACTIONS, needs_the_judge
 from domo_core.policy.subjects import (
@@ -36,6 +36,9 @@ def action(action_type: str, target: str | None = None, **facts: FactValue) -> D
 async def person(session: AsyncSession, name: str, role: str, **fields: object) -> Person:
     given = Person(display_name=name, role=role, **fields)
     session.add(given)
+    await session.flush()
+    # Whoever answers for a thing has an account (``concerned_of``).
+    session.add(Account(person_id=given.id, username=name.lower(), password_hash="hash"))
     await session.flush()
     return given
 
@@ -148,7 +151,7 @@ async def test_a_child_s_thing_under_an_adult_s_agreement_goes_to_the_owner(
 
 async def test_someone_who_left_does_not_answer(session: AsyncSession):
     owner = await person(session, "Alex", "owner")
-    gone = await person(session, "Tom", "adult", disabled_at=NOW - timedelta(days=1))
+    gone = await person(session, "Tom", "adult", disabled_at=NOW - timedelta(days=1), state="gone")
     expired = await person(session, "Sam", "guest", expires_at=NOW - timedelta(hours=1))
     for who in (gone, expired):
         given = Subject("plan:1", who.id)
@@ -171,8 +174,18 @@ def test_removing_or_cancelling_someone_invited_is_also_known_by_the_invitee_s_n
     assert keys_of(cancel, {"cancelled": "Dana"}) == ("invitation:1", "invitee:dana")
     # The canonical key stays the first, as ``subject_of`` gives it.
     assert subject_of(removal, {"removed": "Dana"}, uuid4()).key == f"person:{dana}"
-    # A change of role is about the person only: it never undoes an invitation (R55).
+    # A change of role is known by the invitee's name too: it undoes the role an invitation gave
+    # (R55's cost, taken back).
     role = action("household.change_role", f"person:{dana}", person=f"person:{dana}")
-    assert keys_of(role, {"person": "Dana"}) == (f"person:{dana}",)
-    assert UNDOES["household.change_role"] == {"household.change_role"}
-    assert UNDOES["household.remove"] == {"household.invite", "household.bring_back"}
+    assert keys_of(role, {"person": "Dana"}) == (f"person:{dana}", "invitee:dana")
+    assert UNDOES["household.change_role"] == {
+        "household.change_role",
+        "household.invite",
+        "household.bring_back",
+        "access.promise_keep",
+    }
+    assert UNDOES["household.remove"] == {
+        "household.invite",
+        "household.bring_back",
+        "access.promise_keep",
+    }

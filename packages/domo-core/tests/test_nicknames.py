@@ -86,6 +86,7 @@ async def test_a_whole_name_always_wins_over_a_nickname(session, add_person, clo
     assert (await resolve_person(session, "Sam", now=clock(), speaker=alex.id)).id == sam.id
     # Sam leaves: then Alex's "Sam" is Samuel, as they keep it.
     sam.disabled_at = clock()
+    sam.state = "gone"
     await session.flush()
     assert (await resolve_person(session, "Sam", now=clock(), speaker=alex.id)).id == samuel.id
     # A nickname comes before a first word: Alex's "Sam" is Samuel, not Sam Bee.
@@ -105,6 +106,7 @@ async def test_a_nickname_of_someone_who_left_is_ignored(session, add_person, cl
     await keep(session, alex, "Juju", dana, clock)
     await keep(session, alex, "Polo", paul, clock)
     dana.disabled_at = clock()
+    dana.state = "gone"
     await session.flush()
     assert (await refused(session, "Juju", clock, alex.id)).code == "not_found"
     assert await nicknames.of(session, alex.id, now=clock()) == [("Polo", "Paul")]
@@ -518,6 +520,7 @@ async def test_a_shorter_name_after_a_return_is_never_taken_for_a_member(
         found = await session.get(Person, gone.id)
         assert found is not None
         found.disabled_at = datetime.now(UTC)
+        found.state = "gone"
         await session.commit()
     await add_member("Dana Smith", "adult")
     steps = {

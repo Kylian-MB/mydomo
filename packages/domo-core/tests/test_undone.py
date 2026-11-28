@@ -17,6 +17,7 @@ from domo_core.learning.models import WentWrong
 from domo_core.llm.types import JsonObject, ToolCall, ToolDefinition
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.catalog import DEFAULT_POLICY
+from domo_core.policy.models import PolicyRight
 from domo_core.policy.roles import Actor
 from domo_core.tools.context import ToolContext, ToolOutcome
 from sqlalchemy import select
@@ -268,6 +269,22 @@ async def _invited_by(session_factory: Any, person: Person) -> MessageAction:
     return invited
 
 
+async def _may_invite(session_factory: Any, owner: Person, person: Person) -> None:
+    """The owner opens inviting to ``person`` (in no role: ruling 14)."""
+    async with session_factory() as writer:
+        writer.add(
+            PolicyRight(
+                person_id=person.id,
+                action_type="household.invite",
+                access="allow",
+                summary="Dana may invite.",
+                owner_words="Dana may invite",
+                created_by=owner.id,
+            )
+        )
+        await writer.commit()
+
+
 async def _cancelled_by(session_factory: Any, person: Person) -> Any:
     ctx, reply_id, _ = await _turn(session_factory, person, said="Tom is not coming after all.")
     record = await handle_tool_call(
@@ -292,6 +309,7 @@ async def test_someone_else_undoing_what_the_judge_let_through_is_a_wrong_verdic
 ):
     people = await _people(session_factory, ("Alex", "owner"), ("Dana", "adult"), grants=False)
     alex, dana = people["Alex"], people["Dana"]
+    await _may_invite(session_factory, alex, dana)
     _judge(monkeypatch, Judgement("do", "Dana invites friends often"))
     invited = await _invited_by(session_factory, dana)
     record = await _cancelled_by(session_factory, alex)
@@ -310,6 +328,7 @@ async def test_someone_else_undoing_what_the_judge_let_through_is_a_wrong_verdic
 async def test_a_verdict_the_judge_did_not_give_is_no_wrong_verdict(session_factory, monkeypatch):
     # A silent judge's fallback let it through: no verdict of his was wrong.
     people = await _people(session_factory, ("Alex", "owner"), ("Dana", "adult"), grants=False)
+    await _may_invite(session_factory, people["Alex"], people["Dana"])
     _judge(monkeypatch, Judgement("do", fallback="timeout"))
     await _invited_by(session_factory, people["Dana"])
     record = await _cancelled_by(session_factory, people["Alex"])
@@ -323,7 +342,7 @@ async def test_a_verdict_the_judge_did_not_give_is_no_wrong_verdict(session_fact
 async def _his_invitation(session_factory: Any, alex: Person) -> MessageAction:
     """Tom invited by the assistant on his own, in Alex's conversation."""
     ctx, reply_id, _ = await _turn(session_factory, alex, on_his_own=True, reply_message_id=None)
-    assert (await handle_tool_call(invite(), ctx=ctx, reply_id=reply_id)).status == "done"
+    assert (await handle_tool_call(invite(his=True), ctx=ctx, reply_id=reply_id)).status == "done"
     invited = await action_of(session_factory, "household.invite")
     assert (invited.by_domo, invited.subject_key) == (True, "invitee:tom")
     return invited
@@ -335,11 +354,12 @@ async def _tom_joined(session_factory: Any) -> None:
         await writer.commit()
 
 
-async def test_promoting_someone_he_invited_notes_nothing(session_factory, monkeypatch):
-    # R55: a promotion confirms his invitation rather than undoing it.
+async def test_promoting_someone_he_invited_is_noted_as_undone(session_factory, monkeypatch):
+    # R55 left the invitation out, at a cost: a role given at the invitation and changed later
+    # was not noted. A change of role now undoes the role his invitation gave.
     alex = (await _people(session_factory, ("Alex", "owner")))["Alex"]
     _judge(monkeypatch, Judgement("do", "a friend of the house"))
-    await _his_invitation(session_factory, alex)
+    invited = await _his_invitation(session_factory, alex)
     await _tom_joined(session_factory)
     ctx, reply_id, _ = await _turn(session_factory, alex, said="Tom stays: make him an adult.")
     record = await handle_tool_call(
@@ -348,8 +368,9 @@ async def test_promoting_someone_he_invited_notes_nothing(session_factory, monke
         reply_id=reply_id,
     )
     assert record.status == "done"
-    assert UNDOES not in record.model_result
-    assert await facts(session_factory) == []
+    assert UNDOES in record.model_result
+    undone = [fact for fact in await facts(session_factory) if fact.kind == "undone"]
+    assert [(fact.action_id, fact.subject_key) for fact in undone] == [(invited.id, "invitee:tom")]
 
 
 async def test_removing_someone_he_invited_matches_by_the_invitee_s_name(

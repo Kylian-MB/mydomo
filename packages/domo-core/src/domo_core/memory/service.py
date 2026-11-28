@@ -29,9 +29,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from domo_core.accounts.models import Person
 from domo_core.memory.models import Kind, Memory, Origin
 from domo_core.setup_flow.code import SETUP_CODE_ALPHABET
+from domo_core.text import name_key
 
 MAX_SUBJECT: Final = 120
 MAX_CONTENT: Final = 600
+# How many of the newest free-text memories ``free_text_about`` reads to find a name.
+FREE_TEXT_SCAN: Final = 2000
 # Who said a memory, as Domo is told: the person of the turn, Domo himself (what he wrote on his
 # own, ``Memory.by_domo``), or someone no longer in the database. The person of the turn is never
 # told as "you": the context says "you" to Domo, and a live model took such a line for his own.
@@ -297,6 +300,40 @@ async def core_of(session: AsyncSession, person_id: uuid.UUID, *, max_chars: int
         items.append(memory)
         used += weight
     return CoreMemories(items=tuple(items), left_out=len(rows) - len(items))
+
+
+async def free_text_about(
+    session: AsyncSession,
+    name: str,
+    *,
+    nicknames: Sequence[str] = (),
+    limit: int = 20,
+    seen_by: uuid.UUID | None = None,
+) -> list[Memory]:
+    """The candidates for "what was said of this person before their record existed": memories
+    that are about nobody (``about_id`` empty) whose subject reads as ``name`` (``text.name_key``),
+    as its first word ("Tom" for "Tom Lee"), or as one of ``nicknames``, the most recent first.
+    The code only lists: which of them speak of this person (two people may be called Tom) is the
+    assistant's judgement. ``seen_by`` keeps what that person's turn may see
+    (``visible_to``); ``None`` keeps everything. The newest ``FREE_TEXT_SCAN`` free memories are
+    read, no more. Reads only."""
+    key = name_key(name)
+    keys = {key, key.split(" ")[0], *(name_key(nickname) for nickname in nicknames)} - {""}
+    if not keys or limit < 1:
+        return []
+    statement = select(Memory.id, Memory.subject).where(Memory.about_id.is_(None))
+    if seen_by is not None:
+        statement = statement.where(visible_to(seen_by))
+    rows = (
+        await session.execute(
+            statement.order_by(Memory.created_at.desc(), Memory.id).limit(FREE_TEXT_SCAN)
+        )
+    ).all()
+    ids = [memory_id for memory_id, subject in rows if name_key(subject) in keys][:limit]
+    if not ids:
+        return []
+    found = {m.id: m for m in await session.scalars(select(Memory).where(Memory.id.in_(ids)))}
+    return [found[memory_id] for memory_id in ids]
 
 
 async def mark_served(session: AsyncSession, ids: Sequence[uuid.UUID], now: datetime) -> None:

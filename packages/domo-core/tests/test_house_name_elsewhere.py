@@ -81,8 +81,8 @@ async def test_pairing_and_since_send_the_name_he_has_for_the_person(
 async def test_a_note_of_his_names_him_as_the_reader_does(
     add_member, session_factory, live_clock, set_setting
 ):
-    owner = await add_member("Alex", "owner")
-    dana = await add_member("Dana", "adult")
+    owner = await add_member("Alex", "owner", username="alex")
+    dana = await add_member("Dana", "adult", username="dana")
     await leave(alone(call_context(owner, session_factory, live_clock)), "Dana", "Bins tonight.")
 
     async def author_in_the_list() -> str:
@@ -118,14 +118,15 @@ async def _fresh(session_factory, person: Person) -> Person:
 
 
 async def test_a_request_he_made_names_him_as_the_approver_reads_it(
-    session, add_person, add_conversation, clock
+    session, add_person, add_account, add_conversation, clock
 ):
     adult = await add_person("Alex", "adult")
+    await add_account(adult, "alex")  # whoever is asked has an account
     child = await add_person("Sam", "child")
     conversation = await add_conversation(child)
     await create_confirmation(
         session,
-        requester=Actor(child.id, "child"),
+        requester=Actor(child.id, "child", child=True),
         tool_name="profile_rename",
         arguments={"name": "Sam B"},
         action=DescribedAction(

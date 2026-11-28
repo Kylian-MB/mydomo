@@ -31,9 +31,10 @@ from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
-from chat_support import PILOT_MODELS, PILOT_PROVIDER_URL, Card, dump
+from chat_support import PILOT_MODELS, PILOT_PROVIDER_URL, Card, an_actor, dump
 from domo_common.gatekeeper_api import ProviderRoute, SecretRequestCreate, SecretRequestView
 from domo_common.i18n import t
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.channels.page.abilities import PAGE
 from domo_core.confirmations.chain import failed_step_may_have_acted
@@ -886,7 +887,7 @@ def test_a_gatekeeper_failure_is_one_of_three_things_to_tell(error, failure):
 
 @pytest.mark.parametrize("role", ["owner", "adult", "child", "guest"])
 def test_everyone_is_offered_model_rekey_for_their_own_keys(role):  # 0.6.0
-    names = [definition.name for definition in tools_for(role, TOOLS, DEFAULT_POLICY)]
+    names = [definition.name for definition in tools_for(an_actor(role), TOOLS, DEFAULT_POLICY)]
     assert "model_rekey" in names
 
 
@@ -1502,7 +1503,7 @@ def plain(fragment: str) -> str:
 
 
 def actor(person: Person) -> Actor:
-    return Actor(person.id, person.role)  # type: ignore[arg-type]
+    return actor_of(person)
 
 
 def context(person: Person, session_factory) -> ToolContext:

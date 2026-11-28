@@ -5,6 +5,7 @@ from typing import Literal
 from uuid import uuid4
 
 import pytest
+from domo_core.accounts.models import Person
 from domo_core.conversation.speaker import Clue, Speaker, actor_of, established
 
 NOW = datetime(2026, 11, 12, 10, 0, tzinfo=UTC)
@@ -46,18 +47,18 @@ def test_a_strong_session_clue_from_the_code_establishes():
 
 
 def test_the_actor_is_trusted_as_the_speaker_is_established():
-    person = uuid4()
+    person = Person(id=uuid4(), display_name="Dana", role="adult")
     for clues in ((), (_clue(),), (_clue(source="domo"),)):
-        speaker = Speaker(person_id=person, channel="api", clues=clues)
-        actor = actor_of(speaker, "adult")
+        speaker = Speaker(person_id=person.id, channel="api", clues=clues)
+        actor = actor_of(speaker, person)
         assert actor.trusted == established(speaker)
-        assert actor.person_id == person
+        assert actor.person_id == person.id
         assert actor.role == "adult"
 
 
 def test_nobody_has_no_actor():
     with pytest.raises(ValueError):
-        actor_of(Speaker(person_id=None, channel="page"), "guest")
+        actor_of(Speaker(person_id=None, channel="page"), Person(display_name="Sam", role="guest"))
 
 
 def test_the_judge_reads_no_identifier():

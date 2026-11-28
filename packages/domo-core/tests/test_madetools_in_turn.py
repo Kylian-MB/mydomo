@@ -867,7 +867,11 @@ async def test_the_owner_closes_a_tool_to_someone(
 
 async def disabled(session_factory, person: Person, at: datetime) -> None:
     async with session_factory() as writer:
-        await writer.execute(update(Person).where(Person.id == person.id).values(disabled_at=at))
+        await writer.execute(
+            update(Person)
+            .where(Person.id == person.id)
+            .values(disabled_at=at, state="has_access" if at is None else "gone")
+        )
         await writer.commit()
 
 

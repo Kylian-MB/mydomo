@@ -30,11 +30,13 @@ cards in words, a request's as it is now (as the page reads it).
 
 import json
 import logging
+import re
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from typing import Final, cast
 
+from domo_common.text_rules import HOLE
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domo_core.accounts.models import Person
@@ -56,6 +58,8 @@ from domo_core.conversation.channel import ListenerGone
 from domo_core.conversation.events import Acted, Decided, Ended, Event, Failed, Words
 from domo_core.db import SessionFactory
 from domo_core.llm.types import JsonObject
+from domo_core.policy.open_catalog import load_policy
+from domo_core.policy.rights import load_rights
 from domo_core.proofs.kinds import ProofPlace
 from domo_core.proofs.service import offers
 from domo_core.texts.view import Texts
@@ -78,23 +82,58 @@ CARDS_IN_WORDS: Final = frozenset(
         "action.card.done.key.admin.on_request",
         "action.card.done.key.admin.yours",
         "action.card.done.key.add.check",
+        # A link that waits for the one who asked: here they ask for it in words
+        # (``invitation_link_show``).
+        "action.card.done.household.invite.on_request",
+        "action.card.done.household.invite_again.on_request",
     }
 )
 
 
+def _said_as(template: str) -> re.Pattern[str]:
+    """What a sentence of ``template`` reads like once its holes are filled: each hole any text
+    (the same text where a hole comes back)."""
+    pattern: list[str] = []
+    seen: set[str] = set()
+    at = 0
+    for hole in HOLE.finditer(template):
+        pattern.append(re.escape(template[at : hole.start()]))
+        name = hole.group(1)
+        pattern.append(f"(?P={name})" if name in seen else f"(?P<{name}>.+?)")
+        seen.add(name)
+        at = hole.end()
+    pattern.append(re.escape(template[at:]))
+    return re.compile("".join(pattern))
+
+
 def in_words(sentence: str, texts: Texts) -> str:
     """``sentence`` as this channel says it: each sentence of ``CARDS_IN_WORDS`` it holds, in
-    ``texts``, replaced by its own sentence in words. A request's card, or a decision's, is said
-    from the page's card (``confirmations.routes``): its sentence is changed here, once said."""
+    ``texts``, replaced by its own sentence in words, with the same names and dates in its holes.
+    A request's card, or a decision's, is said from the page's card (``confirmations.routes``):
+    its sentence is changed here, once said."""
     for key in CARDS_IN_WORDS:
-        page_sentence = texts(key)
-        if page_sentence and page_sentence in sentence:
-            sentence = sentence.replace(page_sentence, texts(f"{key}.in_words"))
+        page_template = texts.template(key)
+        if not page_template:
+            continue
+        words = texts.template(f"{key}.in_words")
+
+        def said(found: re.Match[str], words: str = words) -> str:
+            # A hole the page's sentence did not have stays as it is.
+            values = found.groupdict()
+            return HOLE.sub(lambda hole: values.get(hole.group(1), hole.group(0)), words)
+
+        sentence = _said_as(page_template).sub(said, sentence)
     return sentence
 
 
 def sentence_of_card(card: Mapping[str, object], texts: Texts) -> str | None:
-    """A card in words (``card_sentence``), as this channel says it (``in_words``)."""
+    """A card in words (``card_sentence``), as this channel says it: a card of ``CARDS_IN_WORDS``
+    by its own sentence in words, the other cards as the page says them (``in_words``)."""
+    key = card.get("key")
+    if isinstance(key, str) and key in CARDS_IN_WORDS:
+        said = card_sentence({**card, "key": f"{key}.in_words"}, texts)
+        if said is not None:
+            return said
     sentence = card_sentence(card, texts)
     return None if sentence is None else in_words(sentence, texts)
 
@@ -147,10 +186,13 @@ async def request_of(
     (``ValueError``: a database edited by hand) has no ``answer_with``: logged by its kind, it
     never ends a stream."""
     c = (await confirmations_by_id(session, [confirmation_id])).get(confirmation_id)
-    if c is None or c.status != "pending" or not may_see(c, viewer, now):
+    if c is None or c.status != "pending":
+        return None
+    rights, policy = await load_rights(session), await load_policy(session)
+    if not may_see(c, viewer, now, rights=rights, policy=policy):
         return None
     try:
-        if may_decide(c, viewer, now):
+        if may_decide(c, viewer, now, rights=rights, policy=policy):
             answer_with = ask_of(c) or "yes"
         else:
             approver = approver_of(c)

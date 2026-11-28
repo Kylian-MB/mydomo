@@ -29,6 +29,7 @@ from datetime import datetime
 from sqlalchemy import delete, or_
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from domo_core.accounts.actors import VISITING
 from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import active_at
 from domo_core.audit.log import append_audit
@@ -50,7 +51,7 @@ async def erase_notes_of_departed_guests(session: AsyncSession, now: datetime) -
         delete(Note)
         .where(
             Note.recipient_id == Person.id,
-            Person.role == "guest",
+            VISITING,
             ~active_at(now),
             or_(Note.keep_until.is_(None), Note.keep_until <= now),
         )

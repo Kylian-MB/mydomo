@@ -65,7 +65,9 @@ def turn_deps_of(
     (``app.state.kept``), and the local model of the meanings of memories
     (``app.state.embedder``: none where the lifespan made none), the sandbox
     (``web.deps.sandbox_of``: one that is always down where the lifespan made none) and the tools'
-    own database (``web.deps.tools_base_of``: none where the lifespan made none)."""
+    own database (``web.deps.tools_base_of``: none where the lifespan made none), and the channels
+    told of what happens to the records (``app.state.record_listeners``: the application's one
+    instance, set with the other application-wide objects)."""
     state = app.state
     text_writing: TextWriting | None = getattr(state, "text_writing", None)
     return TurnDeps(
@@ -87,6 +89,7 @@ def turn_deps_of(
         embedder=getattr(state, "embedder", NO_EMBEDDER),
         sandbox=sandbox_of(app),
         tools_base=tools_base_of(app),
+        record_listeners=state.record_listeners,
     )
 
 

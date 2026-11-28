@@ -96,6 +96,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import is_active
 from domo_core.audit.log import append_audit
@@ -115,12 +116,13 @@ from domo_core.madetools.risks import Operation, operations_of
 from domo_core.madetools.schema import schema_problem, unsupported
 from domo_core.madetools.service import count_launch, set_aside
 from domo_core.madetools.settings import all_values, hit, told
+from domo_core.people.sealed import SealedLinks
 from domo_core.policy.actions import DescribedAction, FactValue
 from domo_core.policy.barrier import Allow, Refuse, record_decision
 from domo_core.policy.catalog import MADE_FACTS_WITHOUT_A_YES, MADE_PREFIX, PolicyTables
 from domo_core.policy.decision import decide_now
 from domo_core.policy.open_catalog import load_policy
-from domo_core.policy.roles import Actor, actor_label, as_role, domo_actor
+from domo_core.policy.roles import Actor, actor_label, domo_actor
 from domo_core.policy.settings import load_policy_settings
 from domo_core.policy.subjects import keys_of
 from domo_core.prompts import ToolWake
@@ -229,7 +231,9 @@ class LaunchDeps:
     ``conversation.prepare.made_tool_deps`` gives the application's), the tools' database the
     programs read and write (``tools_base``: ``None``, there is none, and each such request is
     refused) and the gatekeeper their requests out go through (``gatekeeper``: ``None``, nothing
-    goes out, each such request is refused ``unreachable``)."""
+    goes out, each such request is refused ``unreachable``). ``house_origin`` is the address of the
+    house's page for a link made outside a request (``config.site_origin``: ``None``, none is
+    configured, and no such link is sent)."""
 
     session_factory: SessionFactory
     sandbox: Sandbox
@@ -239,6 +243,7 @@ class LaunchDeps:
     waker: Waker | None = None
     tools_base: ToolsBase | None = None
     gatekeeper: WayOut | None = None
+    house_origin: str | None = None
 
 
 @dataclass(frozen=True)
@@ -326,6 +331,7 @@ async def launch(
     within: "LaunchScope | None" = None,
     yes: LaunchStop | None = None,
     judged_as_domo: bool = False,
+    sealed: SealedLinks | None = None,
 ) -> Launched:
     """Launch the tool ``tool_id`` with ``arguments``, for ``for_whom`` (a person, or ``HOUSE``),
     and say what came of it (see the module docstring). ``waited`` says whether a turn waits on
@@ -338,7 +344,8 @@ async def launch(
     what answers the program (``madetools.means``). ``yes`` is the stop whose yes the caller took
     (``madetools.yes.take_yes``): this launch lets its operation through, up to its amount, once.
     ``judged_as_domo``: a turn put this launch for the house through the barrier as Domo's
-    already (it is not judged twice).
+    already (it is not judged twice). ``sealed``: the links sealed for this launch
+    (``people.sealed``, ``tools.invitation_send``); a launch ``within`` another has that launch's.
 
     It raises only what the database raises: a launch that fails otherwise is a ``Launched``."""
     ready = await _judged_and_counted(
@@ -346,7 +353,9 @@ async def launch(
     )
     if isinstance(ready, Launched):
         return ready
-    return await _launched(deps, ready, waited=waited, chain=chain, within=within, yes=yes)
+    return await _launched(
+        deps, ready, waited=waited, chain=chain, within=within, yes=yes, sealed=sealed
+    )
 
 
 async def launch_by_hand(
@@ -382,6 +391,7 @@ async def _launched(
     chain: "Chain | None",
     within: "LaunchScope | None",
     yes: LaunchStop | None,
+    sealed: SealedLinks | None = None,
 ) -> Launched:
     """Run ``ready`` in its chain (see ``launch``), and give the chain's wakes once it ends when
     nobody else gathers them."""
@@ -395,6 +405,8 @@ async def _launched(
             within.path,
             within.chain.turn_waits,
         )
+        # What the chain sealed is scrubbed from what its every launch reads back.
+        sealed = within.sealed
     else:
         waits = ready.cause == "turn" if waited is None else waited
         gathers, depth, path = chain or Chain(turn_waits=waits), 0, ()
@@ -413,6 +425,7 @@ async def _launched(
         yes=None if yes is None else YesGiven.of(yes),
         hand_run_id=ready.hand_run_id,
         settings=ready.settings,
+        sealed=sealed,
     )
     launched = await _run(deps, ready, scope, nested=within is not None)
     if within is None and chain is None:
@@ -545,7 +558,7 @@ async def _judged_and_counted(
             if person is None:
                 # Someone who left: nothing is launched for them any more.
                 return Launched("refused", {"reason": "not_allowed"})
-        who = domo_actor() if person is None else Actor(person.id, as_role(person.role))
+        who = domo_actor() if person is None else actor_of(person)
         actor = actor_label(who)
         if cause != "turn" or (person is None and not judged_as_domo):
             # A turn judged its call already (for the house, as Domo's); any other launch is
@@ -644,7 +657,7 @@ async def _hand_run_ready(
         if run.for_person_id != (None if person is None else person.id):
             # Only for whom it was opened.
             return Launched("refused", {"reason": "not_allowed"})
-        who = domo_actor() if person is None else Actor(person.id, as_role(person.role))
+        who = domo_actor() if person is None else actor_of(person)
         zone = (await load_policy_settings(session)).time_zone
         arguments = cast(JsonObject, dict(run.arguments))
         # The house's bounds, but its time: its own (``program_run``'s ``max_seconds``).
@@ -1004,8 +1017,9 @@ def _came_of(
             if wrong.setting is not None:
                 told_back.update(_hit(*wrong.setting))
             return Launched("failed", told_back), str(wrong)
-    if ran.status == "stopped" and means.stopped_for is not None:
-        # A yes is needed: Domo is woken with what was to be done (``means``).
+    if ran.status == "stopped" and (means.stopped_for is not None or means.stop_told):
+        # A yes is needed: Domo is woken with what was to be done (``means``); in a chain that
+        # holds a sealed link no stop is kept, and the launch says so all the same.
         return Launched("stopped", {"reason": "needs_yes", **means.stop_told}), None
     if ran.status == "stopped":
         return Launched("stopped", None), None
