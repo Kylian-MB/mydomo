@@ -326,26 +326,35 @@ class Woken:
 
 
 class ClosesOnListeningOff(FakePage):
-    """The page's socket as the page uses it: on "listening off" the page closes it at once. The
-    worst case of that race: the session's worker never gets past that send (the close cancels
-    it there)."""
+    """The page's socket as the page uses it: on "listening off" the page closes it at once (or,
+    ``on_state``, already on the state it is sent). The worst case of that race: the session's
+    worker never gets past that send (the close cancels it there)."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, on_state: bool = False) -> None:
         super().__init__()
         self.session: VoiceSession | None = None
         self.closing: asyncio.Task[None] | None = None
+        self.on_state = on_state
+
+    def _closes_on(self, data: JsonObject) -> bool:
+        if self.on_state:
+            return data.get("type") == "state"
+        return data == {"type": "listening", "on": False}
 
     async def send_json(self, data: JsonObject) -> None:
         await super().send_json(data)
-        if data == {"type": "listening", "on": False} and self.session is not None:
+        if self._closes_on(data) and self.session is not None:
             self.open = False
             self.closing = asyncio.create_task(self.session.close())
             await asyncio.Event().wait()  # until the close cancels the worker
 
 
-def closing_page(h: "House", person: Person, microphone: str) -> ClosesOnListeningOff:
-    """A page of ``person`` at ``microphone`` whose socket closes on "listening off"."""
-    socket = ClosesOnListeningOff()
+def closing_page(
+    h: "House", person: Person, microphone: str, *, on_state: bool = False
+) -> ClosesOnListeningOff:
+    """A page of ``person`` at ``microphone`` whose socket closes on "listening off" (or, with
+    ``on_state``, on the state it is sent)."""
+    socket = ClosesOnListeningOff(on_state=on_state)
     socket.session = VoiceSession(
         h.deps,
         person_id=person.id,

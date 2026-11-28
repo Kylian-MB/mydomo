@@ -177,12 +177,13 @@ async def test_no_model_at_home_turns_the_voice_off_and_tells_the_owner_once(
         await v.house.close()
 
 
+@pytest.mark.parametrize("on_state", [False, True], ids=["on_listening_off", "on_state"])
 async def test_no_model_is_told_though_the_page_closes_on_listening_off(
-    session_factory, settings, live_clock, owner
+    session_factory, settings, live_clock, owner, on_state
 ):
     await add_key(session_factory, owner, (*CHAT_MODELS, "whisper-1"), home=False, general=True)
     h = House(session_factory, settings, live_clock, owner, FakeChatModel(["ok"]))
-    socket = closing_page(h, owner, MIC)
+    socket = closing_page(h, owner, MIC, on_state=on_state)
     session = socket.session
     assert session is not None
     try:
@@ -190,10 +191,9 @@ async def test_no_model_is_told_though_the_page_closes_on_listening_off(
         await session.heard(sound())
         await until(lambda: socket.closing is not None and socket.closing.done())
         await h.turns_over()
-        assert socket.messages() == [
-            {"type": "state", "hearing": "unavailable"},
-            {"type": "listening", "on": False},
-        ]
+        state = {"type": "state", "hearing": "unavailable"}
+        off = {"type": "listening", "on": False}
+        assert socket.messages() == ([state] if on_state else [state, off])
         assert h.woken.contents() == [{"hearing": "no_model", "outside_allowed": False}]
         assert h.deps.told.told == {"no_model"}
     finally:

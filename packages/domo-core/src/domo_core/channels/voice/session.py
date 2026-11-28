@@ -1168,10 +1168,10 @@ class VoiceSession:
         state, never the "cannot hear" of a hearing that fails), and whether its person is the
         one who chooses."""
         self._hearing = "no_attention"
-        await self._send(protocol.no_attention(chooses=page.role == "owner"))
-        # Begun before the page is told to turn off: the page closes its socket on that, and the
-        # tell runs apart from the socket.
+        # Begun before anything is sent to the page: it may close its socket on its state or on
+        # "listening off", and the tell runs apart from the socket.
         self._tell_the_owner_once("no_attention")
+        await self._send(protocol.no_attention(chooses=page.role == "owner"))
         await self._send(protocol.listening(on=False))
 
     def _elsewhere(
@@ -1267,11 +1267,12 @@ class VoiceSession:
             logger.error("A voice could not be learnt from (%s)", type(error).__name__)
 
     async def _cannot_hear(self, cannot: CannotHear) -> None:
+        if cannot.no_model:
+            # Begun before anything is sent to the page (``_no_attention``).
+            self._tell_the_owner_once("no_model")
         await self._hearing_is(cannot.hearing)
-        if not cannot.no_model:
-            return
-        self._tell_the_owner_once("no_model")
-        await self._send(protocol.listening(on=False))
+        if cannot.no_model:
+            await self._send(protocol.listening(on=False))
 
     async def _hearing_is(self, hearing: protocol.Hearing) -> None:
         """Tell the page whether (and how) the assistant can hear, when it changed (or when he
@@ -1329,12 +1330,16 @@ class VoiceSession:
         fact: str,
         whom: _Whom,
         *,
+        label: str | None = None,
         tell_the_page: bool = True,
     ) -> None:
         """Tell ``fact`` once (``told``), to whom ``whom`` says, in a task of ``turn.wakes``
-        begun now (``_tell_the_owner_once``)."""
+        begun now (``_tell_the_owner_once``). ``label`` names it in a log (``fact`` when it is a
+        name itself; never a person's id)."""
         if told.begin(fact, self._deps.turn.clock()):
-            self._deps.turn.wakes.spawn(self._tell(told, fact, whom, tell_the_page=tell_the_page))
+            self._deps.turn.wakes.spawn(
+                self._tell(told, fact, whom, label=label or fact, tell_the_page=tell_the_page)
+            )
 
     async def _tell(
         self,
@@ -1342,6 +1347,7 @@ class VoiceSession:
         fact: str,
         whom: _Whom,
         *,
+        label: str,
         tell_the_page: bool,
     ) -> None:
         """Tell ``fact`` (``_tell_once``): told only when words saying it were written."""
@@ -1351,11 +1357,11 @@ class VoiceSession:
             if found is not None:
                 said = await self._wake(*found, tell_the_page=tell_the_page) == "spoke"
         except asyncio.CancelledError:
-            logger.warning("A fact of the voice was stopped while it was told (%s)", fact)
+            logger.warning("A fact of the voice was stopped while it was told (%s)", label)
             raise
         except Exception as error:
             logger.error(
-                "A fact of the voice could not be told (%s: error %s)", fact, type(error).__name__
+                "A fact of the voice could not be told (%s: error %s)", label, type(error).__name__
             )
         finally:
             told.end(fact, told=said, now=self._deps.turn.clock())
@@ -1435,8 +1441,9 @@ class VoiceSession:
                 # Only their own voice tells them: another's sentence never wakes them about it.
                 # Told once it was told: a turn that wrote nothing tells it at a later one.
                 if not doubted:
+                    hold: JsonObject = {"proof": "did_not_work"}
                     self._tell_once(
-                        self._holds, str(person.id), _to(person.id, {"proof": "did_not_work"})
+                        self._holds, str(person.id), _to(person.id, hold), label=_fact_name(hold)
                     )
             case "not_checked":
                 # The gatekeeper out of reach: dropped, the request still waits; told once for

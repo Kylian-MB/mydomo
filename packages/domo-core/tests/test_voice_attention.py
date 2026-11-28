@@ -536,19 +536,20 @@ async def test_a_fact_whose_turn_wrote_nothing_is_told_at_a_later_switch_on(
     assert len(h.woken.wakes) == 2
 
 
+@pytest.mark.parametrize("on_state", [False, True], ids=["on_listening_off", "on_state"])
 async def test_a_page_that_closes_on_listening_off_never_loses_the_tell(
-    house, session_factory, owner
+    house, session_factory, owner, on_state
 ):
     await no_small_model_at_home(session_factory, owner)
     h = await house(keys=False)
-    socket = closing_page(h, owner, "desk-a")
+    socket = closing_page(h, owner, "desk-a", on_state=on_state)
     await until(lambda: socket.closing is not None and socket.closing.done())
     await h.turns_over()
-    # The page was told its state and to turn off, in that order; the tell went on without it.
-    assert socket.messages() == [
-        {"type": "state", "hearing": "no_attention", "chooses": True},
-        {"type": "listening", "on": False},
-    ]
+    # The page was told its state and to turn off, in that order (or closed on the state, its
+    # send still pending); the tell went on without it.
+    state = {"type": "state", "hearing": "no_attention", "chooses": True}
+    off = {"type": "listening", "on": False}
+    assert socket.messages() == ([state] if on_state else [state, off])
     assert h.woken.contents() == [NO_ATTENTION_FACT]
     assert h.deps.told.told == {"no_attention"} and h.deps.told.telling == set()
 
