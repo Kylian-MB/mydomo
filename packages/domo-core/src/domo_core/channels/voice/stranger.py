@@ -69,6 +69,7 @@ from typing import Final, Literal, cast
 import anyio
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domo_core.accounts.actors import actor_of
 from domo_core.accounts.models import Person
 from domo_core.accounts.sessions import is_active
 from domo_core.audit.log import append_audit
@@ -87,7 +88,7 @@ from domo_core.policy.barrier import Allow, Refuse, record_decision
 from domo_core.policy.catalog import on_his_own_tables
 from domo_core.policy.decision import decide_now
 from domo_core.policy.open_catalog import load_policy
-from domo_core.policy.roles import Actor, as_role, domo_actor
+from domo_core.policy.roles import domo_actor
 from domo_core.policy.settings import load_policy_settings
 from domo_core.prompts import build_stranger_prompt
 from domo_core.tools.context import InvalidArguments, ToolContext
@@ -611,7 +612,7 @@ async def _leave_word(
         policy = on_his_own_tables(await load_policy(session, turn.policy))
     ctx = ToolContext(
         session_factory=turn.session_factory,
-        actor=Actor(page.id, as_role(page.role)),
+        actor=actor_of(page),
         person=page,
         conversation_id=_NO_CONVERSATION,
         origin="",

@@ -44,6 +44,7 @@ from typing import Final, Literal
 import httpx
 from sqlalchemy import or_, select, update
 
+from domo_core.accounts.actors import actor_of as sure_actor_of
 from domo_core.accounts.models import Person
 from domo_core.channels.voice.abilities import VOICE
 from domo_core.channels.voice.deps import VoiceDeps
@@ -71,7 +72,6 @@ from domo_core.llm.picker import ModelPicker
 from domo_core.policy.actions import DescribedAction
 from domo_core.policy.open_catalog import load_policy
 from domo_core.policy.rights import load_rights
-from domo_core.policy.roles import Actor, as_role
 from domo_core.proofs.kinds import MAX_HEARD_LENGTH, ProofPlace, phrase_ref
 from domo_core.proofs.service import (
     NotAnAnswer,
@@ -375,7 +375,7 @@ async def _moment_of_the_decision(
     notify: Callable[[uuid.UUID], None] = Conversation(turn).notify
     return ToolContext(
         session_factory=turn.session_factory,
-        actor=Actor(person_id=person.id, role=as_role(person.role)),
+        actor=sure_actor_of(person),
         person=person,
         conversation_id=confirmation_id,  # replaced by the request's own conversation
         origin=origin,
