@@ -176,7 +176,9 @@ async def test_the_page_shows_records_with_and_without_an_account(
     assert t("household.role.removes", "en") in sam_row
     assert "plan.set" not in page and "made.recipes" not in page
     assert t("household.state.asleep", "en", date=in_words(sam.expires_at)) in sam_row
-    assert t("household.state.withdrawn", "en", date=in_words(now())) in plain(row_of(page, tom))
+    # The time it was withdrawn at, read once: a second read of the clock may be a minute later.
+    withdrawn = t("household.state.withdrawn", "en", date=in_words(tom.disabled_at))
+    assert withdrawn in plain(row_of(page, tom))
 
 
 async def test_a_record_that_left_is_gone_and_says_when(owner_client, add_person):
